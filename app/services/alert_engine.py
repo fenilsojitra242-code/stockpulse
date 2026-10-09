@@ -1,0 +1,1073 @@
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
+from sqlalchemy.orm import Session
+
+import json
+from app.database.models import Alert, AlertHistory, SystemSetting
+from app.services.market_data import get_latest_market_snapshot
+from app.services.prediction import predict_target_probability
+from app.services.adaptive_threshold import adaptive_engine
+from app.services.messaging import notification_manager, NotificationEventType
+
+
+POPULAR_SUPERTREND_SYMBOLS = ["TCS", "INFY", "RELIANCE", "HDFCBANK", "TATAMOTORS", "SBIN", "ICICIBANK", "BHARTIARTL", "ITC", "WIPRO"]
+
+
+def get_supertrend_settings(db: Session) -> Dict[str, Any]:
+    """
+    Retrieves global SuperTrend indicator settings:
+    - enabled: bool
+    - proximity_points: float (e.g. 1.0 pt before hit)
+    - selected_symbols: list of stock symbols to monitor (exclusively!)
+    """
+    try:
+        row_enabled = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_enabled").first()
+        row_prox = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_proximity_points").first()
+        row_syms = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_watchlist_symbols").first()
+
+        enabled = True if (not row_enabled or row_enabled.value.lower() == "true") else False
+        prox = float(row_prox.value) if (row_prox and row_prox.value) else 1.0
+
+        if row_syms and row_syms.value is not None:
+            try:
+                selected_symbols = json.loads(row_syms.value)
+                if not isinstance(selected_symbols, list):
+                    selected_symbols = []
+            except Exception:
+                selected_symbols = []
+        else:
+            selected_symbols = []
+
+        return {
+            "enabled": enabled,
+            "proximity_points": prox,
+            "selected_symbols": [s.upper() for s in selected_symbols],
+            "popular_symbols": POPULAR_SUPERTREND_SYMBOLS
+        }
+    except Exception as e:
+        print(f"[SuperTrend] Error fetching settings: {e}")
+        return {
+            "enabled": True,
+            "proximity_points": 1.0,
+            "selected_symbols": [],
+            "popular_symbols": POPULAR_SUPERTREND_SYMBOLS
+        }
+
+
+def save_supertrend_settings(
+    db: Session,
+    enabled: Optional[bool] = None,
+    proximity_points: Optional[float] = None,
+    selected_symbols: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """
+    Saves SuperTrend indicator settings into system_settings table.
+    """
+    try:
+        if enabled is not None:
+            row_enabled = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_enabled").first()
+            if not row_enabled:
+                row_enabled = SystemSetting(key="supertrend_enabled", value="true" if enabled else "false", description="SuperTrend hit notifier active")
+                db.add(row_enabled)
+            else:
+                row_enabled.value = "true" if enabled else "false"
+
+        if proximity_points is not None:
+            prox_val = str(max(0.1, min(100.0, float(proximity_points))))
+            row_prox = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_proximity_points").first()
+            if not row_prox:
+                row_prox = SystemSetting(key="supertrend_proximity_points", value=prox_val, description="Points before SuperTrend hit")
+                db.add(row_prox)
+            else:
+                row_prox.value = prox_val
+
+        if selected_symbols is not None:
+            cleaned = []
+            seen = set()
+            for s in selected_symbols:
+                c = s.strip().upper()
+                if c and c not in seen:
+                    cleaned.append(c)
+                    seen.add(c)
+            row_syms = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_watchlist_symbols").first()
+            if not row_syms:
+                row_syms = SystemSetting(key="supertrend_watchlist_symbols", value=json.dumps(cleaned), description="List of shares monitored for SuperTrend")
+                db.add(row_syms)
+            else:
+                row_syms.value = json.dumps(cleaned)
+
+        db.commit()
+    except Exception as e:
+        print(f"[SuperTrend] Error saving settings: {e}")
+        db.rollback()
+
+    return get_supertrend_settings(db)
+
+
+ACTIVE_STATES = ("MONITORING", "EARLY_WARNING", "DATA_UNAVAILABLE", "MODEL_UNAVAILABLE")
+
+
+def compute_target_price(prev_close: float, curr_price: float, target_percent: float, direction: str = "UP") -> float:
+    """
+    Computes exact target price based on market day % rule:
+    target_price = prev_close * (1.0 + target_percent / 100.0)
+    """
+    if prev_close and prev_close > 0:
+        base = prev_close
+        tp = round(base * (1.0 + float(target_percent) / 100.0), 2)
+        # If direction is explicitly DOWN but tp >= curr_price and target_percent > 0:
+        if direction == "DOWN" and tp >= curr_price and target_percent > 0:
+            tp = round(base * (1.0 - float(target_percent) / 100.0), 2)
+        return tp
+    else:
+        base = curr_price
+        pct = float(target_percent) / 100.0
+        if direction == "DOWN" and pct > 0:
+            return round(base * (1.0 - pct), 2)
+        return round(base * (1.0 + pct), 2)
+
+
+def compute_stop_loss_price(prev_close: float, curr_price: float, sl_percent: Optional[float], direction: str = "UP") -> Optional[float]:
+    """
+    Computes stop-loss price.
+    Supports absolute day % (e.g. +0.80% when live is +1.00% and target is +1.20%)
+    or relative drop % (e.g. -0.03% from current price).
+    """
+    if sl_percent is None:
+        return None
+    sl_val = float(sl_percent)
+    if prev_close and prev_close > 0:
+        if direction == "UP" and sl_val > 0:
+            return round(prev_close * (1.0 + sl_val / 100.0), 2)
+        elif direction == "DOWN" and sl_val > 0:
+            return round(prev_close * (1.0 + sl_val / 100.0), 2)
+        elif sl_val < 0 and abs(sl_val) < 1.0:
+            return round(curr_price * (1.0 - abs(sl_val) / 100.0), 2)
+        else:
+            return round(prev_close * (1.0 + sl_val / 100.0), 2)
+    else:
+        sl_abs = abs(sl_val) / 100.0
+        if direction == "DOWN":
+            return round(curr_price * (1.0 + sl_abs), 2)
+        else:
+            return round(curr_price * (1.0 - sl_abs), 2)
+
+
+def _target_prices(reference_price: float, target_percent: float):
+    pct = abs(float(target_percent)) / 100.0
+    return (
+        round(reference_price * (1.0 + pct), 2),
+        round(reference_price * (1.0 - pct), 2),
+    )
+
+
+def _movement(reference_price: float, current_price: float) -> float:
+    if not reference_price or reference_price <= 0:
+        return 0.0
+    return ((current_price - reference_price) / reference_price) * 100.0
+
+
+def _target_hit(alert: Alert, current_price: float, current_change: float, target_price: float):
+    """
+    Evaluates whether the market has achieved the user's target.
+    Target is achieved when:
+    - UP: current_price >= target_price OR current_change >= alert.target_percent
+    - DOWN: current_price <= target_price OR current_change <= alert.target_percent
+    - BOTH: either UP or DOWN condition is met
+    """
+    target_up_pct = abs(float(alert.target_percent))
+    target_down_pct = -abs(float(alert.target_percent))
+
+    if alert.direction == "UP":
+        is_hit = (current_price >= target_price) or (current_change >= target_up_pct)
+        return is_hit, "UP", target_price
+    elif alert.direction == "DOWN":
+        is_hit = (current_price <= target_price) or (current_change <= target_down_pct)
+        return is_hit, "DOWN", target_price
+    else:  # BOTH
+        hit_up = (current_price >= target_price) or (current_change >= target_up_pct)
+        hit_down = (current_price <= target_price) or (current_change <= target_down_pct)
+        if hit_up:
+            return True, "UP", target_price
+        elif hit_down:
+            return True, "DOWN", target_price
+        return False, "BOTH", target_price
+
+
+def _ensure_reference(alert: Alert, current_price: float, prev_close: float, reset_target: bool = False):
+    if not alert.reference_price or alert.reference_price <= 0:
+        alert.reference_price = float(current_price)
+
+    if reset_target or not alert.target_price or alert.target_price <= 0:
+        alert.target_price = compute_target_price(prev_close, current_price, alert.target_percent, alert.direction)
+
+
+def _evaluate_supertrend_for_alert(alert: Alert, snap: Dict[str, Any], db: Session, now: datetime):
+    """
+    Evaluates SuperTrend proximity (points) and BUY/SELL signals for this alert.
+    Restricted strictly to the user's selected SuperTrend shares.
+    """
+    if not getattr(alert, "enable_supertrend", True):
+        return
+
+    st_settings = get_supertrend_settings(db)
+    if not st_settings.get("enabled", True):
+        return
+
+    selected_set = {s.upper() for s in st_settings.get("selected_symbols", [])}
+    if alert.symbol.upper() not in selected_set:
+        return
+
+    sym = alert.symbol
+    curr_price = float(snap.get("price") or 0.0)
+    if curr_price <= 0:
+        return
+
+    candles = snap.get("candles") or []
+    if not candles:
+        try:
+            from app.services.market_data import get_stock_visualization_data
+            vis = get_stock_visualization_data(sym, time_range="1D")
+            candles = vis.get("candles") or []
+        except Exception:
+            candles = []
+
+    if not candles or len(candles) < 2:
+        return
+
+    try:
+        from app.services.feature_engine import analyze_supertrend_hit
+        prox_pts = float(getattr(alert, "supertrend_proximity_points", 1.0) or 1.0)
+        prev_dir = getattr(alert, "last_supertrend_direction", None)
+
+        st_result = analyze_supertrend_hit(
+            candles_or_df=candles,
+            current_price=curr_price,
+            period=10,
+            multiplier=3.0,
+            proximity_points=prox_pts,
+            previous_direction=prev_dir
+        )
+
+        st_price = st_result["supertrend_price"]
+        curr_dir = st_result["direction"]
+        dist_pts = st_result["distance_points"]
+        is_approaching = st_result["is_approaching"]
+        is_flipped = st_result["is_flipped"]
+
+        # Cache latest values on alert object
+        alert.last_supertrend_price = st_price
+
+        # 1. Check for Trend Direction Flip (BUY or SELL Signal)
+        if is_flipped and prev_dir is not None:
+            signal = curr_dir  # 'BUY' or 'SELL'
+            print(f"[SuperTrend] Alert #{alert.id} ({sym}): SuperTrend HIT & Flipped to {signal}! Price: ₹{curr_price:.2f}, ST: ₹{st_price:.2f}")
+            notification_manager.emit_supertrend_signal(
+                alert=alert,
+                symbol=sym,
+                signal=signal,
+                current_price=curr_price,
+                supertrend_price=st_price,
+                prev_direction=prev_dir,
+                db=db
+            )
+            alert.last_supertrend_direction = curr_dir
+            alert.last_supertrend_price = st_price
+            alert.supertrend_approaching_sent = False  # Reset proximity lock on flip
+            db.commit()
+
+        elif prev_dir is None:
+            # First initialization
+            alert.last_supertrend_direction = curr_dir
+            alert.last_supertrend_price = st_price
+            db.commit()
+
+        # 2. Check for Proximity Hit (testing the line within 1 point before flip/hit)
+        if is_approaching:
+            if not getattr(alert, "supertrend_approaching_sent", False):
+                print(f"[SuperTrend] Alert #{alert.id} ({sym}): Price is {dist_pts:.2f} pts from SuperTrend (₹{st_price:.2f})! Emitting hit warning.")
+                notification_manager.emit_supertrend_approaching(
+                    alert=alert,
+                    symbol=sym,
+                    current_price=curr_price,
+                    supertrend_price=st_price,
+                    distance_points=dist_pts,
+                    proximity_threshold=prox_pts,
+                    current_direction=curr_dir,
+                    db=db
+                )
+                alert.supertrend_approaching_sent = True
+                alert.last_supertrend_price = st_price
+                db.commit()
+        else:
+            # Reset proximity lock if price pulls away by more than 1.5x the threshold
+            if dist_pts > (prox_pts * 1.5) and getattr(alert, "supertrend_approaching_sent", False):
+                alert.supertrend_approaching_sent = False
+                db.commit()
+
+    except Exception as st_err:
+        print(f"[SuperTrend] Evaluation error for {sym}: {st_err}")
+
+
+
+_WATCHLIST_ST_STATE: Dict[str, Dict[str, Any]] = {}
+
+
+def scan_default_watchlist_supertrend(db: Session, watchlist_symbols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """
+    Scans user-selected stocks for SuperTrend hits and early proximity warnings.
+    Strictly restricted to the shares selected by the user in SuperTrend settings!
+    No other shares will trigger SuperTrend notifications.
+    """
+    global _WATCHLIST_ST_STATE
+    from app.services.market_data import get_latest_market_snapshot, get_stock_visualization_data
+    from app.services.feature_engine import analyze_supertrend_hit
+    from app.services.messaging import notification_manager
+
+    settings = get_supertrend_settings(db)
+    if not settings.get("enabled", True):
+        return []
+
+    # If watchlist_symbols is passed explicitly, use it; otherwise use the user's saved selection
+    if watchlist_symbols is not None:
+        symbols = watchlist_symbols
+    else:
+        symbols = settings.get("selected_symbols", [])
+
+    if not symbols:
+        # User selected NO shares -> strictly do not monitor any other share!
+        return []
+
+    prox_pts = float(settings.get("proximity_points", 1.0))
+    results = []
+
+    for sym in symbols:
+        clean_sym = sym.strip().upper()
+        try:
+            # If the user already has an explicit custom alert for this stock, let that handle it
+            has_custom_alert = db.query(Alert).filter(
+                Alert.symbol == clean_sym,
+                Alert.status.in_(ACTIVE_STATES),
+                Alert.enable_supertrend == True
+            ).first()
+            if has_custom_alert:
+                continue
+
+            snap = get_latest_market_snapshot(clean_sym)
+            if not snap:
+                continue
+
+            curr_price = float(snap.get("price", 0.0))
+            if curr_price <= 0:
+                continue
+
+            candles = snap.get("candles") or []
+            if not candles or len(candles) < 2:
+                vis = get_stock_visualization_data(clean_sym, time_range="1D")
+                candles = vis.get("candles") or []
+
+            if not candles or len(candles) < 2:
+                continue
+
+            state = _WATCHLIST_ST_STATE.setdefault(clean_sym, {
+                "last_direction": None,
+                "last_price": None,
+                "approaching_sent": False
+            })
+
+            prev_dir = state["last_direction"]
+
+            st_res = analyze_supertrend_hit(
+                candles_or_df=candles,
+                current_price=curr_price,
+                period=10,
+                multiplier=3.0,
+                proximity_points=prox_pts,
+                previous_direction=prev_dir
+            )
+
+            st_price = st_res["supertrend_price"]
+            curr_dir = st_res["direction"]
+            dist_pts = st_res["distance_points"]
+            is_approaching = st_res["is_approaching"]
+            is_flipped = st_res["is_flipped"]
+
+            state["last_price"] = st_price
+
+            # 1. Direction Flip (BUY or SELL Hit)
+            if is_flipped and prev_dir is not None:
+                print(f"[AutoWatchlist] {clean_sym} SuperTrend HIT! Flipped from {prev_dir} to {curr_dir}! Price: ₹{curr_price:.2f}, ST: ₹{st_price:.2f}")
+                notification_manager.emit_supertrend_signal(
+                    alert=None,
+                    symbol=clean_sym,
+                    signal=curr_dir,
+                    current_price=curr_price,
+                    supertrend_price=st_price,
+                    prev_direction=prev_dir,
+                    db=db
+                )
+                state["last_direction"] = curr_dir
+                state["approaching_sent"] = False
+                results.append({"symbol": clean_sym, "type": "HIT", "signal": curr_dir})
+
+            elif prev_dir is None:
+                state["last_direction"] = curr_dir
+
+            # 2. Early Proximity Warning (<= 1.0 pt)
+            elif is_approaching and not is_flipped:
+                if not state["approaching_sent"]:
+                    print(f"[AutoWatchlist] {clean_sym} Early Warning: price ₹{curr_price:.2f} within {dist_pts} pts of ST ₹{st_price:.2f}!")
+                    notification_manager.emit_supertrend_approaching(
+                        alert=None,
+                        symbol=clean_sym,
+                        current_price=curr_price,
+                        supertrend_price=st_price,
+                        distance_points=dist_pts,
+                        proximity_threshold=prox_pts,
+                        current_direction=curr_dir,
+                        db=db
+                    )
+                    state["approaching_sent"] = True
+                    results.append({"symbol": clean_sym, "type": "APPROACHING", "distance": dist_pts})
+            else:
+                # Reset anti-spam flag if price pulled away safely (> 1.5 pts)
+                if state["approaching_sent"] and dist_pts > (prox_pts * 1.5):
+                    state["approaching_sent"] = False
+
+        except Exception as err:
+            print(f"[AutoWatchlist] Error evaluating {clean_sym}: {err}")
+
+    return results
+
+
+def evaluate_active_alerts(db: Session) -> List[Dict[str, Any]]:
+    """
+    Continuous per-alert state machine.
+    """
+    # Auto-scan popular watchlist stocks even when no user alert is added
+    scan_default_watchlist_supertrend(db)
+
+    active_alerts = db.query(Alert).filter(Alert.status.in_(ACTIVE_STATES)).all()
+    if not active_alerts:
+        return []
+
+    symbols = list({a.symbol for a in active_alerts})
+    snapshots: Dict[str, Any] = {}
+
+    for sym in symbols:
+        try:
+            snap = get_latest_market_snapshot(sym)
+            snapshots[sym] = snap if snap and snap.get("price", 0) > 0 else None
+        except Exception as exc:
+            print(f"[AlertEngine] Error fetching snapshot for {sym}: {exc}")
+            snapshots[sym] = None
+
+    now = datetime.utcnow()
+    evaluated_results: List[Dict[str, Any]] = []
+
+    # First resolve already-running prediction cycles. This is deliberately
+    # separate from new predictions so EARLY_WARNING never starts another cycle.
+    check_pending_outcomes(db, snapshots)
+
+    # Refresh objects after outcome processing because SUCCESS/FAILED transitions
+    # may have changed them.
+    for alert in active_alerts:
+        try:
+            db.refresh(alert)
+        except Exception:
+            pass
+
+    for alert in active_alerts:
+        # SUCCESS/STOPPED/etc. may have been reached by the pending-outcome pass.
+        if alert.status not in ("MONITORING", "EARLY_WARNING", "DATA_UNAVAILABLE", "MODEL_UNAVAILABLE"):
+            continue
+
+        sym = alert.symbol
+        snap = snapshots.get(sym)
+
+        if not snap:
+            if alert.status not in ("DATA_UNAVAILABLE", "MODEL_UNAVAILABLE"):
+                print(f"[AlertEngine] Market data unavailable for {sym}; pausing alert #{alert.id}")
+                notification_manager.emit_data_unavailable(alert, sym, db)
+            continue
+
+        # Restore from a temporary provider/model outage.
+        if alert.status in ("DATA_UNAVAILABLE", "MODEL_UNAVAILABLE"):
+            alert.status = "MONITORING"
+            alert.stopped_at = None
+            alert.last_event = NotificationEventType.MONITORING_STARTED.value
+            db.commit()
+
+        curr_price = float(snap["price"])
+        curr_change = float(snap.get("change_pct", 0.0) or 0.0)
+        prev_close = float(snap.get("previous_close") or curr_price)
+
+        _ensure_reference(alert, curr_price, prev_close)
+        ref_price = float(alert.reference_price)
+        target_price = float(alert.target_price) if alert.target_price else compute_target_price(prev_close, curr_price, alert.target_percent, alert.direction)
+        alert.target_price = target_price
+
+        # SuperTrend Hit & Proximity Notifier Evaluation
+        if getattr(alert, "enable_supertrend", True):
+            _evaluate_supertrend_for_alert(alert, snap, db, now)
+
+        # CRITICAL STATE-MACHINE RULE:
+        # Once EARLY_WARNING exists, this alert is waiting for the outcome in check_pending_outcomes.
+        if alert.status == "EARLY_WARNING":
+            db.commit()
+            evaluated_results.append({
+                "alert_id": alert.id,
+                "symbol": sym,
+                "status": "EARLY_WARNING",
+                "probability": alert.last_probability,
+                "target_price": alert.target_price
+            })
+            continue
+
+        # In MONITORING stage: Check if target has already been reached by current price!
+        hit_now, hit_dir_now, target_price_hit = _target_hit(alert, curr_price, curr_change, target_price)
+        if hit_now:
+            print(f"[AlertEngine] Alert #{alert.id} ({sym}): Target {alert.target_percent:+.2f}% reached directly at ₹{curr_price:.2f} ({curr_change:+.2f}%)!")
+            alert.status = "SUCCESS"
+            alert.stopped_at = now
+            alert.early_warning_sent = False
+            alert.last_event = NotificationEventType.TARGET_TRIGGERED.value
+            db.commit()
+
+            start_t = alert.started_at or alert.created_at or now
+            hist_entry = AlertHistory(
+                alert_id=alert.id,
+                symbol=sym,
+                direction=hit_dir_now,
+                target_percent=alert.target_percent,
+                warning_minutes=alert.warning_minutes,
+                start_price=ref_price,
+                target_price=target_price_hit,
+                current_price=curr_price,
+                current_change=curr_change,
+                predicted_probability=alert.last_probability or 1.0,
+                created_at=alert.created_at,
+                started_at=start_t,
+                triggered_at=now,
+                target_reached_timestamp=now,
+                resolved_at=now,
+                duration_seconds=int((now - start_t).total_seconds()),
+                result="SUCCESS",
+                outcome_notes=f"Target {alert.target_percent:.2f}% reached directly at ₹{curr_price:.2f} ({curr_change:+.2f}%). Monitoring complete."
+            )
+            db.add(hist_entry)
+            db.commit()
+
+            try:
+                notification_manager.emit_target_triggered(
+                    alert=alert,
+                    start_price=ref_price,
+                    current_price=curr_price,
+                    movement_percent=curr_change,
+                    direction=hit_dir_now,
+                    db=db
+                )
+            except Exception as exc:
+                print(f"[AlertEngine] Direct target hit notification error for {sym}: {exc}")
+
+            evaluated_results.append({
+                "alert_id": alert.id,
+                "symbol": sym,
+                "status": "SUCCESS",
+                "current_price": curr_price,
+                "target_price": target_price_hit
+            })
+            continue
+
+        # Only MONITORING reaches the model-prediction section.
+        try:
+            # Required movement from current price to target price
+            if curr_price > 0 and target_price > 0:
+                dist_pct = abs((target_price - curr_price) / curr_price) * 100.0
+            else:
+                dist_pct = abs(alert.target_percent - curr_change)
+            dist_pct = max(0.01, dist_pct)
+
+            detected_dir = "UP" if target_price >= curr_price else "DOWN"
+            if alert.direction in ("UP", "DOWN"):
+                detected_dir = alert.direction
+
+            pred = predict_target_probability(
+                symbol=sym,
+                target_percent=dist_pct,
+                warning_minutes=alert.warning_minutes,
+                direction=detected_dir,
+                market_snapshot=snap
+            )
+            prob = float(pred["probability"])
+
+            thresh_info = adaptive_engine.evaluate_live_prediction(
+                symbol=sym,
+                target_percent=dist_pct,
+                warning_minutes=alert.warning_minutes,
+                direction=detected_dir,
+                predicted_probability=prob
+            )
+            is_triggered = bool(thresh_info.get("is_alert_worthy", False))
+
+        except Exception as pred_err:
+            print(f"[AlertEngine] Model prediction error for {sym}: {pred_err}")
+            if alert.status != "MODEL_UNAVAILABLE":
+                notification_manager.emit_model_unavailable(alert, sym, db)
+            continue
+
+        alert.last_checked_at = now
+        alert.last_probability = prob
+        alert.target_price = target_price
+
+        threshold = thresh_info.get("adaptive_threshold") or 0.65
+        thresh_status = thresh_info.get("status", "OPTIMAL_THRESHOLD_ACTIVE")
+
+        min_required_prob = min(threshold, float(alert.min_probability or 0.65))
+        if prob >= min_required_prob or thresh_info.get("is_alert_worthy", False):
+            is_triggered = True
+        elif thresh_status == "INSUFFICIENT_CONFIDENCE" and prob < 0.60:
+            is_triggered = False
+
+        # Price proximity is a fallback trigger. It does not mean the target
+        # has been achieved; it only starts the Early-Warning verification timer.
+        if not is_triggered and not alert.early_warning_sent:
+            total_dist = abs(target_price - ref_price)
+            curr_dist = abs(curr_price - ref_price)
+            if total_dist > 0 and (curr_dist / total_dist) >= 0.70:
+                print(
+                    f"[AlertEngine] Alert #{alert.id} ({sym}): "
+                    f"price proximity (70%+ covered) started Early Warning "
+                    f"(curr={curr_price:.2f}, target={target_price:.2f})."
+                )
+                is_triggered = True
+            elif abs(alert.target_percent - curr_change) <= 0.05:
+                print(
+                    f"[AlertEngine] Alert #{alert.id} ({sym}): "
+                    f"market change proximity (within 0.05%) started Early Warning."
+                )
+                is_triggered = True
+
+        if is_triggered:
+            # IMPORTANT: the prediction-cycle history is created independently
+            # of notification delivery. A popup/provider failure must never leave
+            # the alert stuck forever in EARLY_WARNING.
+            dispatch_res, history_id = notification_manager.emit_early_warning(
+                alert=alert,
+                probability=prob,
+                current_price=curr_price,
+                current_change=curr_change,
+                direction=detected_dir,
+                threshold=threshold,
+                db=db
+            )
+
+            history_entry = AlertHistory(
+                alert_id=alert.id,
+                symbol=sym,
+                direction=detected_dir,
+                target_percent=alert.target_percent,
+                warning_minutes=alert.warning_minutes,
+                start_price=curr_price,
+                target_price=target_price,
+                current_price=curr_price,
+                current_change=curr_change,
+                predicted_probability=prob,
+                created_at=alert.created_at,
+                started_at=alert.started_at or now,
+                triggered_at=now,
+                warning_timestamp=now,
+                result="PENDING",
+                outcome_notes=(
+                    f"Early-warning cycle started. "
+                    f"Model probability {prob * 100:.1f}% "
+                    f"(threshold {threshold * 100:.1f}%). "
+                    f"Target {alert.target_percent:+.2f}% must be reached within {alert.warning_minutes} minute(s)."
+                )
+            )
+            db.add(history_entry)
+            db.commit()
+
+            evaluated_results.append({
+                "alert_id": alert.id,
+                "symbol": sym,
+                "status": "EARLY_WARNING",
+                "probability": prob,
+                "threshold": threshold,
+                "direction": detected_dir,
+                "history_id": history_entry.id,
+                "notification": dispatch_res
+            })
+        else:
+            db.commit()
+            evaluated_results.append({
+                "alert_id": alert.id,
+                "symbol": sym,
+                "status": alert.status,
+                "probability": prob,
+                "threshold": threshold
+            })
+
+    # A newly-created Early Warning can reach its target on this same tick.
+    # Run the verifier once more after all new PENDING cycles have been committed.
+    check_pending_outcomes(db, snapshots)
+
+    return evaluated_results
+
+
+def check_pending_outcomes(db: Session, snapshots: Dict[str, Any]):
+    """
+    Resolves each pending Early-Warning cycle independently.
+
+    SUCCESS:
+        target reached within warning_minutes -> send Success -> STOP only this alert.
+
+    FAILED:
+        warning_minutes elapsed without target -> send Failed -> reset only this
+        alert to MONITORING with a fresh reference price.
+    """
+    now = datetime.utcnow()
+
+    # Find all alerts currently in EARLY_WARNING or with pending outcome cycles
+    pending_histories = db.query(AlertHistory).filter(AlertHistory.result == "PENDING").all()
+    ew_alerts = db.query(Alert).filter(Alert.status == "EARLY_WARNING").all()
+
+    alert_ids = set()
+    for h in pending_histories:
+        if h.alert_id:
+            alert_ids.add(h.alert_id)
+    for a in ew_alerts:
+        alert_ids.add(a.id)
+
+    if not alert_ids:
+        return
+
+    for aid in list(alert_ids):
+        alert = db.query(Alert).filter(Alert.id == aid).first()
+        if not alert:
+            db.query(AlertHistory).filter(AlertHistory.alert_id == aid, AlertHistory.result == "PENDING").update({"result": "STOPPED", "resolved_at": now})
+            db.commit()
+            continue
+
+        hists = db.query(AlertHistory).filter(AlertHistory.alert_id == aid, AlertHistory.result == "PENDING").order_by(AlertHistory.id.asc()).all()
+
+        if alert.status in ("STOPPED", "SUCCESS"):
+            for h in hists:
+                h.result = alert.status
+                h.resolved_at = now
+            db.commit()
+            continue
+
+        sym = alert.symbol
+        snap = snapshots.get(sym)
+        if not snap:
+            try:
+                snap = get_latest_market_snapshot(sym)
+            except Exception:
+                continue
+
+        if not snap or not snap.get("price"):
+            continue
+
+        curr_price = float(snap["price"])
+        curr_change = float(snap.get("change_pct", 0.0) or 0.0)
+        prev_close = float(snap.get("previous_close") or curr_price)
+        ref_price = float(alert.reference_price or curr_price)
+        direction = alert.direction
+
+        if alert.target_price:
+            target_price = float(alert.target_price)
+        else:
+            target_price = compute_target_price(prev_close, curr_price, alert.target_percent, direction)
+            alert.target_price = target_price
+
+        # Check target hit
+        hit, hit_direction, _ = _target_hit(alert, curr_price, curr_change, target_price)
+
+        # Determine elapsed time based on when early warning was triggered
+        trig_times = [h.triggered_at for h in hists if h.triggered_at]
+        if alert.last_triggered_at:
+            trig_times.append(alert.last_triggered_at)
+        triggered_at = min(trig_times) if trig_times else (alert.started_at or alert.created_at or now)
+        elapsed_seconds = max(0, int((now - triggered_at).total_seconds()))
+        elapsed_minutes = elapsed_seconds / 60.0
+
+        if not hists:
+            new_hist = AlertHistory(
+                alert_id=alert.id,
+                symbol=sym,
+                direction=direction,
+                target_percent=alert.target_percent,
+                warning_minutes=alert.warning_minutes,
+                start_price=ref_price,
+                target_price=target_price,
+                current_price=curr_price,
+                current_change=curr_change,
+                predicted_probability=alert.last_probability or 0.70,
+                created_at=alert.created_at or now,
+                started_at=alert.started_at or now,
+                triggered_at=triggered_at,
+                warning_timestamp=triggered_at,
+                result="PENDING"
+            )
+            db.add(new_hist)
+            db.commit()
+            db.refresh(new_hist)
+            hists = [new_hist]
+
+        # 1. Stop-Loss Risk Protection Check
+        sl_hit = False
+        sl_price = alert.stop_loss_price
+        if sl_price is None and alert.stop_loss_percent is not None:
+            sl_price = compute_stop_loss_price(prev_close, ref_price, alert.stop_loss_percent, direction)
+
+        if sl_price:
+            if direction == "UP":
+                sl_hit = (curr_price <= sl_price) or (alert.stop_loss_percent is not None and curr_change <= alert.stop_loss_percent)
+            elif direction == "DOWN":
+                sl_hit = (curr_price >= sl_price) or (alert.stop_loss_percent is not None and curr_change >= alert.stop_loss_percent)
+            else:
+                sl_hit = (curr_price <= sl_price)
+
+        if sl_hit:
+            for h in hists:
+                h.result = "STOPPED"
+                h.resolved_at = now
+                h.duration_seconds = elapsed_seconds
+                h.current_price = curr_price
+                h.current_change = curr_change
+                h.outcome_notes = f"Stop-loss triggered at ₹{curr_price:.2f} ({curr_change:+.2f}%). Monitoring stopped to protect capital."
+
+            alert.status = "STOPPED"
+            alert.stopped_at = now
+            alert.early_warning_sent = False
+            alert.last_event = NotificationEventType.STOP_LOSS_TRIGGERED.value
+            db.commit()
+
+            try:
+                notification_manager.emit_stop_loss_triggered(
+                    alert=alert,
+                    start_price=ref_price,
+                    current_price=curr_price,
+                    movement_percent=curr_change,
+                    stop_loss_percent=alert.stop_loss_percent or 0.03,
+                    stop_loss_price=sl_price or curr_price,
+                    db=db
+                )
+            except Exception as exc:
+                print(f"[AlertEngine] Stop-loss notification error for {sym}: {exc}")
+
+            print(f"[AlertEngine] Alert #{alert.id} for {sym}: STOP-LOSS TRIGGERED at ₹{curr_price:.2f}. Capital protected.")
+            continue
+
+        elif hit:
+            for h in hists:
+                h.result = "SUCCESS"
+                h.target_reached_timestamp = now
+                h.resolved_at = now
+                h.duration_seconds = elapsed_seconds
+                h.current_price = curr_price
+                h.current_change = curr_change
+                h.target_price = target_price
+                h.outcome_notes = f"Target {alert.target_percent:.2f}% reached at ₹{curr_price:.2f} ({curr_change:+.2f}%) within {elapsed_minutes:.2f} minute(s)."
+
+            alert.status = "SUCCESS"
+            alert.stopped_at = now
+            alert.early_warning_sent = False
+            alert.last_event = NotificationEventType.TARGET_TRIGGERED.value
+            db.commit()
+
+            try:
+                notification_manager.emit_target_triggered(
+                    alert=alert,
+                    start_price=ref_price,
+                    current_price=curr_price,
+                    movement_percent=curr_change,
+                    direction=hit_direction,
+                    db=db
+                )
+            except Exception as exc:
+                print(f"[AlertEngine] Success notification error for {sym}: {exc}")
+
+            print(f"[AlertEngine] Alert #{alert.id} for {sym}: SUCCESS after {elapsed_minutes:.2f}m. Monitoring complete.")
+
+        else:
+            # Check 50% Halfway Milestone Alert
+            if not getattr(alert, "milestone_50_sent", False):
+                half_hit = False
+                ref_chg = ((ref_price - prev_close) / prev_close) * 100.0 if prev_close > 0 else 0.0
+                half_chg = ref_chg + 0.50 * (alert.target_percent - ref_chg)
+                half_p = ref_price + 0.50 * (target_price - ref_price)
+
+                if direction == "UP" and (curr_change >= half_chg or curr_price >= half_p):
+                    half_hit = True
+                elif direction == "DOWN" and (curr_change <= half_chg or curr_price <= half_p):
+                    half_hit = True
+                elif direction == "BOTH" and abs(curr_price - ref_price) >= 0.50 * abs(target_price - ref_price):
+                    half_hit = True
+
+                if half_hit:
+                    alert.milestone_50_sent = True
+                    db.commit()
+                    try:
+                        notification_manager.emit_halfway_milestone(
+                            alert=alert,
+                            start_price=ref_price,
+                            current_price=curr_price,
+                            movement_percent=curr_change,
+                            target_price=target_price,
+                            db=db
+                        )
+                        print(f"[AlertEngine] Alert #{alert.id} ({sym}): 50% Milestone reached at ₹{curr_price:.2f} ({curr_change:+.2f}%)!")
+                    except Exception as exc:
+                        print(f"[AlertEngine] Halfway milestone notification error for {sym}: {exc}")
+
+            if elapsed_minutes >= float(alert.warning_minutes):
+                for h in hists:
+                    h.result = "FAILED"
+                    h.resolved_at = now
+                    h.duration_seconds = elapsed_seconds
+                    h.current_price = curr_price
+                    h.current_change = curr_change
+                    h.target_price = target_price
+                    h.outcome_notes = f"Target {alert.target_percent:.2f}% not reached within {alert.warning_minutes}m ({curr_change:+.2f}%). Continuous monitoring restarted."
+
+                alert.status = "MONITORING"
+                alert.early_warning_sent = False
+                alert.milestone_50_sent = False
+                alert.last_triggered_at = None
+                alert.last_event = NotificationEventType.PREDICTION_FAILED.value
+                alert.stopped_at = None
+                alert.reference_price = curr_price
+                alert.target_price = compute_target_price(prev_close, curr_price, alert.target_percent, alert.direction)
+                db.commit()
+
+                try:
+                    notification_manager.emit_prediction_failed(
+                        alert=alert,
+                        symbol=sym,
+                        target_percent=alert.target_percent,
+                        warning_minutes=alert.warning_minutes,
+                        direction=alert.direction,
+                        target_price=target_price,
+                        current_price=curr_price,
+                        final_movement=curr_change,
+                        start_price=ref_price,
+                        db=db
+                    )
+                    notification_manager.emit_monitoring_started(alert, db)
+                except Exception as exc:
+                    print(f"[AlertEngine] Failed notification error for {sym}: {exc}")
+
+                print(f"[AlertEngine] Alert #{alert.id} for {sym}: FAILED after {elapsed_minutes:.2f}m. Continuous monitoring resumed.")
+
+
+
+
+def stop_alert_monitoring(alert_id: int, db: Session) -> Optional[Alert]:
+    """Stop exactly one alert and close any active prediction cycle."""
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        return None
+
+    now = datetime.utcnow()
+    start_time = alert.started_at or alert.created_at
+    duration_sec = int((now - start_time).total_seconds()) if start_time else 0
+
+    try:
+        snap = get_latest_market_snapshot(alert.symbol)
+        curr_price = float(snap.get("price", 0.0))
+        curr_change = float(snap.get("change_pct", 0.0))
+    except Exception:
+        curr_price = 0.0
+        curr_change = 0.0
+
+    pending_cycles = db.query(AlertHistory).filter(
+        AlertHistory.alert_id == alert.id,
+        AlertHistory.result == "PENDING"
+    ).all()
+
+    for pending in pending_cycles:
+        pending.result = "STOPPED"
+        pending.resolved_at = now
+        pending.stopped_at = now
+        pending.duration_seconds = int(
+            (now - (pending.triggered_at or pending.created_at)).total_seconds()
+        )
+        pending.outcome_notes = "Prediction cycle stopped manually by the user."
+
+    alert.status = "STOPPED"
+    alert.stopped_at = now
+    alert.early_warning_sent = False
+    alert.last_triggered_at = None
+    alert.last_event = NotificationEventType.MONITORING_STOPPED.value
+    db.commit()
+
+    try:
+        notification_manager.emit_monitoring_stopped(
+            alert=alert,
+            current_price=curr_price,
+            current_movement=curr_change,
+            db=db
+        )
+    except Exception as exc:
+        print(f"[AlertEngine] Stop notification error for {alert.symbol}: {exc}")
+
+    hist = AlertHistory(
+        alert_id=alert.id,
+        symbol=alert.symbol,
+        direction=alert.direction,
+        target_percent=alert.target_percent,
+        warning_minutes=alert.warning_minutes,
+        start_price=curr_price,
+        target_price=alert.target_price,
+        current_price=curr_price,
+        current_change=curr_change,
+        predicted_probability=alert.last_probability or 0.0,
+        created_at=alert.created_at,
+        started_at=start_time,
+        stopped_at=now,
+        resolved_at=now,
+        duration_seconds=duration_sec,
+        result="STOPPED",
+        outcome_notes=f"User manually stopped monitoring after {duration_sec // 60}m {duration_sec % 60}s."
+    )
+    db.add(hist)
+    db.commit()
+    db.refresh(alert)
+    return alert
+
+
+def get_performance_summary(db: Session) -> Dict[str, Any]:
+    all_history = db.query(AlertHistory).all()
+    total = len(all_history)
+    if total == 0:
+        return {
+            "total_alerts": 0, "total_evaluated": 0, "success_count": 0,
+            "failed_count": 0, "pending_count": 0, "stopped_count": 0,
+            "resolved_count": 0, "true_positives": 0, "false_positives": 0,
+            "hit_rate_pct": 0.0, "precision_pct": 0.0, "avg_probability": 0.0
+        }
+
+    success = sum(1 for h in all_history if h.result == "SUCCESS")
+    failed = sum(1 for h in all_history if h.result == "FAILED")
+    pending = sum(1 for h in all_history if h.result == "PENDING")
+    stopped = sum(1 for h in all_history if h.result == "STOPPED")
+    resolved = success + failed
+    hit_rate = (success / resolved * 100.0) if resolved else 0.0
+    avg_prob = sum(h.predicted_probability for h in all_history) / total * 100.0
+
+    return {
+        "total_alerts": total,
+        "total_evaluated": total,
+        "success_count": success,
+        "failed_count": failed,
+        "pending_count": pending,
+        "stopped_count": stopped,
+        "resolved_count": resolved,
+        "true_positives": success,
+        "false_positives": failed,
+        "hit_rate_pct": round(hit_rate, 1),
+        "precision_pct": round(hit_rate, 1),
+        "avg_probability": round(avg_prob, 1)
+    }

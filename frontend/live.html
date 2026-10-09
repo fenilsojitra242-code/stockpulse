@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StockPulse — Live Market & Intraday Price Visualization</title>
+  <meta name="description"
+    content="Clean, professional live stock market visualization dashboard with real-time intraday price charts, volume trends, and multi-range price analysis.">
+
+  <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
+
+  <!-- FontAwesome Icons & Chart.js -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="/static/style.css?v=8">
+</head>
+
+<body>
+
+  <!-- =========================================================================
+       1. FLOATING UPPER NAVIGATION MENU (MULTI-PAGE)
+       ========================================================================= -->
+  <nav class="floating-nav-wrapper" aria-label="Main Navigation">
+    <div class="floating-nav">
+      <!-- Brand Logo / Name -->
+      <a href="/live" class="nav-brand">
+        <span class="nav-logo-icon"><i class="fa-solid fa-chart-line"></i></span>
+        <span class="nav-brand-text">StockPulse</span>
+      </a>
+
+      <!-- Navigation Links to Separate Pages -->
+      <div class="nav-links" id="nav-links">
+        <a href="/live" class="nav-link active" id="nav-live"><i class="fa-solid fa-chart-line"></i> Live Market</a>
+        <a href="/monitoring" class="nav-link" id="nav-monitoring"><i class="fa-solid fa-sliders"></i> Monitoring</a>
+        <a href="/details" class="nav-link" id="nav-details"><i class="fa-solid fa-building-columns"></i> Stock
+          Details</a>
+        <a href="/history" class="nav-link" id="nav-history"><i class="fa-solid fa-clock-rotate-left"></i> History</a>
+        <a href="/notifications" class="nav-link" id="nav-notifications"><i class="fa-solid fa-bell"></i>
+          Notifications</a>
+
+        <!-- Live Market Status Pill -->
+        <div class="nav-market-status" id="nav-market-status">
+          <span class="pulse-dot green" id="market-status-dot"></span>
+          <span id="market-status-text">Market: OPEN</span>
+        </div>
+      </div>
+
+      <!-- Nav Actions -->
+      <div class="nav-actions">
+        <!-- Live Connection Status -->
+        <div class="nav-live-badge" id="nav-live-badge" title="Live market data streaming">
+          <span class="status-indicator-dot live" id="global-status-dot"></span>
+          <span class="live-badge-text" id="global-status-text">LIVE</span>
+        </div>
+
+        <!-- Mobile Menu Toggle Button -->
+        <button type="button" class="nav-mobile-toggle" id="btn-mobile-toggle" title="Toggle Navigation">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- MAIN APPLICATION CONTENT -->
+  <main class="dashboard-wrapper">
+    <div class="dashboard-container">
+
+      <!-- QUICK SEARCH & POPULAR EQUITIES BAR -->
+      <div class="search-bar-row" style="margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px;">
+        <div class="search-input-wrapper" style="position: relative;">
+          <i class="fa-solid fa-magnifying-glass search-icon"
+            style="position: absolute; left: 16px; top: 50%; transform: translateY(-50%); color: #64748b;"></i>
+          <input type="text" id="stock-search-input" class="control-input"
+            style="width: 100%; padding-left: 44px; height: 46px; border-radius: 12px; font-size: 14px;"
+            placeholder="Search stock symbol or name (e.g. TCS, INFY, RELIANCE, HDFCBANK, ICICIBANK)..."
+            autocomplete="off">
+          <div class="control-dropdown" id="search-dropdown"
+            style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); z-index: 100; max-height: 280px; overflow-y: auto;">
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <span style="font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase;">Popular:</span>
+          <button type="button" class="ticker-chip-btn active" data-symbol="TCS"
+            style="border: 1px solid #cbd5e1; background: #fff; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer;">TCS</button>
+          <button type="button" class="ticker-chip-btn" data-symbol="INFY"
+            style="border: 1px solid #cbd5e1; background: #fff; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer;">INFY</button>
+          <button type="button" class="ticker-chip-btn" data-symbol="RELIANCE"
+            style="border: 1px solid #cbd5e1; background: #fff; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer;">RELIANCE</button>
+          <button type="button" class="ticker-chip-btn" data-symbol="HDFCBANK"
+            style="border: 1px solid #cbd5e1; background: #fff; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer;">HDFCBANK</button>
+          <button type="button" class="ticker-chip-btn" data-symbol="ICICIBANK"
+            style="border: 1px solid #cbd5e1; background: #fff; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer;">ICICIBANK</button>
+          <button type="button" class="ticker-chip-btn" data-symbol="TATAMOTORS"
+            style="border: 1px solid #cbd5e1; background: #fff; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer;">TATAMOTORS</button>
+          <button type="button" class="ticker-chip-btn" data-symbol="OLX"
+            style="border: 1px solid #cbd5e1; background: #fff; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer;">OLX</button>
+          <button type="button" class="ticker-chip-btn" data-symbol="ZOMATO"
+            style="border: 1px solid #cbd5e1; background: #fff; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer;">ZOMATO</button>
+        </div>
+      </div>
+
+      <!-- =========================================================================
+           LIVE STOCK VISUALIZATION CARD (FOCUSED CLEAN PAGE VIEW)
+           ========================================================================= -->
+      <section class="card live-stock-section" id="live-stock-section" aria-label="Live Stock Visualization">
+
+        <!-- Header: Symbol, Name, Live Status, Timestamp -->
+        <div class="stock-card-header">
+          <div class="stock-identity">
+            <div class="symbol-badge-row">
+              <h1 class="stock-symbol" id="stock-symbol"><span class="buffering-loader"
+                  style="width: 80px; height: 32px;"></span></h1>
+              <span class="exchange-badge" id="stock-exchange"><span class="buffering-loader"
+                  style="width: 44px; height: 18px;"></span></span>
+            </div>
+            <div class="company-name" id="company-name"><span class="buffering-loader"
+                style="width: 220px; height: 18px;"></span></div>
+          </div>
+
+          <!-- Live Status Badge -->
+          <div class="live-status-block">
+            <div class="live-pill" id="live-status-pill">
+              <span class="pulse-dot green" id="live-status-dot"></span>
+              <span class="status-label" id="live-status-label"><span class="buffering-loader"
+                  style="width: 50px; height: 14px;"></span></span>
+            </div>
+            <div class="last-updated-text" id="last-updated-text">
+              Last updated: <span id="last-updated-time"><span class="buffering-loader"
+                  style="width: 70px; height: 14px;"></span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Price Section: Current Price & Absolute/Percentage Change -->
+        <div class="stock-price-section">
+          <div class="current-price" id="current-price"><span class="buffering-loader"
+              style="width: 140px; height: 38px;"></span></div>
+          <div class="price-change-row" id="price-change-row">
+            <span class="change-badge" id="price-change-badge">
+              <i class="fa-solid fa-arrow-trend-up" id="price-change-icon" style="display: none;"></i>
+              <span id="price-change-abs"><span class="buffering-loader"
+                  style="width: 55px; height: 18px;"></span></span>
+              <span id="price-change-pct"><span class="buffering-loader"
+                  style="width: 60px; height: 18px;"></span></span>
+            </span>
+            <span class="prev-close-ref" id="prev-close-ref"><span class="buffering-loader"
+                style="width: 130px; height: 16px;"></span></span>
+          </div>
+        </div>
+
+        <!-- Live SuperTrend Indicator HUD Strip -->
+        <div class="supertrend-config-card" id="live-supertrend-strip" style="margin-top: 14px; margin-bottom: 8px;">
+          <div class="supertrend-config-left">
+            <div class="supertrend-icon-box" id="live-st-icon-box">
+              <i class="fa-solid fa-chart-line"></i>
+            </div>
+            <div>
+              <h4 class="supertrend-title-text">
+                <span>SuperTrend Indicator (10, 3.0)</span>
+                <span class="supertrend-badge-pill buy" id="live-st-pill"><i class="fa-solid fa-arrow-trend-up"></i> BUY
+                  (BULLISH)</span>
+              </h4>
+              <p class="supertrend-desc-text" id="live-st-sub">
+                Support Line: <strong id="live-st-price">₹--.--</strong> · Gap to Line: <strong id="live-st-gap">--
+                  pts</strong>
+              </p>
+            </div>
+          </div>
+          <div class="supertrend-config-right">
+            <span class="supertrend-badge-pill approaching" id="live-st-hit-pill" style="display: none;">
+              <i class="fa-solid fa-bolt"></i> WITHIN 1 PT OF HIT!
+            </span>
+          </div>
+        </div>
+
+        <!-- Time Range Selector Bar & Chart Style Mode Toggle -->
+        <div class="chart-controls-bar">
+          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <div class="time-range-group" role="tablist" aria-label="Select Time Range">
+              <button type="button" class="range-btn active" data-range="1D" role="tab" aria-selected="true">1D</button>
+              <button type="button" class="range-btn" data-range="5D" role="tab" aria-selected="false">5D</button>
+              <button type="button" class="range-btn" data-range="1M" role="tab" aria-selected="false">1M</button>
+              <button type="button" class="range-btn" data-range="6M" role="tab" aria-selected="false">6M</button>
+              <button type="button" class="range-btn" data-range="1Y" role="tab" aria-selected="false">1Y</button>
+            </div>
+
+            <!-- Chart Type Mode Toggle Button (Line vs Candles) -->
+            <div class="chart-mode-toggle" id="chart-mode-toggle" role="tablist" aria-label="Select Chart Style">
+              <button type="button" class="chart-btn-mode" data-mode="line" id="btn-chart-mode-line"
+                title="Switch to Line Chart">
+                <i class="fa-solid fa-chart-line"></i> Line
+              </button>
+              <button type="button" class="chart-btn-mode active" data-mode="candles" id="btn-chart-mode-candles"
+                title="Switch to Candlestick Chart">
+                <i class="fa-solid fa-chart-simple"></i> Candle
+              </button>
+            </div>
+
+            <!-- SuperTrend Indicator Toggle Button -->
+            <button type="button" class="chart-btn-mode active" id="btn-toggle-supertrend-overlay"
+              title="Toggle SuperTrend overlay on chart"
+              style="display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; font-weight: 600; padding: 6px 12px; cursor: pointer;">
+              <i class="fa-solid fa-bolt" style="color: #f59e0b;"></i> SuperTrend Overlay
+            </button>
+
+            <!-- Candlestick Zoom & Pan Toolbar (Active in Candle Mode) -->
+            <div class="chart-zoom-controls" id="chart-zoom-controls"
+              style="display: none; align-items: center; gap: 2px; background: var(--bg-subtle); padding: 3px; border-radius: 8px; border: 1px solid var(--border-light);">
+              <button type="button" class="chart-btn-range" id="btn-zoom-in" title="Zoom In (Scroll Up)">
+                <i class="fa-solid fa-plus"></i>
+              </button>
+              <button type="button" class="chart-btn-range" id="btn-zoom-out" title="Zoom Out (Scroll Down)">
+                <i class="fa-solid fa-minus"></i>
+              </button>
+              <button type="button" class="chart-btn-range" id="btn-zoom-reset" title="Reset Zoom (Double click)">
+                <i class="fa-solid fa-arrows-rotate"></i> Reset
+              </button>
+            </div>
+          </div>
+
+          <div class="range-info" id="range-info">
+            Intraday 1-Minute Interval
+          </div>
+        </div>
+
+        <!-- Interactive Crosshair OHLC HUD Bar (Active in Candlestick Mode) -->
+        <div class="chart-ohlc-hud" id="live-ohlc-hud" style="display: none; margin-top: 10px; margin-bottom: 0;">
+          <div class="ohlc-item"><span class="ohlc-label">TIME</span> <span class="ohlc-val"
+              id="live-hud-time">--:--</span></div>
+          <div class="ohlc-item"><span class="ohlc-label">O</span> <span class="ohlc-val"
+              id="live-hud-open">₹--.--</span></div>
+          <div class="ohlc-item"><span class="ohlc-label">H</span> <span class="ohlc-val"
+              id="live-hud-high">₹--.--</span></div>
+          <div class="ohlc-item"><span class="ohlc-label">L</span> <span class="ohlc-val"
+              id="live-hud-low">₹--.--</span></div>
+          <div class="ohlc-item"><span class="ohlc-label">C</span> <span class="ohlc-val"
+              id="live-hud-close">₹--.--</span></div>
+          <div class="ohlc-item"><span class="ohlc-label">VOL</span> <span class="ohlc-val" id="live-hud-vol">--</span>
+          </div>
+          <div class="ohlc-item" id="live-hud-st-item"><span class="ohlc-label">SUPERTREND</span> <span class="ohlc-val" id="live-hud-st" style="font-weight: 700;">₹--.--</span>
+          </div>
+        </div>
+
+        <!-- Live Price Chart Container -->
+        <div class="chart-wrapper">
+          <!-- Loading Overlay -->
+          <div class="chart-loading-overlay" id="chart-loading-overlay">
+            <div class="spinner"></div>
+            <span>Fetching live market quotes...</span>
+          </div>
+
+          <!-- Unavailable State Container -->
+          <div class="unavailable-state" id="unavailable-state" style="display: none;">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+            <h3>Market data unavailable</h3>
+            <p>Could not retrieve market quotes from the configured provider for this symbol. Please check the symbol or
+              try again later.</p>
+          </div>
+
+          <!-- Line Chart (Chart.js Canvas) -->
+          <div class="canvas-container" id="canvas-container">
+            <canvas id="live-price-chart"></canvas>
+          </div>
+
+          <!-- Candlestick Chart Canvas Wrapper -->
+          <div class="live-candle-canvas-wrapper" id="live-candle-wrapper" style="display: none;">
+            <canvas id="live-candle-canvas"></canvas>
+          </div>
+        </div>
+
+        <!-- Candlestick Footer Legend -->
+        <div class="monitoring-chart-footer" id="live-candle-footer" style="display: none;">
+          <div class="chart-legend-items">
+            <span class="legend-chip"><span class="legend-sq green"></span> Bullish Candle</span>
+            <span class="legend-chip"><span class="legend-sq red"></span> Bearish Candle</span>
+            <span class="legend-chip"><span class="legend-line blue"></span> Live Price</span>
+            <span class="legend-chip" id="legend-chip-st-buy"><span class="legend-line" style="background: #10b981; height: 3px; border-radius: 2px;"></span> SuperTrend (BUY)</span>
+            <span class="legend-chip" id="legend-chip-st-sell"><span class="legend-line" style="background: #ef4444; height: 3px; border-radius: 2px;"></span> SuperTrend (SELL)</span>
+          </div>
+          <span class="chart-footer-note" id="live-candle-zoom-hint">Scroll wheel to zoom • Drag to pan • Double-click
+            to reset</span>
+        </div>
+
+      </section>
+
+      <!-- QUICK JUMP CARDS TO SEPARATE SECTIONS -->
+      <div
+        style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 24px;">
+        <a href="/monitoring"
+          style="text-decoration: none; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); display: flex; align-items: center; gap: 16px; transition: all 0.2s ease;">
+          <div
+            style="width: 44px; height: 44px; border-radius: 10px; background: #eff6ff; color: #2563eb; display: flex; align-items: center; justify-content: center; font-size: 20px;">
+            <i class="fa-solid fa-sliders"></i>
+          </div>
+          <div>
+            <h4 style="font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 2px;">Monitoring Engine</h4>
+            <p style="font-size: 12px; color: #64748b;">Set dynamic % movement alerts &amp; windows</p>
+          </div>
+        </a>
+
+        <a href="/details"
+          style="text-decoration: none; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); display: flex; align-items: center; gap: 16px; transition: all 0.2s ease;">
+          <div
+            style="width: 44px; height: 44px; border-radius: 10px; background: #f0fdf4; color: #16a34a; display: flex; align-items: center; justify-content: center; font-size: 20px;">
+            <i class="fa-solid fa-building-columns"></i>
+          </div>
+          <div>
+            <h4 style="font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 2px;">Stock Details &amp; Stats
+            </h4>
+            <p style="font-size: 12px; color: #64748b;">52W High/Low, Volume, Market Cap &amp; Status</p>
+          </div>
+        </a>
+
+        <a href="/history"
+          style="text-decoration: none; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); display: flex; align-items: center; gap: 16px; transition: all 0.2s ease;">
+          <div
+            style="width: 44px; height: 44px; border-radius: 10px; background: #faf5ff; color: #9333ea; display: flex; align-items: center; justify-content: center; font-size: 20px;">
+            <i class="fa-solid fa-clock-rotate-left"></i>
+          </div>
+          <div>
+            <h4 style="font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 2px;">Alert History</h4>
+            <p style="font-size: 12px; color: #64748b;">Verified trigger outcomes &amp; hit rates</p>
+          </div>
+        </a>
+      </div>
+
+    </div> <!-- /dashboard-container -->
+  </main>
+
+  <!-- SETTINGS MODAL -->
+  <div class="modal-backdrop" id="settings-modal-backdrop" style="display: none;">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-icon-badge"><i class="fa-solid fa-gear"></i></div>
+        <div class="modal-header-titles">
+          <h3 class="modal-title">Settings &amp; System Preferences</h3>
+          <p class="modal-subtitle">Live market connection &amp; refresh polling rate</p>
+        </div>
+        <button type="button" class="modal-close-btn" id="btn-close-settings"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-group">
+          <label class="settings-label">Live Polling Rate</label>
+          <p class="settings-desc">Frequency of live market quotes refresh.</p>
+          <div class="select-wrapper">
+            <select id="setting-polling-rate" class="control-select">
+              <option value="3000">3 Seconds (Fast)</option>
+              <option value="5000" selected>5 Seconds (Default)</option>
+              <option value="10000">10 Seconds (Relaxed)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-modal-dismiss" id="btn-dismiss-settings">Cancel</button>
+        <button type="button" class="btn-modal-acknowledge" id="btn-save-settings">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ALERT SOUND & PROFILE MODAL -->
+  <div class="modal-backdrop" id="login-modal-backdrop" style="display: none;">
+    <div class="modal-card modal-login-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-icon-badge" style="background: rgba(37, 99, 235, 0.12); color: #2563eb;"><i
+            class="fa-solid fa-volume-high"></i></div>
+        <div class="modal-header-titles">
+          <h3 class="modal-title">Alert Sound &amp; Profile Settings</h3>
+          <p class="modal-subtitle">Manage system popup notifications and sound chime preferences</p>
+        </div>
+        <button type="button" class="modal-close-btn" id="btn-close-login-modal"><i
+            class="fa-solid fa-xmark"></i></button>
+      </div>
+      <form id="form-user-login" class="modal-body login-modal-body">
+        <div class="login-active-card" id="login-active-card" style="display: none;">
+          <div class="user-avatar-circle">T</div>
+          <div class="user-avatar-info">
+            <strong id="active-user-name">Trader</strong>
+            <span id="active-user-email">Popup Alerts Active</span>
+            <span class="user-status-tag"><i class="fa-solid fa-circle-check text-green"></i> Popup Active</span>
+          </div>
+        </div>
+        <div class="settings-group">
+          <label class="settings-label" for="login-name-input">Trader Handle / Name</label>
+          <input type="text" id="login-name-input" class="form-input" placeholder="e.g. Pro Trader"
+            style="width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px;">
+        </div>
+        <div class="settings-group">
+          <label class="settings-label">Sound Test &amp; Verification</label>
+          <button type="button" onclick="StockPulse.testNotificationSound()" class="btn-primary-action"
+            style="width: 100%; justify-content: center; height: 38px; font-size: 13px;">
+            <i class="fa-solid fa-play"></i> Play Test Audio Chime &amp; Popup
+          </button>
+        </div>
+        <div class="login-feedback-msg" id="login-feedback-msg" style="display: none;"></div>
+        <div class="modal-footer login-modal-footer">
+          <button type="button" class="btn-logout" id="btn-logout-user" style="display: none;"><i
+              class="fa-solid fa-arrow-right-from-bracket"></i> Reset Profile</button>
+          <button type="button" class="btn-modal-dismiss" id="btn-dismiss-login-modal">Cancel</button>
+          <button type="submit" class="btn-modal-acknowledge" id="btn-submit-login"><i class="fa-solid fa-check"></i>
+            Save Settings</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <footer class="app-footer">
+    <div class="footer-container">
+      <span>StockPulse &bull; Dedicated Live Market &amp; Intraday Price Visualization</span>
+      <span class="footer-refresh-note">Auto-polling live quotes every 5 seconds</span>
+    </div>
+  </footer>
+
+  <!-- Application Logic -->
+  <script src="/static/common.js?v=8"></script>
+  <script src="/static/live.js?v=8"></script>
+</body>
+
+</html>

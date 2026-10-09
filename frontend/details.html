@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StockPulse — Complete Stock Details & Key Market Statistics</title>
+  <meta name="description" content="Official session metrics, valuation multiples, volume depth, and 52-week position directly from exchange.">
+
+  <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="/static/style.css?v=8">
+</head>
+<body>
+
+  <!-- =========================================================================
+       1. FLOATING UPPER NAVIGATION MENU
+       ========================================================================= -->
+  <nav class="floating-nav-wrapper" aria-label="Main Navigation">
+    <div class="floating-nav">
+      <!-- Brand Logo / Name -->
+      <a href="/live" class="nav-brand">
+        <span class="nav-logo-icon"><i class="fa-solid fa-chart-line"></i></span>
+        <span class="nav-brand-text">StockPulse</span>
+      </a>
+
+      <!-- Navigation Links -->
+      <div class="nav-links" id="nav-links">
+        <a href="/live" class="nav-link" id="nav-live"><i class="fa-solid fa-chart-line"></i> Live Market</a>
+        <a href="/monitoring" class="nav-link" id="nav-monitoring"><i class="fa-solid fa-sliders"></i> Monitoring</a>
+        <a href="/details" class="nav-link active" id="nav-details"><i class="fa-solid fa-building-columns"></i> Stock Details</a>
+        <a href="/history" class="nav-link" id="nav-history"><i class="fa-solid fa-clock-rotate-left"></i> History</a>
+        <a href="/notifications" class="nav-link" id="nav-notifications"><i class="fa-solid fa-bell"></i> Notifications</a>
+        
+        <!-- Live Market Status Pill -->
+        <div class="nav-market-status" id="nav-market-status">
+          <span class="pulse-dot green" id="market-status-dot"></span>
+          <span id="market-status-text">Market: OPEN</span>
+        </div>
+      </div>
+
+      <!-- Nav Actions -->
+      <div class="nav-actions">
+        <div class="nav-live-badge" id="nav-live-badge" title="Live connection status">
+          <span class="status-indicator-dot live" id="global-status-dot"></span>
+          <span class="live-badge-text" id="global-status-text">LIVE</span>
+        </div>
+
+        <button type="button" class="nav-mobile-toggle" id="btn-mobile-toggle" title="Toggle Navigation">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- MAIN APPLICATION CONTENT -->
+  <main class="dashboard-wrapper">
+    <div class="dashboard-container">
+
+      <!-- PAGE HERO HEADER WITH STOCK PICKER -->
+      <div class="page-hero-header">
+        <div class="page-hero-title-group">
+          <span class="page-hero-badge"><i class="fa-solid fa-building-columns"></i> Market Statistics</span>
+          <h1 class="page-hero-title">Stock Details &amp; Key Metrics</h1>
+          <p class="page-hero-desc">Official session metrics, volume depth, range positioning, and valuation from the exchange.</p>
+        </div>
+
+        <!-- Stock Picker Dropdown -->
+        <div class="page-stock-picker">
+          <span class="page-stock-picker-label"><i class="fa-solid fa-magnifying-glass"></i> Select Stock:</span>
+          <select id="details-stock-select" class="page-stock-select">
+            <option value="TCS">TCS — Tata Consultancy Services</option>
+            <option value="INFY">INFY — Infosys Ltd</option>
+            <option value="RELIANCE">RELIANCE — Reliance Industries</option>
+            <option value="HDFCBANK">HDFCBANK — HDFC Bank Ltd</option>
+            <option value="ICICIBANK">ICICIBANK — ICICI Bank Ltd</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- STOCK IDENTITY & LIVE PRICE SUMMARY CARD -->
+      <section class="card" style="margin-bottom: 24px; padding: 24px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;">
+          <div>
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
+              <h2 id="details-symbol" style="font-size: 28px; font-weight: 800; color: #0f172a; margin: 0;"><span class="buffering-loader" style="width: 80px; height: 28px;"></span></h2>
+              <span id="details-exchange" style="background: #e2e8f0; color: #334155; font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 6px;"><span class="buffering-loader" style="width: 44px; height: 16px;"></span></span>
+              <span id="details-trading-status" style="background: #f1f5f9; color: #64748b; font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 6px;"><span class="buffering-loader" style="width: 75px; height: 16px;"></span></span>
+            </div>
+            <p id="details-company-name" style="font-size: 15px; color: #64748b; margin: 0;"><span class="buffering-loader" style="width: 220px; height: 18px;"></span></p>
+          </div>
+
+          <div style="text-align: right;">
+            <div id="details-current-price" style="font-size: 32px; font-weight: 800; font-family: var(--font-mono); color: #0f172a;"><span class="buffering-loader" style="width: 130px; height: 34px;"></span></div>
+            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 2px;">
+              <span id="details-price-change-badge" class="change-badge up">
+                <span id="details-price-change-text"><span class="buffering-loader" style="width: 100px; height: 18px;"></span></span>
+              </span>
+              <span id="details-prev-close-ref" style="font-size: 12px; color: #64748b;"><span class="buffering-loader" style="width: 120px; height: 15px;"></span></span>
+            </div>
+            <span style="font-size: 11px; color: #94a3b8;">Updated: <span id="details-last-updated"><span class="buffering-loader" style="width: 70px; height: 14px;"></span></span></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- KEY MARKET STATISTICS GRID -->
+      <section class="card stock-details-section" aria-label="Stock Details">
+        <div class="details-header" style="margin-bottom: 20px;">
+          <h3 class="details-heading" style="font-size: 18px; font-weight: 800;">Official Exchange Session Metrics</h3>
+          <span class="details-sub">All figures synchronized with primary liquidity provider</span>
+        </div>
+
+        <div class="statistics-grid">
+          <!-- Open -->
+          <div class="stat-card">
+            <span class="stat-label">Open Price</span>
+            <span class="stat-value" id="stat-open"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+
+          <!-- Previous Close -->
+          <div class="stat-card">
+            <span class="stat-label">Previous Close</span>
+            <span class="stat-value" id="stat-prev-close"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+
+          <!-- Day High -->
+          <div class="stat-card">
+            <span class="stat-label">Day High</span>
+            <span class="stat-value high" id="stat-day-high"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+
+          <!-- Day Low -->
+          <div class="stat-card">
+            <span class="stat-label">Day Low</span>
+            <span class="stat-value low" id="stat-day-low"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+
+          <!-- Intraday Range -->
+          <div class="stat-card">
+            <span class="stat-label">Day Range Spread</span>
+            <span class="stat-value" id="stat-day-range"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+            <div class="tech-progress-bar-wrap">
+              <div class="tech-progress-bar-fill" id="stat-day-range-fill" style="width: 50%;"></div>
+            </div>
+          </div>
+
+          <!-- Volume -->
+          <div class="stat-card">
+            <span class="stat-label">Today's Volume</span>
+            <span class="stat-value" id="stat-volume"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+
+          <!-- 20-Day Avg Volume -->
+          <div class="stat-card">
+            <span class="stat-label">20-Day Avg Volume</span>
+            <span class="stat-value" id="stat-avg-vol"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+
+          <!-- 52W High -->
+          <div class="stat-card">
+            <span class="stat-label">52-Week High</span>
+            <span class="stat-value high" id="stat-52w-high"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+
+          <!-- 52W Low -->
+          <div class="stat-card">
+            <span class="stat-label">52-Week Low</span>
+            <span class="stat-value low" id="stat-52w-low"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+
+          <!-- 52W Range Spread -->
+          <div class="stat-card">
+            <span class="stat-label">52W Position Range</span>
+            <span class="stat-value" id="stat-52w-range"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+            <div class="tech-progress-bar-wrap">
+              <div class="tech-progress-bar-fill" id="stat-52w-range-fill" style="width: 50%; background: #10b981;"></div>
+            </div>
+          </div>
+
+          <!-- Market Cap -->
+          <div class="stat-card">
+            <span class="stat-label">Market Capitalization</span>
+            <span class="stat-value" id="stat-market-cap"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+
+          <!-- Exchange -->
+          <div class="stat-card">
+            <span class="stat-label">Exchange &amp; Currency</span>
+            <span class="stat-value" id="stat-currency"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- NAVIGATION SHORTCUTS -->
+      <div style="display: flex; gap: 12px; margin-top: 24px; flex-wrap: wrap;">
+        <a href="/live" class="btn-more-options" style="background: #fff; border: 1px solid #cbd5e1; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 700; color: #0f172a; display: inline-flex; align-items: center; gap: 8px;">
+          <i class="fa-solid fa-chart-line text-blue"></i> View Live Price Chart
+        </a>
+        <a href="/monitoring" class="btn-more-options" style="background: #fff; border: 1px solid #cbd5e1; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 700; color: #0f172a; display: inline-flex; align-items: center; gap: 8px;">
+          <i class="fa-solid fa-sliders text-blue"></i> Set Monitoring Alert
+        </a>
+        <a href="/history" class="btn-more-options" style="background: #fff; border: 1px solid #cbd5e1; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 700; color: #0f172a; display: inline-flex; align-items: center; gap: 8px;">
+          <i class="fa-solid fa-clock-rotate-left text-blue"></i> View Alert History
+        </a>
+      </div>
+
+    </div> <!-- /dashboard-container -->
+  </main>
+
+  <!-- SETTINGS MODAL -->
+  <div class="modal-backdrop" id="settings-modal-backdrop" style="display: none;">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-icon-badge"><i class="fa-solid fa-gear"></i></div>
+        <div class="modal-header-titles">
+          <h3 class="modal-title">Settings &amp; System Preferences</h3>
+        </div>
+        <button type="button" class="modal-close-btn" id="btn-close-settings"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-group">
+          <label class="settings-label">Live Polling Rate</label>
+          <div class="select-wrapper">
+            <select id="setting-polling-rate" class="control-select">
+              <option value="5000" selected>5 Seconds (Default)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-modal-dismiss" id="btn-dismiss-settings">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ALERT SOUND & PROFILE MODAL -->
+  <div class="modal-backdrop" id="login-modal-backdrop" style="display: none;">
+    <div class="modal-card modal-login-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-icon-badge" style="background: rgba(37, 99, 235, 0.12); color: #2563eb;"><i class="fa-solid fa-volume-high"></i></div>
+        <div class="modal-header-titles">
+          <h3 class="modal-title">Alert Sound &amp; Profile Settings</h3>
+          <p class="modal-subtitle">Manage system popup notifications and sound chime preferences</p>
+        </div>
+        <button type="button" class="modal-close-btn" id="btn-close-login-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <form id="form-user-login" class="modal-body login-modal-body">
+        <div class="login-active-card" id="login-active-card" style="display: none;">
+          <div class="user-avatar-circle">T</div>
+          <div class="user-avatar-info">
+            <strong id="active-user-name">Trader</strong>
+            <span id="active-user-email">Popup Alerts Active</span>
+            <span class="user-status-tag"><i class="fa-solid fa-circle-check text-green"></i> Popup Active</span>
+          </div>
+        </div>
+        <div class="settings-group">
+          <label class="settings-label" for="login-name-input">Trader Handle / Name</label>
+          <input type="text" id="login-name-input" class="form-input" placeholder="e.g. Pro Trader" style="width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px;">
+        </div>
+        <div class="settings-group">
+          <label class="settings-label">Sound Test &amp; Verification</label>
+          <button type="button" onclick="StockPulse.testNotificationSound()" class="btn-primary-action"
+            style="width: 100%; justify-content: center; height: 38px; font-size: 13px;">
+            <i class="fa-solid fa-play"></i> Play Test Audio Chime &amp; Popup
+          </button>
+        </div>
+        <div class="login-feedback-msg" id="login-feedback-msg" style="display: none;"></div>
+        <div class="modal-footer login-modal-footer">
+          <button type="button" class="btn-logout" id="btn-logout-user" style="display: none;"><i class="fa-solid fa-arrow-right-from-bracket"></i> Reset Profile</button>
+          <button type="button" class="btn-modal-dismiss" id="btn-dismiss-login-modal">Cancel</button>
+          <button type="submit" class="btn-modal-acknowledge" id="btn-submit-login"><i class="fa-solid fa-check"></i> Save Settings</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <footer class="app-footer">
+    <div class="footer-container">
+      <span>StockPulse &bull; Dedicated Stock Details &amp; Market Statistics</span>
+      <span class="footer-refresh-note">Synchronized with exchange feed</span>
+    </div>
+  </footer>
+
+  <!-- Application Logic -->
+  <script src="/static/common.js?v=8"></script>
+  <script src="/static/details.js?v=8"></script>
+</body>
+</html>

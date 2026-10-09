@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StockPulse — Alert Trigger History & Outcome Verification</title>
+  <meta name="description" content="Complete audit trail of triggered probabilistic early-warning alerts with actual outcome verification and KPI hit rates.">
+
+  <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="/static/style.css?v=8">
+</head>
+<body>
+
+  <!-- =========================================================================
+       1. FLOATING UPPER NAVIGATION MENU
+       ========================================================================= -->
+  <nav class="floating-nav-wrapper" aria-label="Main Navigation">
+    <div class="floating-nav">
+      <!-- Brand Logo / Name -->
+      <a href="/live" class="nav-brand">
+        <span class="nav-logo-icon"><i class="fa-solid fa-chart-line"></i></span>
+        <span class="nav-brand-text">StockPulse</span>
+      </a>
+
+      <!-- Navigation Links -->
+      <div class="nav-links" id="nav-links">
+        <a href="/live" class="nav-link" id="nav-live"><i class="fa-solid fa-chart-line"></i> Live Market</a>
+        <a href="/monitoring" class="nav-link" id="nav-monitoring"><i class="fa-solid fa-sliders"></i> Monitoring</a>
+        <a href="/details" class="nav-link" id="nav-details"><i class="fa-solid fa-building-columns"></i> Stock Details</a>
+        <a href="/history" class="nav-link active" id="nav-history"><i class="fa-solid fa-clock-rotate-left"></i> History</a>
+        <a href="/notifications" class="nav-link" id="nav-notifications"><i class="fa-solid fa-bell"></i> Notifications</a>
+        
+        <!-- Live Market Status Pill -->
+        <div class="nav-market-status" id="nav-market-status">
+          <span class="pulse-dot green" id="market-status-dot"></span>
+          <span id="market-status-text">Market: OPEN</span>
+        </div>
+      </div>
+
+      <!-- Nav Actions -->
+      <div class="nav-actions">
+        <div class="nav-live-badge" id="nav-live-badge" title="Live connection status">
+          <span class="status-indicator-dot live" id="global-status-dot"></span>
+          <span class="live-badge-text" id="global-status-text">LIVE</span>
+        </div>
+
+        <button type="button" class="nav-mobile-toggle" id="btn-mobile-toggle" title="Toggle Navigation">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- MAIN APPLICATION CONTENT -->
+  <main class="dashboard-wrapper">
+    <div class="dashboard-container">
+
+      <!-- PAGE HERO HEADER -->
+      <div class="page-hero-header">
+        <div class="page-hero-title-group">
+          <span class="page-hero-badge"><i class="fa-solid fa-clock-rotate-left"></i> Audit Trail</span>
+          <h1 class="page-hero-title">Alert History &amp; Outcome Verification</h1>
+          <p class="page-hero-desc">Independent audit records of every triggered probabilistic early-warning alert and its final market outcome.</p>
+        </div>
+      </div>
+
+      <!-- KPI PERFORMANCE CARDS BAR -->
+      <div class="history-kpi-bar">
+        <div class="history-kpi-card">
+          <div class="history-kpi-icon blue"><i class="fa-solid fa-bolt"></i></div>
+          <div class="history-kpi-data">
+            <span class="history-kpi-val" id="kpi-total-alerts">0</span>
+            <span class="history-kpi-label">Total Evaluated Alerts</span>
+          </div>
+        </div>
+
+        <div class="history-kpi-card">
+          <div class="history-kpi-icon green"><i class="fa-solid fa-bullseye"></i></div>
+          <div class="history-kpi-data">
+            <span class="history-kpi-val" id="kpi-hit-rate">0%</span>
+            <span class="history-kpi-label">Empirical Hit Rate</span>
+          </div>
+        </div>
+
+        <div class="history-kpi-card">
+          <div class="history-kpi-icon purple"><i class="fa-solid fa-circle-check"></i></div>
+          <div class="history-kpi-data">
+            <span class="history-kpi-val" id="kpi-true-pos">0</span>
+            <span class="history-kpi-label">True Positive Hits</span>
+          </div>
+        </div>
+
+        <div class="history-kpi-card">
+          <div class="history-kpi-icon amber"><i class="fa-solid fa-circle-xmark"></i></div>
+          <div class="history-kpi-data">
+            <span class="history-kpi-val" id="kpi-false-alarms">0</span>
+            <span class="history-kpi-label">False Positive Alarms</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- FILTERS & ACTIONS BAR -->
+      <div class="history-controls-bar">
+        <div class="history-filters-group">
+          <select id="history-filter-result" class="history-filter-select">
+            <option value="ALL">All Outcomes</option>
+            <option value="SUCCESS">Success / Hit</option>
+            <option value="FAILED">Failed</option>
+            <option value="PENDING">Pending Verification</option>
+            <option value="STOPPED">Stopped</option>
+          </select>
+
+          <input type="text" id="history-search-input" class="history-search-input" placeholder="Search by stock or #ID...">
+        </div>
+
+        <div style="display: flex; gap: 8px;">
+          <button type="button" class="btn-sm btn-outline" id="btn-refresh-history" style="background: #fff; border: 1px solid #cbd5e1; padding: 7px 14px; border-radius: 8px; font-weight: 600; cursor: pointer;">
+            <i class="fa-solid fa-rotate"></i> Refresh
+          </button>
+          <button type="button" class="btn-sm btn-outline" id="btn-clear-history" style="background: #fee2e2; border: 1px solid #fca5a5; color: #b91c1c; padding: 7px 14px; border-radius: 8px; font-weight: 600; cursor: pointer;">
+            <i class="fa-regular fa-trash-can"></i> Clear History
+          </button>
+        </div>
+      </div>
+
+      <!-- HISTORY DATA TABLE -->
+      <div class="history-table-wrapper">
+        <table class="history-data-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Stock</th>
+              <th>Target %</th>
+              <th>Direction</th>
+              <th>Triggered Price</th>
+              <th>Target Price</th>
+              <th>Triggered At</th>
+              <th>Outcome Status</th>
+              <th>Dispatch Channel</th>
+            </tr>
+          </thead>
+          <tbody id="history-table-body">
+            <!-- Populated via history.js -->
+          </tbody>
+        </table>
+
+        <!-- Empty state placeholder -->
+        <div id="history-empty-state" style="display: none; padding: 48px 24px; text-align: center; color: #64748b;">
+          <i class="fa-solid fa-clock-rotate-left" style="font-size: 36px; color: #cbd5e1; margin-bottom: 12px; display: block;"></i>
+          <h4 style="font-size: 16px; font-weight: 700; color: #334155; margin-bottom: 4px;">No Alert History Yet</h4>
+          <p style="font-size: 13px; max-width: 420px; margin: 0 auto;">Triggered early-warning alerts and their verified market outcomes will appear in this audit log.</p>
+        </div>
+      </div>
+
+      <!-- NAVIGATION SHORTCUTS -->
+      <div style="display: flex; gap: 12px; margin-top: 24px; flex-wrap: wrap;">
+        <a href="/live" class="btn-more-options" style="background: #fff; border: 1px solid #cbd5e1; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 700; color: #0f172a; display: inline-flex; align-items: center; gap: 8px;">
+          <i class="fa-solid fa-chart-line text-blue"></i> View Live Chart
+        </a>
+        <a href="/monitoring" class="btn-more-options" style="background: #fff; border: 1px solid #cbd5e1; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 700; color: #0f172a; display: inline-flex; align-items: center; gap: 8px;">
+          <i class="fa-solid fa-sliders text-blue"></i> Configure New Alert
+        </a>
+      </div>
+
+    </div> <!-- /dashboard-container -->
+  </main>
+
+  <!-- SETTINGS MODAL -->
+  <div class="modal-backdrop" id="settings-modal-backdrop" style="display: none;">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-icon-badge"><i class="fa-solid fa-gear"></i></div>
+        <div class="modal-header-titles">
+          <h3 class="modal-title">Settings</h3>
+        </div>
+        <button type="button" class="modal-close-btn" id="btn-close-settings"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 13px; color: #64748b;">Settings preferences configured in main menu.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-modal-dismiss" id="btn-dismiss-settings">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ALERT SOUND & PROFILE MODAL -->
+  <div class="modal-backdrop" id="login-modal-backdrop" style="display: none;">
+    <div class="modal-card modal-login-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-icon-badge" style="background: rgba(37, 99, 235, 0.12); color: #2563eb;"><i class="fa-solid fa-volume-high"></i></div>
+        <div class="modal-header-titles">
+          <h3 class="modal-title">Alert Sound &amp; Profile Settings</h3>
+          <p class="modal-subtitle">Manage system popup notifications and sound chime preferences</p>
+        </div>
+        <button type="button" class="modal-close-btn" id="btn-close-login-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <form id="form-user-login" class="modal-body login-modal-body">
+        <div class="settings-group">
+          <label class="settings-label" for="login-name-input">Trader Handle / Name</label>
+          <input type="text" id="login-name-input" class="form-input" placeholder="e.g. Pro Trader" style="width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px;">
+        </div>
+        <div class="settings-group">
+          <label class="settings-label">Sound Test &amp; Verification</label>
+          <button type="button" onclick="StockPulse.testNotificationSound()" class="btn-primary-action"
+            style="width: 100%; justify-content: center; height: 38px; font-size: 13px;">
+            <i class="fa-solid fa-play"></i> Play Test Audio Chime &amp; Popup
+          </button>
+        </div>
+        <div class="modal-footer login-modal-footer">
+          <button type="button" class="btn-modal-dismiss" id="btn-dismiss-login-modal">Cancel</button>
+          <button type="submit" class="btn-modal-acknowledge" id="btn-submit-login">Save Settings</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <footer class="app-footer">
+    <div class="footer-container">
+      <span>StockPulse &bull; Dedicated Alert History &amp; Outcome Verification</span>
+      <span class="footer-refresh-note">Permanent SQLite / PostgreSQL audit store</span>
+    </div>
+  </footer>
+
+  <!-- Application Logic -->
+  <script src="/static/common.js?v=8"></script>
+  <script src="/static/history.js?v=8"></script>
+</body>
+</html>

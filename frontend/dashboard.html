@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StockPulse — Live Stock Monitoring & Dynamic Alert Dashboard</title>
+  <meta name="description" content="Professional single-page real-time stock monitoring dashboard with dynamic percentage targets, custom horizons, technical analysis, and machine learning early warnings.">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  
+  <!-- Icons & Chart.js -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="dark-theme">
+
+  <!-- TOP HEADER SECTION -->
+  <header class="navbar">
+    <div class="nav-left">
+      <div class="brand">
+        <span class="pulse-indicator"></span>
+        <i class="fa-solid fa-bolt-lightning brand-icon"></i>
+        <div class="brand-text">
+          <span class="brand-name">STOCK<span class="gradient-text">PULSE</span></span>
+          <span class="brand-tag">Early-Warning & Monitoring</span>
+        </div>
+      </div>
+
+      <div class="market-status-pill" id="market-status-pill">
+        <span class="status-dot green" id="market-status-dot"></span>
+        <span id="market-status-text">Market: OPEN</span>
+      </div>
+
+      <div class="market-time-pill" id="market-time-pill">
+        <i class="fa-regular fa-clock"></i>
+        <span id="market-time-text">Loading time...</span>
+      </div>
+    </div>
+
+    <div class="nav-right">
+      <div class="live-connection-badge">
+        <span class="live-dot"></span>
+        <span>Live System Active</span>
+      </div>
+      <button class="btn-sm btn-accent" id="btn-open-simulation" title="Test Alerts with Simulated Spikes">
+        <i class="fa-solid fa-flask"></i> Simulation Lab
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN SINGLE-PAGE CONTAINER -->
+  <div class="page-container">
+
+    <!-- 1. STOCK SEARCH & QUICK SELECTOR -->
+    <section class="section search-section">
+      <div class="search-bar-row">
+        <div class="search-input-wrapper">
+          <i class="fa-solid fa-magnifying-glass search-icon"></i>
+          <input type="text" id="stock-search-input" class="search-input" placeholder="Search stock symbol or company name (e.g. TCS, INFY, RELIANCE, HDFCBANK)..." autocomplete="off">
+          <div class="search-dropdown" id="search-dropdown"></div>
+        </div>
+        <button class="btn btn-outline btn-add-custom" id="btn-open-custom-modal">
+          <i class="fa-solid fa-plus"></i> Add Custom Stock
+        </button>
+      </div>
+
+      <!-- Quick Select Chips -->
+      <div class="popular-chips-bar" id="popular-chips-bar">
+        <span class="chips-label">Popular Equities:</span>
+        <div class="chips-list" id="chips-list">
+          <!-- Populated via JavaScript -->
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. TWO-COLUMN HERO: LIVE STOCK INFORMATION & DEDICATED ACTIVE MONITORING SIDEBAR -->
+    <section class="section live-monitoring-split">
+      
+      <!-- LEFT SUB-COLUMN: LIVE STOCK INFORMATION & PRICE CHART -->
+      <div class="card live-stock-card">
+        <div class="live-stock-header">
+          <div class="stock-title-info">
+            <div class="sym-badge-row">
+              <h1 class="stock-symbol-headline" id="live-symbol"><span class="buffering-loader" style="width: 80px; height: 32px;"></span></h1>
+              <span class="exchange-tag" id="live-exchange"><span class="buffering-loader" style="width: 44px; height: 18px;"></span></span>
+              <span class="status-chip" id="live-market-badge">LIVE 1M</span>
+            </div>
+            <div class="stock-company-name" id="live-name"><span class="buffering-loader" style="width: 220px; height: 18px;"></span></div>
+          </div>
+
+          <div class="stock-price-block">
+            <div class="price-large" id="live-price"><span class="buffering-loader" style="width: 140px; height: 38px;"></span></div>
+            <div class="price-change-large positive" id="live-change">
+              <span id="live-change-amount"><span class="buffering-loader" style="width: 55px; height: 18px;"></span></span>
+              <span id="live-change-pct"><span class="buffering-loader" style="width: 60px; height: 18px;"></span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Metric Bar -->
+        <div class="quick-metric-bar">
+          <div class="metric-pill">
+            <span class="pill-label">Open</span>
+            <span class="pill-val" id="quick-open"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+          <div class="metric-pill">
+            <span class="pill-label">Day High</span>
+            <span class="pill-val text-green" id="quick-high"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+          <div class="metric-pill">
+            <span class="pill-label">Day Low</span>
+            <span class="pill-val text-red" id="quick-low"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+          <div class="metric-pill">
+            <span class="pill-label">Volume</span>
+            <span class="pill-val" id="quick-vol"><span class="buffering-loader" style="width: 55px; height: 16px;"></span></span>
+          </div>
+          <div class="metric-pill">
+            <span class="pill-label">Prev Close</span>
+            <span class="pill-val" id="quick-prev-close"><span class="buffering-loader" style="width: 65px; height: 16px;"></span></span>
+          </div>
+        </div>
+
+        <!-- LIVE PRICE CHART -->
+        <div class="chart-wrapper">
+          <div class="chart-toolbar">
+            <div class="chart-title"><i class="fa-solid fa-chart-line"></i> LIVE 1-MINUTE INTRADAY PRICE CHART</div>
+            <div class="chart-actions">
+              <span class="update-pulse" id="chart-refresh-indicator">Auto-refreshing</span>
+            </div>
+          </div>
+          <div class="chart-canvas-container">
+            <canvas id="liveChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT SUB-COLUMN: DEDICATED ACTIVE MONITORING SIDE PANEL -->
+      <aside class="card side-monitoring-panel">
+        <div class="side-panel-header">
+          <div class="side-title">
+            <i class="fa-solid fa-radar text-accent"></i>
+            <h3>ACTIVE MONITORING</h3>
+          </div>
+          <span class="count-badge" id="active-monitor-count">0 ACTIVE</span>
+        </div>
+
+        <div class="side-monitor-container" id="side-monitor-cards">
+          <!-- Active Monitoring Cards Rendered Here Dynamically -->
+          <div class="no-active-state" id="no-active-state">
+            <div class="radar-scan-icon">
+              <i class="fa-solid fa-satellite-dish"></i>
+            </div>
+            <h4>No Active Monitoring</h4>
+            <p>Configure dynamic parameters below and click <strong>START MONITORING</strong> to launch real-time surveillance for any stock.</p>
+          </div>
+        </div>
+      </aside>
+
+    </section>
+
+    <!-- 3. ALERT CONFIGURATION SECTION -->
+    <section class="card section alert-config-section">
+      <div class="card-header">
+        <div class="card-title">
+          <i class="fa-solid fa-sliders text-accent"></i>
+          <h2>ALERT CONFIGURATION</h2>
+        </div>
+        <span class="badge badge-primary">Dynamic Parameters</span>
+      </div>
+
+      <form id="alert-config-form" class="alert-form-grid">
+        <!-- Stock -->
+        <div class="form-item">
+          <label>Selected Stock</label>
+          <div class="input-display-box" id="form-stock-display">
+            <span class="stock-code" id="config-sym-display">TCS</span>
+            <span class="stock-sub" id="config-name-display">Tata Consultancy Services</span>
+          </div>
+        </div>
+
+        <!-- Direction -->
+        <div class="form-item">
+          <label>Target Direction</label>
+          <div class="btn-group-toggle" id="direction-toggle-group">
+            <button type="button" class="btn-toggle active" data-dir="UP">
+              <i class="fa-solid fa-arrow-trend-up text-green"></i> UP
+            </button>
+            <button type="button" class="btn-toggle" data-dir="DOWN">
+              <i class="fa-solid fa-arrow-trend-down text-red"></i> DOWN
+            </button>
+            <button type="button" class="btn-toggle" data-dir="BOTH">
+              <i class="fa-solid fa-arrows-up-down text-blue"></i> BOTH
+            </button>
+          </div>
+        </div>
+
+        <!-- Target Movement % -->
+        <div class="form-item">
+          <div class="label-row">
+            <label for="cfg-target-pct">Target Movement (%)</label>
+            <span class="val-highlight" id="tgt-pct-val" style="color: #16a34a; font-weight: 700;">+0.05%</span>
+          </div>
+          <div class="input-affix-wrapper">
+            <input type="text" id="cfg-target-pct" class="form-input dir-positive" value="+0.05" placeholder="+0.05 or +0.10 or -0.05" inputmode="decimal" required>
+            <span class="affix-tag dir-positive" id="cfg-affix-tag">%</span>
+          </div>
+          <div class="chip-row">
+            <button type="button" class="form-chip active" data-pct="0.05">+0.05%</button>
+            <button type="button" class="form-chip" data-pct="0.10">+0.10%</button>
+            <button type="button" class="form-chip" data-pct="0.50">+0.50%</button>
+            <button type="button" class="form-chip" data-pct="1.00">+1.00%</button>
+            <button type="button" class="form-chip" data-pct="2.50">+2.50%</button>
+          </div>
+        </div>
+
+        <!-- Warning Window (Minutes) -->
+        <div class="form-item">
+          <div class="label-row">
+            <label for="cfg-warning-min">Prediction Window (Minutes)</label>
+            <span class="val-highlight" id="tgt-min-val">2 min</span>
+          </div>
+          <div class="input-affix-wrapper">
+            <input type="number" id="cfg-warning-min" class="form-input" value="2" step="1" min="1" max="180" placeholder="e.g. 1, 2, 3..." required>
+            <span class="affix-tag">min</span>
+          </div>
+        </div>
+
+
+        <!-- Monitoring Interval -->
+        <div class="form-item">
+          <label>Monitoring Interval</label>
+          <div class="interval-selector" id="interval-selector">
+            <button type="button" class="interval-btn active" data-interval="1">
+              <i class="fa-regular fa-clock"></i> 1 Minute
+            </button>
+            <button type="button" class="interval-btn" data-interval="2">
+              <i class="fa-regular fa-clock"></i> 2 Minutes
+            </button>
+            <button type="button" class="interval-btn" data-interval="5">
+              <i class="fa-regular fa-clock"></i> 5 Minutes
+            </button>
+          </div>
+        </div>
+
+        <!-- Notification Channel -->
+        <div class="form-item">
+          <label>Notification Method</label>
+          <div class="notification-badge-fixed" style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; color: #1d4ed8; font-weight: 600; font-size: 13px;">
+            <i class="fa-solid fa-bell"></i> In-App Popup &amp; Audio
+          </div>
+        </div>
+
+
+        <!-- Dynamic Live Prediction Preview Box -->
+        <div class="form-item full-width-item">
+          <div class="preview-panel">
+            <div class="preview-top">
+              <div class="preview-title">
+                <i class="fa-solid fa-microchip text-accent"></i>
+                <span>REAL-TIME PREDICTION ENGINE</span>
+              </div>
+              <span class="badge" id="preview-prediction-label">CALCULATING</span>
+            </div>
+
+            <div class="preview-middle">
+              <div class="preview-prob-gauge">
+                <span class="prob-num" id="preview-prob-pct">--%</span>
+                <span class="prob-caption">Probability</span>
+              </div>
+              <div class="preview-details">
+                <div class="preview-scenario" id="preview-scenario-text">TCS +5.00% in 10 minutes</div>
+                <div class="preview-bar-track">
+                  <div class="preview-bar-progress" id="preview-prob-progress" style="width: 0%;"></div>
+                </div>
+                <div class="preview-explanation-text" id="preview-explanation-text">Analyzing short-term market momentum, volatility, and volume indicators...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Submit Button Row -->
+        <div class="form-item full-width-item action-row">
+          <button type="submit" class="btn btn-primary btn-large" id="btn-submit-monitor">
+            <i class="fa-solid fa-satellite-dish"></i>
+            <span>START MONITORING</span>
+          </button>
+          <div class="prob-disclaimer">
+            <i class="fa-solid fa-shield-halved"></i>
+            Probabilistic early-warning; not a guaranteed price prediction or investment advice.
+          </div>
+        </div>
+
+      </form>
+    </section>
+
+    <!-- 4. TECHNICAL ANALYSIS SECTION -->
+    <section class="card section technical-section">
+      <div class="card-header">
+        <div class="card-title">
+          <i class="fa-solid fa-chart-simple text-accent"></i>
+          <h2>TECHNICAL ANALYSIS</h2>
+        </div>
+        <span class="badge badge-info">1-Minute Calculated Indicators</span>
+      </div>
+
+      <div class="technical-grid">
+        <div class="tech-card">
+          <span class="tech-label">RSI (14-Period)</span>
+          <span class="tech-val" id="tech-rsi">50.0</span>
+          <span class="tech-sub" id="tech-rsi-sub">Neutral</span>
+        </div>
+
+        <div class="tech-card">
+          <span class="tech-label">MACD (12, 26, 9)</span>
+          <span class="tech-val" id="tech-macd">0.000</span>
+          <span class="tech-sub" id="tech-macd-sub">Hist: 0.000</span>
+        </div>
+
+        <div class="tech-card">
+          <span class="tech-label">Moving Averages (SMA)</span>
+          <span class="tech-val" id="tech-sma5">₹--</span>
+          <span class="tech-sub" id="tech-sma-sub">SMA15: ₹-- | SMA30: ₹--</span>
+        </div>
+
+        <div class="tech-card">
+          <span class="tech-label">Exponential (EMA)</span>
+          <span class="tech-val" id="tech-ema9">₹--</span>
+          <span class="tech-sub" id="tech-ema-sub">EMA21: ₹--</span>
+        </div>
+
+        <div class="tech-card">
+          <span class="tech-label">ATR (14) & Normalized</span>
+          <span class="tech-val" id="tech-atr">₹--</span>
+          <span class="tech-sub" id="tech-natr">NATR: --%</span>
+        </div>
+
+        <div class="tech-card">
+          <span class="tech-label">Volatility (10m / 30m)</span>
+          <span class="tech-val" id="tech-vol10">0.00%</span>
+          <span class="tech-sub" id="tech-vol30">30m: 0.00%</span>
+        </div>
+
+        <div class="tech-card">
+          <span class="tech-label">Momentum & ROC (5m)</span>
+          <span class="tech-val" id="tech-mom">₹0.00</span>
+          <span class="tech-sub" id="tech-roc">ROC: 0.00%</span>
+        </div>
+
+        <div class="tech-card">
+          <span class="tech-label">Short-Term Returns</span>
+          <span class="tech-val" id="tech-ret5">0.00%</span>
+          <span class="tech-sub" id="tech-returns-sub">1m: 0.0% | 3m: 0.0% | 10m: 0.0%</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. COMPLETE STOCK DETAILS SECTION -->
+    <section class="card section stock-details-section">
+      <div class="card-header">
+        <div class="card-title">
+          <i class="fa-solid fa-building-columns text-accent"></i>
+          <h2>COMPLETE STOCK DETAILS</h2>
+        </div>
+        <span class="badge badge-secondary" id="details-symbol-badge">TCS</span>
+      </div>
+
+      <div class="details-grid">
+        <div class="detail-cell">
+          <span class="d-title">52-Week High</span>
+          <span class="d-val text-green" id="det-52high">₹4,585.00</span>
+        </div>
+        <div class="detail-cell">
+          <span class="d-title">52-Week Low</span>
+          <span class="d-val text-red" id="det-52low">₹3,311.00</span>
+        </div>
+        <div class="detail-cell">
+          <span class="d-title">Market Capitalization</span>
+          <span class="d-val" id="det-mcap">₹15.2 Lakh Cr</span>
+        </div>
+        <div class="detail-cell">
+          <span class="d-title">Today's Volume</span>
+          <span class="d-val" id="det-volume">2,410,500</span>
+        </div>
+        <div class="detail-cell">
+          <span class="d-title">20-Day Avg Volume</span>
+          <span class="d-val" id="det-avg-vol">1,850,000</span>
+        </div>
+        <div class="detail-cell">
+          <span class="d-title">Previous Close</span>
+          <span class="d-val" id="det-prev-close">₹3,373.30</span>
+        </div>
+        <div class="detail-cell">
+          <span class="d-title">Day's Range (High - Low)</span>
+          <span class="d-val" id="det-range">₹74.50 (2.2%)</span>
+        </div>
+        <div class="detail-cell">
+          <span class="d-title">Trading Status</span>
+          <span class="d-val text-green" id="det-status">Normal Trading</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. ALERT HISTORY SECTION -->
+    <section class="card section history-section">
+      <div class="card-header">
+        <div class="card-title">
+          <i class="fa-solid fa-clock-rotate-left text-accent"></i>
+          <h2>ALERT HISTORY & OUTCOME VERIFICATION</h2>
+        </div>
+        <div class="history-header-actions">
+          <button class="btn-xs btn-outline" id="btn-refresh-history" title="Refresh Table">
+            <i class="fa-solid fa-rotate-right"></i> Refresh
+          </button>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table class="data-table" id="history-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Stock</th>
+              <th>Direction</th>
+              <th>Target %</th>
+              <th>Target Price</th>
+              <th>Window</th>
+              <th>Status</th>
+              <th>Probability</th>
+              <th>Result</th>
+              <th>Duration</th>
+              <th>Started At</th>
+              <th>Outcome Notes</th>
+            </tr>
+          </thead>
+          <tbody id="history-table-body">
+            <tr>
+              <td colspan="12" class="text-center text-muted">No historical monitoring sessions recorded yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- MODAL: ADD CUSTOM STOCK -->
+  <div class="modal-backdrop" id="modal-custom-stock">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>Add Custom Stock Symbol</h3>
+        <button class="btn-close" onclick="closeCustomStockModal()">&times;</button>
+      </div>
+      <div class="modal-content">
+        <div class="form-group">
+          <label for="new-sym-input">Ticker Symbol</label>
+          <input type="text" id="new-sym-input" class="form-input" placeholder="e.g. WIPRO, MARUTI, AAPL, NVDA">
+        </div>
+        <div class="form-group">
+          <label for="new-name-input">Company Name</label>
+          <input type="text" id="new-name-input" class="form-input" placeholder="e.g. Wipro Ltd">
+        </div>
+        <div class="form-group">
+          <label for="new-exchange-select">Exchange</label>
+          <select id="new-exchange-select" class="form-input">
+            <option value="NSE">NSE (National Stock Exchange of India)</option>
+            <option value="BSE">BSE (Bombay Stock Exchange)</option>
+            <option value="NASDAQ">NASDAQ</option>
+            <option value="NYSE">NYSE</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeCustomStockModal()">Cancel</button>
+        <button class="btn btn-primary" id="btn-confirm-add-stock">Add to StockPulse</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ALERT SOUND & PROFILE MODAL -->
+  <div class="modal-backdrop" id="login-modal-backdrop" style="display: none;">
+    <div class="modal-card modal-login-card" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
+      <div class="modal-header">
+        <div class="modal-icon-badge" style="background: rgba(37, 99, 235, 0.12); color: #2563eb;">
+          <i class="fa-solid fa-volume-high"></i>
+        </div>
+        <div class="modal-header-titles">
+          <h3 class="modal-title" id="login-modal-title">Alert Sound &amp; Profile Settings</h3>
+          <p class="modal-subtitle" id="login-modal-subtitle">Manage system popup notifications and sound chime preferences</p>
+        </div>
+        <button type="button" class="modal-close-btn" id="btn-close-login-modal" aria-label="Close">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+
+      <form id="form-user-login" class="modal-body login-modal-body">
+        <div class="login-active-card" id="login-active-card" style="display: none;">
+          <div class="user-avatar-circle" id="user-avatar-circle">T</div>
+          <div class="user-avatar-info">
+            <strong id="active-user-name">Trader</strong>
+            <span id="active-user-email">Popup Alerts Active</span>
+            <span class="user-status-tag"><i class="fa-solid fa-circle-check text-green"></i> Popup Active</span>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <label class="settings-label" for="login-name-input">
+            <span>Trader Handle / Name</span>
+          </label>
+          <div class="input-icon-wrapper">
+            <i class="fa-regular fa-user input-lead-icon"></i>
+            <input type="text" id="login-name-input" class="form-input with-lead-icon" placeholder="e.g. Pro Trader">
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <label class="settings-label">Sound Test &amp; Verification</label>
+          <button type="button" onclick="StockPulse.testNotificationSound()" class="btn-primary-action"
+            style="width: 100%; justify-content: center; height: 38px; font-size: 13px;">
+            <i class="fa-solid fa-play"></i> Play Test Audio Chime &amp; Popup
+          </button>
+        </div>
+
+        <div class="login-feedback-msg" id="login-feedback-msg" style="display: none;"></div>
+
+        <div class="modal-footer login-modal-footer">
+          <button type="button" class="btn-logout" id="btn-logout-user" style="display: none;">
+            <i class="fa-solid fa-arrow-right-from-bracket"></i> Reset Profile
+          </button>
+          <button type="button" class="btn-modal-dismiss" id="btn-dismiss-login-modal">
+            Cancel
+          </button>
+          <button type="submit" class="btn-modal-acknowledge" id="btn-submit-login">
+            <i class="fa-solid fa-check"></i> Save Settings
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: SIMULATION LAB -->
+  <div class="modal-backdrop" id="modal-simulation">
+    <div class="modal-card modal-wide">
+      <div class="modal-head">
+        <h3><i class="fa-solid fa-flask text-accent"></i> Market Movement Simulation Lab</h3>
+        <button class="btn-close" onclick="closeSimulationModal()">&times;</button>
+      </div>
+      <div class="modal-content">
+        <p class="modal-sub">
+          Test early-warning alerts live 24/7 (even on weekends or off-market hours)!
+          Inject a simulated volume and momentum spike into the active stock to watch the probability meter surge and trigger notifications.
+        </p>
+
+        <div class="sim-grid">
+          <div class="sim-box">
+            <h4><i class="fa-solid fa-arrow-trend-up text-green"></i> Bullish Breakout</h4>
+            <p>Inject rapid upward momentum to trigger UP alerts.</p>
+            <div class="sim-btn-group">
+              <button class="btn btn-sm btn-success" onclick="injectMove('+3.8%')">+3.8% Surge</button>
+              <button class="btn btn-sm btn-success" onclick="injectMove('+5.0%')">+5.0% Surge</button>
+            </div>
+          </div>
+
+          <div class="sim-box">
+            <h4><i class="fa-solid fa-arrow-trend-down text-red"></i> Bearish Breakdown</h4>
+            <p>Inject downward selloff to trigger DOWN alerts.</p>
+            <div class="sim-btn-group">
+              <button class="btn btn-sm btn-danger" onclick="injectMove('-3.5%')">-3.5% Drop</button>
+              <button class="btn btn-sm btn-danger" onclick="injectMove('-5.0%')">-5.0% Drop</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sim-footer-row">
+          <button class="btn btn-outline" onclick="resetSimState()"><i class="fa-solid fa-rotate-left"></i> Restore Real Market Data</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    <div class="footer-wrap">
+      <span>StockPulse — Real-Time Stock Market Monitoring & Probabilistic Early-Warning System</span>
+      <span class="disclaimer-span">⚠️ Model-generated estimates for monitoring purposes; not guaranteed predictions.</span>
+    </div>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="/static/dashboard.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

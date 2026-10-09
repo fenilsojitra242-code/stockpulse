@@ -1,0 +1,108 @@
+{
+  "timestamp": "2026-09-26T09:00:58.753820",
+  "total_samples": 17396,
+  "train_samples": 12177,
+  "test_samples": 2610,
+  "champion_model": "RandomForest",
+  "models": {
+    "LogisticRegression": {
+      "accuracy": 0.8119,
+      "precision": 0.0522,
+      "recall": 0.9643,
+      "f1_score": 0.0991,
+      "roc_auc": 0.9403,
+      "brier_score": 0.119,
+      "confusion_matrix": [
+        [
+          2092,
+          490
+        ],
+        [
+          1,
+          27
+        ]
+      ]
+    },
+    "RandomForest": {
+      "accuracy": 0.9678,
+      "precision": 0.1316,
+      "recall": 0.3571,
+      "f1_score": 0.1923,
+      "roc_auc": 0.9419,
+      "brier_score": 0.0249,
+      "confusion_matrix": [
+        [
+          2516,
+          66
+        ],
+        [
+          18,
+          10
+        ]
+      ]
+    },
+    "XGBoost": {
+      "accuracy": 0.964,
+      "precision": 0.125,
+      "recall": 0.3929,
+      "f1_score": 0.1897,
+      "roc_auc": 0.9197,
+      "brier_score": 0.0276,
+      "confusion_matrix": [
+        [
+          2505,
+          77
+        ],
+        [
+          17,
+          11
+        ]
+      ]
+    }
+  },
+  "feature_importances": {
+    "target_percent": 0.2548,
+    "vol_zscore": 0.152,
+    "rsi_factor": 0.0411,
+    "req_velocity": 0.0391,
+    "rsi_14": 0.0391,
+    "dist_ema_9": 0.0331,
+    "volatility_30m": 0.0327,
+    "intraday_cum_return": 0.0321,
+    "macd_signal": 0.0296,
+    "return_5m": 0.0294,
+    "dist_ema_21": 0.0258,
+    "hl_range_pct": 0.0249,
+    "natr_14": 0.0237,
+    "warning_minutes": 0.0235,
+    "return_3m": 0.0233
+  },
+  "features_list": [
+    "target_percent",
+    "warning_minutes",
+    "is_up",
+    "req_velocity",
+    "vol_zscore",
+    "return_1m",
+    "return_3m",
+    "return_5m",
+    "return_10m",
+    "mom_5_aligned",
+    "roc_5_aligned",
+    "roc_10_aligned",
+    "dist_ema_9",
+    "dist_ema_21",
+    "rsi_14",
+    "rsi_factor",
+    "macd",
+    "macd_signal",
+    "macd_hist_aligned",
+    "natr_14",
+    "volatility_10m",
+    "volatility_30m",
+    "vol_ratio_20m",
+    "hl_range_pct",
+    "intraday_cum_return"
+  ],
+  "training_time_seconds": 23.0
+}

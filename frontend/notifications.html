@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StockPulse — Real-Time System Notifications Feed</title>
+  <meta name="description" content="Live multi-channel notification stream for predictive price early-warnings, dispatch statuses, and trigger reports.">
+
+  <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="/static/style.css?v=8">
+</head>
+<body>
+
+  <!-- =========================================================================
+       1. FLOATING UPPER NAVIGATION MENU
+       ========================================================================= -->
+  <nav class="floating-nav-wrapper" aria-label="Main Navigation">
+    <div class="floating-nav">
+      <!-- Brand Logo / Name -->
+      <a href="/live" class="nav-brand">
+        <span class="nav-logo-icon"><i class="fa-solid fa-chart-line"></i></span>
+        <span class="nav-brand-text">StockPulse</span>
+      </a>
+
+      <!-- Navigation Links -->
+      <div class="nav-links" id="nav-links">
+        <a href="/live" class="nav-link" id="nav-live"><i class="fa-solid fa-chart-line"></i> Live Market</a>
+        <a href="/monitoring" class="nav-link" id="nav-monitoring"><i class="fa-solid fa-sliders"></i> Monitoring</a>
+        <a href="/details" class="nav-link" id="nav-details"><i class="fa-solid fa-building-columns"></i> Stock Details</a>
+        <a href="/history" class="nav-link" id="nav-history"><i class="fa-solid fa-clock-rotate-left"></i> History</a>
+        <a href="/notifications" class="nav-link active" id="nav-notifications"><i class="fa-solid fa-bell"></i> Notifications</a>
+        
+        <!-- Live Market Status Pill -->
+        <div class="nav-market-status" id="nav-market-status">
+          <span class="pulse-dot green" id="market-status-dot"></span>
+          <span id="market-status-text">Market: OPEN</span>
+        </div>
+      </div>
+
+      <!-- Nav Actions -->
+      <div class="nav-actions">
+        <div class="nav-live-badge" id="nav-live-badge" title="Live connection status">
+          <span class="status-indicator-dot live" id="global-status-dot"></span>
+          <span class="live-badge-text" id="global-status-text">LIVE</span>
+        </div>
+
+        <button type="button" class="nav-mobile-toggle" id="btn-mobile-toggle" title="Toggle Navigation">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- MAIN APPLICATION CONTENT -->
+  <main class="dashboard-wrapper">
+    <div class="dashboard-container">
+
+      <!-- PAGE HERO HEADER -->
+      <div class="page-hero-header">
+        <div class="page-hero-title-group">
+          <span class="page-hero-badge"><i class="fa-solid fa-bell"></i> Live Feed</span>
+          <h1 class="page-hero-title">System Notifications &amp; Alerts Feed</h1>
+          <p class="page-hero-desc">Real-time alert messages dispatched via In-App Popups, Audio Chimes, and Live Feed.</p>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <span id="unread-total-badge" style="background: #2563eb; color: #fff; font-size: 12px; font-weight: 700; padding: 6px 14px; border-radius: 20px; display: none;">0 Unread</span>
+          <button type="button" id="btn-refresh-feed" style="background: #fff; border: 1px solid #cbd5e1; padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+            <i class="fa-solid fa-rotate"></i> Refresh
+          </button>
+          <button type="button" id="btn-mark-all-feed-read" style="background: #eff6ff; border: 1px solid #bfdbfe; color: #1d4ed8; padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+            <i class="fa-solid fa-check-double"></i> Mark All as Read
+          </button>
+          <button type="button" id="btn-clear-all-feed" style="background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;" title="Clear all notifications">
+            <i class="fa-regular fa-trash-can"></i> Clear Notifications
+          </button>
+        </div>
+      </div>
+
+      <!-- FILTER CHIPS BAR -->
+      <div style="background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 20px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
+        <!-- Channels -->
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <span style="font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase;">Channel:</span>
+          <button type="button" class="preset-chip channel-filter-chip active" data-channel="ALL">All</button>
+          <button type="button" class="preset-chip channel-filter-chip" data-channel="POPUP"><i class="fa-solid fa-bell"></i> Popup</button>
+        </div>
+
+        <!-- Priorities -->
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <span style="font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase;">Priority:</span>
+          <button type="button" class="preset-chip priority-filter-chip active" data-priority="ALL">All</button>
+          <button type="button" class="preset-chip priority-filter-chip" data-priority="ALERT">Alerts</button>
+          <button type="button" class="preset-chip priority-filter-chip" data-priority="IMPORTANT">Important</button>
+          <button type="button" class="preset-chip priority-filter-chip" data-priority="WARNING">Warnings</button>
+          <button type="button" class="preset-chip priority-filter-chip" data-priority="INFO">Info</button>
+        </div>
+      </div>
+
+      <!-- NOTIFICATIONS FEED CONTAINER -->
+      <div id="notifications-full-list" style="min-height: 240px;">
+        <!-- Dynamically rendered via notifications.js -->
+      </div>
+
+      <!-- Empty state placeholder -->
+      <div id="notif-empty-state" style="display: none; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 48px 24px; text-align: center; color: #64748b;">
+        <i class="fa-regular fa-bell-slash" style="font-size: 38px; color: #cbd5e1; margin-bottom: 12px; display: block;"></i>
+        <h4 style="font-size: 16px; font-weight: 700; color: #334155; margin-bottom: 4px;">No Notifications Found</h4>
+        <p style="font-size: 13px; max-width: 440px; margin: 0 auto;">When dynamic price target predictions are verified or alerts trigger, events will appear here in real-time.</p>
+      </div>
+
+      <!-- NAVIGATION SHORTCUTS -->
+      <div style="display: flex; gap: 12px; margin-top: 24px; flex-wrap: wrap;">
+        <a href="/live" class="btn-more-options" style="background: #fff; border: 1px solid #cbd5e1; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 700; color: #0f172a; display: inline-flex; align-items: center; gap: 8px;">
+          <i class="fa-solid fa-chart-line text-blue"></i> View Live Chart
+        </a>
+        <a href="/monitoring" class="btn-more-options" style="background: #fff; border: 1px solid #cbd5e1; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 700; color: #0f172a; display: inline-flex; align-items: center; gap: 8px;">
+          <i class="fa-solid fa-sliders text-blue"></i> Configure Monitoring Alerts
+        </a>
+        <a href="/history" class="btn-more-options" style="background: #fff; border: 1px solid #cbd5e1; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 700; color: #0f172a; display: inline-flex; align-items: center; gap: 8px;">
+          <i class="fa-solid fa-clock-rotate-left text-blue"></i> View Alert History
+        </a>
+      </div>
+
+    </div> <!-- /dashboard-container -->
+  </main>
+
+  <!-- NOTIFICATION DETAIL MODAL -->
+  <div class="modal-backdrop" id="notif-detail-modal-backdrop" style="display: none;">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-icon-badge"><i class="fa-solid fa-bell"></i></div>
+        <div class="modal-header-titles">
+          <h3 class="modal-title" id="notif-detail-title">Notification Notice</h3>
+          <p class="modal-subtitle">Event payload and transmission details</p>
+        </div>
+        <button type="button" class="modal-close-btn" id="btn-close-notif-detail"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+          <span class="notif-tag" id="notif-detail-priority-tag">INFO</span>
+          <span class="notif-tag notif-tag-channel" id="notif-detail-channel-tag">DASHBOARD</span>
+          <span style="font-size: 12px; color: #64748b; margin-left: auto;" id="notif-detail-time-tag">--:--:--</span>
+        </div>
+        <pre id="notif-detail-message-body" style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 16px; border-radius: 8px; font-family: var(--font-mono); font-size: 13px; white-space: pre-wrap; line-height: 1.5; color: #1e293b; max-height: 280px; overflow-y: auto;"></pre>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-modal-dismiss" id="btn-dismiss-notif-detail">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS MODAL -->
+  <div class="modal-backdrop" id="settings-modal-backdrop" style="display: none;">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-icon-badge"><i class="fa-solid fa-gear"></i></div>
+        <div class="modal-header-titles">
+          <h3 class="modal-title">Settings</h3>
+        </div>
+        <button type="button" class="modal-close-btn" id="btn-close-settings"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 13px; color: #64748b;">Settings preferences configured in main menu.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-modal-dismiss" id="btn-dismiss-settings">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ALERT SOUND & PROFILE MODAL -->
+  <div class="modal-backdrop" id="login-modal-backdrop" style="display: none;">
+    <div class="modal-card modal-login-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-icon-badge" style="background: rgba(37, 99, 235, 0.12); color: #2563eb;"><i class="fa-solid fa-volume-high"></i></div>
+        <div class="modal-header-titles">
+          <h3 class="modal-title">Alert Sound &amp; Profile Settings</h3>
+          <p class="modal-subtitle">Manage system popup notifications and sound chime preferences</p>
+        </div>
+        <button type="button" class="modal-close-btn" id="btn-close-login-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <form id="form-user-login" class="modal-body login-modal-body">
+        <div class="settings-group">
+          <label class="settings-label" for="login-name-input">Trader Handle / Name</label>
+          <input type="text" id="login-name-input" class="form-input" placeholder="e.g. Pro Trader" style="width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px;">
+        </div>
+        <div class="settings-group">
+          <label class="settings-label">Sound Test &amp; Verification</label>
+          <button type="button" onclick="StockPulse.testNotificationSound()" class="btn-primary-action"
+            style="width: 100%; justify-content: center; height: 38px; font-size: 13px;">
+            <i class="fa-solid fa-play"></i> Play Test Audio Chime &amp; Popup
+          </button>
+        </div>
+        <div class="modal-footer login-modal-footer">
+          <button type="button" class="btn-modal-dismiss" id="btn-dismiss-login-modal">Cancel</button>
+          <button type="submit" class="btn-modal-acknowledge" id="btn-submit-login">Save Settings</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <footer class="app-footer">
+    <div class="footer-container">
+      <span>StockPulse &bull; Real-Time Popup Notification Feed</span>
+      <span class="footer-refresh-note">Auto-polling events continuously</span>
+    </div>
+  </footer>
+
+  <!-- Application Logic -->
+  <script src="/static/common.js?v=8"></script>
+  <script src="/static/notifications.js?v=8"></script>
+</body>
+</html>
