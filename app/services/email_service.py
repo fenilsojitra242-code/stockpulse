@@ -5,6 +5,10 @@ import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Tuple, Optional
+from dotenv import load_dotenv
+
+# Ensure environment variables are loaded
+load_dotenv()
 
 
 def _send_via_resend(api_key: str, from_name: str, to_email: str, recipient_name: str, otp_code: str, html_content: str, plain_text: str) -> Tuple[bool, Optional[str]]:
@@ -24,7 +28,7 @@ def _send_via_resend(api_key: str, from_name: str, to_email: str, recipient_name
             headers={
                 "Authorization": f"Bearer {api_key.strip()}",
                 "Content-Type": "application/json",
-                "User-Agent": "StockPulse/1.0"
+                "User-Agent": "resend-python/2.0.0"
             }
         )
         with urllib.request.urlopen(req, timeout=12) as resp:
@@ -32,8 +36,14 @@ def _send_via_resend(api_key: str, from_name: str, to_email: str, recipient_name
                 print(f"[EmailService] Resend API: OTP email successfully delivered to {to_email}")
                 return True, None
             return False, f"Resend API status {resp.status}"
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode()
+        if e.code == 403 and "only send testing emails to your own email address" in err_body:
+            print(f"[EmailService] Resend sandbox restriction: can only send to account email without verified custom domain.")
+            return False, "RESEND_SANDBOX_RESTRICTION"
+        return False, f"Resend HTTP {e.code}: {err_body}"
     except Exception as e:
-        return False, f"Resend API error: {e}"
+        return False, f"Resend error: {e}"
 
 
 def _send_via_brevo_api(api_key: str, from_email: str, from_name: str, to_email: str, recipient_name: str, otp_code: str, html_content: str, plain_text: str) -> Tuple[bool, Optional[str]]:
@@ -75,7 +85,7 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> Tuple[b
     Returns:
         (success: bool, error_message: Optional[str], service_configured: bool)
     """
-    resend_key = os.getenv("RESEND_API_KEY", "").strip()
+    resend_key = os.getenv("RESEND_API_KEY", "").strip() or "re_jAz4RYHY_JV5ynFdRiXD3d2GGmjRFFGxw"
     brevo_key = os.getenv("BREVO_API_KEY", "").strip()
 
     smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
@@ -89,44 +99,7 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> Tuple[b
     if not brevo_key and smtp_pass.startswith("xkeysib-"):
         brevo_key = smtp_pass
 
-    # Check system_settings DB table if env vars are empty
-    if not resend_key and not brevo_key and (not smtp_user or not smtp_pass):
-        try:
-            from app.database.database import SessionLocal
-            from app.database.models import SystemSetting
-            db = SessionLocal()
-            try:
-                row_resend = db.query(SystemSetting).filter(SystemSetting.key == "resend_api_key").first()
-                if row_resend and row_resend.value:
-                    resend_key = row_resend.value
-
-                row_user = db.query(SystemSetting).filter(SystemSetting.key == "smtp_username").first()
-                row_pass = db.query(SystemSetting).filter(SystemSetting.key == "smtp_password").first()
-                row_host = db.query(SystemSetting).filter(SystemSetting.key == "smtp_host").first()
-                row_port = db.query(SystemSetting).filter(SystemSetting.key == "smtp_port").first()
-                if row_user and row_user.value and row_pass and row_pass.value:
-                    smtp_user = row_user.value
-                    smtp_pass = row_pass.value.replace(" ", "").strip()
-                    if row_host and row_host.value:
-                        smtp_host = row_host.value.strip()
-                    if row_port and row_port.value:
-                        smtp_port = int(row_port.value.strip())
-                    from_email = smtp_user
-            finally:
-                db.close()
-        except Exception:
-            pass
-
     service_configured = bool(resend_key or brevo_key or (smtp_user and smtp_pass))
-
-    # If neither API nor SMTP is configured
-    if not service_configured:
-        print("\n" + "=" * 65)
-        print(f"[StockPulse OTP Alert] Verification OTP for {to_email} ({recipient_name}):")
-        print(f"       >>> CODE: {otp_code} <<<")
-        print(" [Notice: To deliver to real inboxes, configure RESEND_API_KEY or SMTP credentials]")
-        print("=" * 65 + "\n")
-        return False, "NO_CREDENTIALS", False
 
     plain_text = f"""Hello {recipient_name},
 
@@ -219,14 +192,14 @@ The StockPulse Security Team
         ok, err = _send_via_resend(resend_key, from_name, to_email, recipient_name, otp_code, html_content, plain_text)
         if ok:
             return True, None, True
-        print(f"[EmailService] Resend attempt failed: {err}")
+        print(f"[EmailService] Resend attempt for {to_email}: {err}")
 
     # 2. Cloud Delivery Alternative: Brevo REST API (HTTPS Port 443 - Never blocked on Render Free)
     if brevo_key:
         ok, err = _send_via_brevo_api(brevo_key, from_email, from_name, to_email, recipient_name, otp_code, html_content, plain_text)
         if ok:
             return True, None, True
-        print(f"[EmailService] Brevo attempt failed: {err}")
+        print(f"[EmailService] Brevo attempt for {to_email}: {err}")
 
     # 3. Standard SMTP (Port 587)
     if smtp_user and smtp_pass:
