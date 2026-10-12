@@ -53,8 +53,8 @@ StockPulse is designed as a **unified, high-performance single-page stock dashbo
 │                                                               │
 │              TECHNICAL ANALYSIS                               │
 │                                                               │
-│ RSI | MACD | SMA (5/15/30) | EMA (9/21) | ATR | Volatility     │
-│ Momentum | Rate of Change | 1m/3m/5m/10m Returns             │
+│ RSI | MACD | SMA (5/15/30) | EMA (9/21) | ATR | Volatility    │
+│ Momentum | Rate of Change | 1m/3m/5m/10m Returns              │
 │                                                               │
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
