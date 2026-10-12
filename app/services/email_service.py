@@ -14,12 +14,12 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> Tuple[b
     Returns:
         (success: bool, error_message: Optional[str], smtp_configured: bool)
     """
-    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USER", "")
-    smtp_pass = os.getenv("SMTP_PASSWORD", "")
-    from_email = os.getenv("SMTP_FROM_EMAIL", smtp_user or "verify@stockpulse.io")
-    from_name = os.getenv("SMTP_FROM_NAME", "StockPulse Security")
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
+    smtp_port = int(os.getenv("SMTP_PORT", "587").strip() or "587")
+    smtp_user = os.getenv("SMTP_USER", "").strip()
+    smtp_pass = os.getenv("SMTP_PASSWORD", "").replace(" ", "").strip()
+    from_email = os.getenv("SMTP_FROM_EMAIL", "").strip() or smtp_user or "verify@stockpulse.io"
+    from_name = os.getenv("SMTP_FROM_NAME", "StockPulse Security").strip()
 
     # Also check system_settings DB table if env vars are empty
     if not smtp_user or not smtp_pass:
