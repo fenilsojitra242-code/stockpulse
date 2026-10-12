@@ -265,14 +265,18 @@ def send_registration_otp(req: SendOTPRequest, db: Session = Depends(get_db)):
         "smtp_configured": smtp_configured
     }
 
-    if smtp_configured and sent_ok:
-        response_payload["message"] = f"6-digit verification code sent to {clean_email}. Please check your inbox."
-    else:
-        # Seamless verification fallback for cloud test accounts
-        response_payload["message"] = f"Verification code for {clean_email} is {otp_code}."
-        response_payload["test_otp"] = otp_code
+    if not sent_ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unable to send verification email to {clean_email}. Please check the email address or try again."
+        )
 
-    return response_payload
+    return {
+        "status": "success",
+        "message": f"6-digit verification code sent to {clean_email}. Please check your email inbox.",
+        "email": clean_email,
+        "expires_in_seconds": 600
+    }
 
 
 @router.post("/verify-registration-otp", status_code=status.HTTP_201_CREATED)
