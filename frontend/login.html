@@ -772,15 +772,6 @@
         showFeedback(`Verification code sent to ${email}. Please check your inbox.`, false);
         startOtpCountdown(60);
         setupOtpDigitInputs();
-
-        // If dev fallback code is returned (when SMTP is not yet set in .env), auto-fill or log
-        if (data.dev_otp) {
-          console.log('%c[StockPulse Dev OTP]: ' + data.dev_otp, 'color: #2563eb; font-weight: bold; font-size: 16px;');
-          setTimeout(() => {
-            fillOtpInputs(data.dev_otp);
-          }, 350);
-        }
-
       } catch (err) {
         console.error('OTP Send error:', err);
         showFeedback('Network error. Unable to verify email.', true);
@@ -937,10 +928,6 @@
         startOtpCountdown(60);
         setupOtpDigitInputs();
 
-        if (data.dev_otp) {
-          console.log('[StockPulse Resent Dev OTP]:', data.dev_otp);
-          setTimeout(() => fillOtpInputs(data.dev_otp), 300);
-        }
       } catch (err) {
         showFeedback('Network error. Failed to resend code.', true);
         btnResend.disabled = false;

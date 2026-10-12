@@ -265,11 +265,6 @@ def send_registration_otp(req: SendOTPRequest, db: Session = Depends(get_db)):
         "expires_in_seconds": 600
     }
 
-    # If SMTP is not configured or in dev mode, include dev helper
-    if not os.getenv("SMTP_USER"):
-        response_payload["dev_otp"] = otp_code
-        response_payload["dev_hint"] = "SMTP not configured in .env. Check server console for code or use dev_otp."
-
     return response_payload
 
 
