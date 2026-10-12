@@ -195,6 +195,39 @@ class ResendOTPRequest(BaseModel):
     name: Optional[str] = Field("Trader", description="User name")
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(..., description="Registered account email address")
+
+    @field_validator("email")
+    @classmethod
+    def clean_email(cls, v: str) -> str:
+        s = v.strip().lower()
+        if not s or "@" not in s:
+            raise ValueError("Valid email address is required")
+        return s
+
+
+class ResetPasswordRequest(BaseModel):
+    email: str = Field(..., description="Registered account email address")
+    otp: str = Field(..., min_length=6, max_length=6, description="6-digit verification code")
+    new_password: str = Field(..., min_length=4, max_length=128, description="New password")
+
+    @field_validator("email")
+    @classmethod
+    def clean_email(cls, v: str) -> str:
+        s = v.strip().lower()
+        if not s or "@" not in s:
+            raise ValueError("Valid email address is required")
+        return s
+
+    @field_validator("new_password")
+    @classmethod
+    def clean_pw(cls, v: str) -> str:
+        if len(v) < 4:
+            raise ValueError("Password must be at least 4 characters long")
+        return v
+
+
 # --- ROUTE HANDLERS ---
 
 @router.post("/send-registration-otp")
@@ -389,6 +422,133 @@ def resend_registration_otp(req: ResendOTPRequest, db: Session = Depends(get_db)
         SendOTPRequest(email=req.email, name=req.name or "Trader"),
         db=db
     )
+
+
+@router.post("/forgot-password")
+def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """
+    Initiates password reset by sending a secure 6-digit OTP to the user's verified email.
+    """
+    clean_email = req.email.strip().lower()
+
+    # 1. Verify user exists
+    user = db.query(User).filter(func.lower(User.email) == clean_email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No account found with this email address. Please check your spelling or create an account."
+        )
+
+    # 2. Rate limiting: max 1 reset code request every 25 seconds
+    now = datetime.utcnow()
+    recent_otp = db.query(EmailOTP).filter(
+        func.lower(EmailOTP.email) == clean_email,
+        EmailOTP.created_at >= now - timedelta(seconds=25)
+    ).first()
+    if recent_otp:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="A reset code was just sent. Please wait 25 seconds before requesting another code."
+        )
+
+    # 3. Invalidate prior unused OTPs for this email
+    db.query(EmailOTP).filter(
+        func.lower(EmailOTP.email) == clean_email,
+        EmailOTP.is_used == False
+    ).update({"is_used": True})
+
+    # 4. Generate secure 6-digit code
+    otp_code = f"{secrets.randbelow(900000) + 100000}"
+    expires_at = now + timedelta(minutes=10)
+
+    otp_record = EmailOTP(
+        email=clean_email,
+        otp_code=otp_code,
+        purpose="PASSWORD_RESET",
+        expires_at=expires_at,
+        is_used=False,
+        created_at=now
+    )
+    db.add(otp_record)
+    db.commit()
+
+    # 5. Dispatch email via Brevo / Resend / SMTP
+    sent_ok, send_err, _ = send_otp_email(clean_email, user.name, otp_code, purpose="PASSWORD_RESET")
+    if not sent_ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unable to send password reset email to {clean_email}. Please try again later."
+        )
+
+    return {
+        "status": "success",
+        "message": f"6-digit password reset code sent to {clean_email}. Please check your email inbox.",
+        "email": clean_email,
+        "expires_in_seconds": 600
+    }
+
+
+@router.post("/reset-password")
+def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """
+    Verifies the 6-digit reset code and sets a new password for the account.
+    """
+    clean_email = req.email.strip().lower()
+    clean_otp = req.otp.strip()
+
+    # 1. Find matching unexpired, unused OTP record
+    now = datetime.utcnow()
+    otp_record = db.query(EmailOTP).filter(
+        func.lower(EmailOTP.email) == clean_email,
+        EmailOTP.otp_code == clean_otp,
+        EmailOTP.is_used == False,
+        EmailOTP.expires_at >= now
+    ).order_by(EmailOTP.created_at.desc()).first()
+
+    if not otp_record:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset code. Please check your email or request a new code."
+        )
+
+    # 2. Look up user account
+    user = db.query(User).filter(func.lower(User.email) == clean_email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User account not found."
+        )
+
+    # 3. Mark OTP as used
+    otp_record.is_used = True
+
+    # 4. Hash new password and save
+    user.password_hash = hash_password(req.new_password)
+    db.commit()
+    db.refresh(user)
+
+    # 5. Generate fresh access token so user is automatically signed in
+    token = create_access_token({
+        "sub": str(user.id),
+        "email": user.email,
+        "username": user.username or "",
+        "name": user.name
+    })
+
+    return {
+        "status": "SUCCESS",
+        "message": "Password successfully updated! Welcome back.",
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "username": user.username,
+            "email": user.email,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+            "active_alerts_count": 0
+        }
+    }
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)

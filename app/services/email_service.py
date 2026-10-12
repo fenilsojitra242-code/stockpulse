@@ -11,14 +11,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _send_via_resend(api_key: str, from_name: str, to_email: str, recipient_name: str, otp_code: str, html_content: str, plain_text: str) -> Tuple[bool, Optional[str]]:
+def _send_via_resend(api_key: str, from_name: str, to_email: str, recipient_name: str, otp_code: str, html_content: str, plain_text: str, subject: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """Dispatches verification email via Resend REST API (HTTPS Port 443). Works unconditionally on Render."""
     try:
         from_email = os.getenv("RESEND_FROM", "StockPulse Security <onboarding@resend.dev>").strip()
         payload = {
             "from": from_email,
             "to": [to_email],
-            "subject": f"{otp_code} is your StockPulse verification code",
+            "subject": subject or f"{otp_code} is your StockPulse verification code",
             "html": html_content,
             "text": plain_text
         }
@@ -46,13 +46,13 @@ def _send_via_resend(api_key: str, from_name: str, to_email: str, recipient_name
         return False, f"Resend error: {e}"
 
 
-def _send_via_brevo_api(api_key: str, from_email: str, from_name: str, to_email: str, recipient_name: str, otp_code: str, html_content: str, plain_text: str) -> Tuple[bool, Optional[str]]:
+def _send_via_brevo_api(api_key: str, from_email: str, from_name: str, to_email: str, recipient_name: str, otp_code: str, html_content: str, plain_text: str, subject: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """Dispatches verification email via Brevo REST API (HTTPS Port 443). Works unconditionally on Render."""
     try:
         payload = {
             "sender": {"name": from_name, "email": from_email},
             "to": [{"email": to_email, "name": recipient_name}],
-            "subject": f"{otp_code} is your StockPulse verification code",
+            "subject": subject or f"{otp_code} is your StockPulse verification code",
             "htmlContent": html_content,
             "textContent": plain_text
         }
@@ -78,9 +78,9 @@ def _send_via_brevo_api(api_key: str, from_email: str, from_name: str, to_email:
         return False, f"Brevo API error: {e}"
 
 
-def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> Tuple[bool, Optional[str], bool]:
+def send_otp_email(to_email: str, recipient_name: str, otp_code: str, purpose: str = "REGISTRATION") -> Tuple[bool, Optional[str], bool]:
     """
-    Sends a 6-digit OTP email for registration verification.
+    Sends a 6-digit OTP email for registration verification or password reset.
     Delivery methods:
       1. Resend HTTP API (Port 443 - bypasses cloud SMTP port blocks on Render/Vercel)
       2. Brevo HTTP API (Port 443 - bypasses cloud SMTP port blocks on Render/Vercel)
@@ -106,16 +106,30 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> Tuple[b
 
     service_configured = bool(resend_key or brevo_key or (smtp_user and smtp_pass))
 
+    is_password_reset = (purpose.upper() == "PASSWORD_RESET")
+    subject_text = f"{otp_code} is your StockPulse password reset code" if is_password_reset else f"{otp_code} is your StockPulse verification code"
+    heading_text = "Reset Your Account Password" if is_password_reset else "Verify Your Email Address"
+    action_text = (
+        f"Hi <strong>{recipient_name}</strong>, we received a request to reset your StockPulse account password. "
+        f"Please use the following 6-digit code to choose a new password:"
+        if is_password_reset else
+        f"Hi <strong>{recipient_name}</strong>, thanks for creating an account. Please use the following 6-digit verification code to complete your registration:"
+    )
+
+    plain_action = (
+        f"We received a request to reset your password. Use the following 6-digit code to proceed:"
+        if is_password_reset else
+        f"Thank you for choosing StockPulse. Your 6-digit verification code is:"
+    )
+
     plain_text = f"""Hello {recipient_name},
 
-Thank you for choosing StockPulse.
-
-Your 6-digit verification code is:
+{plain_action}
 {otp_code}
 
-This code will expire in 10 minutes. Please enter it in the StockPulse verification window to activate your account.
+This code will expire in 10 minutes.
 
-If you did not request this code, you can safely ignore this email.
+If you did not request this code, you can safely ignore this email and your password will remain unchanged.
 
 Best regards,
 The StockPulse Security Team
@@ -126,7 +140,7 @@ The StockPulse Security Team
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>StockPulse Verification</title>
+  <title>{heading_text}</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #0f172a;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; padding: 40px 15px;">
@@ -148,9 +162,9 @@ The StockPulse Security Team
           <!-- Main Content -->
           <tr>
             <td style="padding: 36px 32px 24px 32px;">
-              <h2 style="margin: 0 0 12px 0; color: #0f172a; font-size: 19px; font-weight: 700;">Verify Your Email Address</h2>
+              <h2 style="margin: 0 0 12px 0; color: #0f172a; font-size: 19px; font-weight: 700;">{heading_text}</h2>
               <p style="margin: 0 0 24px 0; color: #475569; font-size: 14px; line-height: 1.6;">
-                Hi <strong>{recipient_name}</strong>, thanks for creating an account. Please use the following 6-digit verification code to complete your registration:
+                {action_text}
               </p>
 
               <!-- OTP Code Display Card -->
@@ -170,7 +184,7 @@ The StockPulse Security Team
               <p style="margin: 0 0 8px 0; color: #64748b; font-size: 13px; line-height: 1.5;">
                 • Never share this verification code with anyone.<br>
                 • StockPulse support will never ask you for this code.<br>
-                • If you did not create this account, you can safely ignore this email.
+                • If you did not make this request, you can safely ignore this email.
               </p>
             </td>
           </tr>
@@ -195,14 +209,14 @@ The StockPulse Security Team
     # 1. Primary Cloud Delivery: Brevo REST API (HTTPS Port 443 - Sends to ANY recipient without custom domain)
     if brevo_key:
         brevo_sender = os.getenv("BREVO_SENDER_EMAIL", "").strip() or from_email or "fenilsojitra242@gmail.com"
-        ok, err = _send_via_brevo_api(brevo_key, brevo_sender, from_name, to_email, recipient_name, otp_code, html_content, plain_text)
+        ok, err = _send_via_brevo_api(brevo_key, brevo_sender, from_name, to_email, recipient_name, otp_code, html_content, plain_text, subject=subject_text)
         if ok:
             return True, None, True
         print(f"[EmailService] Brevo attempt for {to_email}: {err}")
 
     # 2. Cloud Delivery Alternative: Resend REST API (HTTPS Port 443)
     if resend_key:
-        ok, err = _send_via_resend(resend_key, from_name, to_email, recipient_name, otp_code, html_content, plain_text)
+        ok, err = _send_via_resend(resend_key, from_name, to_email, recipient_name, otp_code, html_content, plain_text, subject=subject_text)
         if ok:
             return True, None, True
         print(f"[EmailService] Resend attempt for {to_email}: {err}")
@@ -211,7 +225,7 @@ The StockPulse Security Team
     if smtp_user and smtp_pass:
         try:
             msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"{otp_code} is your StockPulse verification code"
+            msg["Subject"] = subject_text
             msg["From"] = f"{from_name} <{from_email}>"
             msg["To"] = to_email
 
