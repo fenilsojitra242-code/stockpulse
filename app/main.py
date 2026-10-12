@@ -98,6 +98,14 @@ def serve_dashboard():
     return {"message": "StockPulse API is running. Frontend not yet found."}
 
 
+@app.get("/login")
+@app.get("/register")
+@app.get("/signin")
+def serve_login_page():
+    """Serve the dedicated StockPulse Login & Account Creation page."""
+    return FileResponse(os.path.join("frontend", "login.html"))
+
+
 @app.get("/live")
 def serve_live_page():
     """Serve the dedicated Live Market & Price Chart page."""
@@ -142,17 +150,8 @@ def serve_history_page():
 @app.get("/notifications")
 @app.get("/notifications-view")
 @app.get("/notifications-page")
-def serve_notifications_page(request: Request):
-    """Serve the dedicated Real-time System Notifications page (or JSON for API clients)."""
-    accept = request.headers.get("accept", "")
-    if "application/json" in accept and "text/html" not in accept:
-        from app.database.database import SessionLocal
-        from app.api.notifications import list_notifications
-        db = SessionLocal()
-        try:
-            return list_notifications(db=db)
-        finally:
-            db.close()
+def serve_notifications_page():
+    """Serve the dedicated Real-time System Notifications page."""
     return FileResponse(os.path.join("frontend", "notifications.html"))
 
 

@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StockPulse — Sign In or Create Account</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    :root {
+      --auth-bg: #090d16;
+      --auth-card: rgba(15, 23, 42, 0.85);
+      --auth-border: rgba(255, 255, 255, 0.1);
+      --auth-accent: #2563eb;
+      --auth-accent-hover: #1d4ed8;
+      --auth-text: #f8fafc;
+      --auth-muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      min-height: 100vh;
+      background: radial-gradient(circle at 50% 0%, #1e293b 0%, #090d16 65%, #05070c 100%);
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: var(--auth-text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    /* Ambient background grid */
+    body::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-image: linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .auth-container {
+      position: relative;
+      z-index: 10;
+      width: 100%;
+      max-width: 460px;
+      margin: auto;
+    }
+
+    /* Brand Header */
+    .brand-header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+
+    .brand-logo-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 56px;
+      height: 56px;
+      border-radius: 16px;
+      background: linear-gradient(135deg, #2563eb, #3b82f6);
+      color: #fff;
+      font-size: 26px;
+      box-shadow: 0 0 25px rgba(37, 99, 235, 0.45);
+      margin-bottom: 14px;
+      animation: pulse-glow 3s infinite ease-in-out;
+    }
+
+    @keyframes pulse-glow {
+      0%, 100% { box-shadow: 0 0 20px rgba(37, 99, 235, 0.4); }
+      50% { box-shadow: 0 0 35px rgba(59, 130, 246, 0.7); }
+    }
+
+    .brand-title {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, #ffffff 40%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 6px;
+    }
+
+    .brand-subtitle {
+      font-size: 13px;
+      color: var(--auth-muted);
+      line-height: 1.4;
+    }
+
+    /* Auth Card */
+    .auth-card {
+      background: var(--auth-card);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--auth-border);
+      border-radius: 20px;
+      padding: 32px;
+      box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.7),
+                  0 0 0 1px rgba(255, 255, 255, 0.05);
+    }
+
+    /* Segmented Tab Switcher */
+    .auth-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      background: rgba(0, 0, 0, 0.35);
+      padding: 4px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      margin-bottom: 24px;
+    }
+
+    .auth-tab-btn {
+      padding: 10px 16px;
+      border: none;
+      background: transparent;
+      color: var(--auth-muted);
+      font-size: 14px;
+      font-weight: 600;
+      border-radius: 9px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .auth-tab-btn:hover {
+      color: #fff;
+    }
+
+    .auth-tab-btn.active {
+      background: var(--auth-accent);
+      color: #ffffff;
+      box-shadow: 0 2px 10px rgba(37, 99, 235, 0.4);
+    }
+
+    /* Feedback message banner */
+    .auth-feedback-banner {
+      display: none;
+      padding: 12px 16px;
+      border-radius: 10px;
+      font-size: 13px;
+      line-height: 1.4;
+      margin-bottom: 20px;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .auth-feedback-banner.error {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+    }
+
+    .auth-feedback-banner.success {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(34, 197, 94, 0.15);
+      border: 1px solid rgba(34, 197, 94, 0.3);
+      color: #86efac;
+    }
+
+    /* Form Groups */
+    .form-group {
+      margin-bottom: 18px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: #cbd5e1;
+      margin-bottom: 6px;
+    }
+
+    .input-wrapper {
+      position: relative;
+    }
+
+    .input-wrapper i.field-icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #64748b;
+      font-size: 14px;
+      pointer-events: none;
+      transition: color 0.2s;
+    }
+
+    .auth-input {
+      width: 100%;
+      height: 46px;
+      padding: 0 14px 0 42px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      color: #f8fafc;
+      font-size: 14px;
+      font-family: inherit;
+      transition: all 0.2s ease;
+    }
+
+    .auth-input::placeholder {
+      color: #64748b;
+      font-size: 13px;
+    }
+
+    .auth-input:focus {
+      outline: none;
+      border-color: #3b82f6;
+      background: rgba(15, 23, 42, 0.85);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25);
+    }
+
+    .input-wrapper:focus-within i.field-icon {
+      color: #3b82f6;
+    }
+
+    .toggle-password-btn {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: #64748b;
+      cursor: pointer;
+      padding: 4px;
+      font-size: 14px;
+      transition: color 0.2s;
+    }
+
+    .toggle-password-btn:hover {
+      color: #cbd5e1;
+    }
+
+    /* Submit Button */
+    .auth-submit-btn {
+      width: 100%;
+      height: 48px;
+      margin-top: 10px;
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      border: none;
+      border-radius: 12px;
+      color: #ffffff;
+      font-size: 15px;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      box-shadow: 0 4px 15px rgba(37, 99, 235, 0.35);
+      transition: all 0.2s ease;
+    }
+
+    .auth-submit-btn:hover {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(37, 99, 235, 0.45);
+    }
+
+    .auth-submit-btn:active {
+      transform: translateY(0);
+    }
+
+    .auth-submit-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Switch mode prompt */
+    .auth-footer-prompt {
+      text-align: center;
+      margin-top: 20px;
+      font-size: 13px;
+      color: var(--auth-muted);
+    }
+
+    .auth-switch-link {
+      color: #60a5fa;
+      font-weight: 600;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      margin-left: 4px;
+      font-size: 13px;
+      text-decoration: underline;
+      transition: color 0.2s;
+    }
+
+    .auth-switch-link:hover {
+      color: #93c5fd;
+    }
+
+    .feature-highlights {
+      margin-top: 24px;
+      display: flex;
+      justify-content: space-around;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      padding-top: 18px;
+    }
+
+    .highlight-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+
+    .highlight-item i {
+      color: #10b981;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="auth-container">
+    <!-- Brand Header -->
+    <div class="brand-header">
+      <div class="brand-logo-badge">
+        <i class="fa-solid fa-chart-line"></i>
+      </div>
+      <h1 class="brand-title">StockPulse</h1>
+      <p class="brand-subtitle">Real-time dynamic stock monitoring & probabilistic alerts</p>
+    </div>
+
+    <!-- Main Auth Card -->
+    <div class="auth-card">
+      <!-- Tabs -->
+      <div class="auth-tabs" role="tablist">
+        <button type="button" class="auth-tab-btn active" id="tab-login" onclick="switchAuthTab('login')">
+          <i class="fa-solid fa-right-to-bracket"></i> Sign In
+        </button>
+        <button type="button" class="auth-tab-btn" id="tab-register" onclick="switchAuthTab('register')">
+          <i class="fa-solid fa-user-plus"></i> Create Account
+        </button>
+      </div>
+
+      <!-- Feedback Alert Banner -->
+      <div id="auth-feedback" class="auth-feedback-banner">
+        <i id="feedback-icon" class="fa-solid fa-circle-exclamation"></i>
+        <span id="feedback-text">Message</span>
+      </div>
+
+      <!-- 1. SIGN IN FORM -->
+      <form id="form-login" onsubmit="handleLoginSubmit(event)" autocomplete="on">
+        <div class="form-group">
+          <label for="login-identifier">Email or Username</label>
+          <div class="input-wrapper">
+            <i class="fa-solid fa-user field-icon"></i>
+            <input
+              type="text"
+              id="login-identifier"
+              class="auth-input"
+              placeholder="Enter your email or username"
+              required
+              autocomplete="username"
+            >
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="login-password">Password</label>
+          <div class="input-wrapper">
+            <i class="fa-solid fa-lock field-icon"></i>
+            <input
+              type="password"
+              id="login-password"
+              class="auth-input"
+              placeholder="Enter your password"
+              required
+              autocomplete="current-password"
+            >
+            <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('login-password', this)">
+              <i class="fa-solid fa-eye"></i>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" id="btn-login-submit" class="auth-submit-btn">
+          <span>Sign In to StockPulse</span>
+          <i class="fa-solid fa-arrow-right"></i>
+        </button>
+
+        <p class="auth-footer-prompt">
+          Don't have an account yet?
+          <button type="button" class="auth-switch-link" onclick="switchAuthTab('register')">Create an account</button>
+        </p>
+      </form>
+
+      <!-- 2. CREATE ACCOUNT FORM -->
+      <form id="form-register" onsubmit="handleRegisterSubmit(event)" style="display: none;" autocomplete="on">
+        <div class="form-group">
+          <label for="register-name">Full Name</label>
+          <div class="input-wrapper">
+            <i class="fa-solid fa-id-card field-icon"></i>
+            <input
+              type="text"
+              id="register-name"
+              class="auth-input"
+              placeholder="Enter your name"
+              required
+              autocomplete="name"
+            >
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="register-username">Username <span style="font-weight: 400; color: #64748b;">(optional)</span></label>
+          <div class="input-wrapper">
+            <i class="fa-solid fa-at field-icon"></i>
+            <input
+              type="text"
+              id="register-username"
+              class="auth-input"
+              placeholder="Choose a username (e.g. trader_john)"
+              autocomplete="username"
+            >
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="register-email">Email Address</label>
+          <div class="input-wrapper">
+            <i class="fa-solid fa-envelope field-icon"></i>
+            <input
+              type="email"
+              id="register-email"
+              class="auth-input"
+              placeholder="Enter your email address"
+              required
+              autocomplete="email"
+            >
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="register-password">Password</label>
+          <div class="input-wrapper">
+            <i class="fa-solid fa-lock field-icon"></i>
+            <input
+              type="password"
+              id="register-password"
+              class="auth-input"
+              placeholder="Create a strong password (min 4 characters)"
+              required
+              autocomplete="new-password"
+            >
+            <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('register-password', this)">
+              <i class="fa-solid fa-eye"></i>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" id="btn-register-submit" class="auth-submit-btn">
+          <span>Create Account & Start Monitoring</span>
+          <i class="fa-solid fa-arrow-right"></i>
+        </button>
+
+        <p class="auth-footer-prompt">
+          Already have an account?
+          <button type="button" class="auth-switch-link" onclick="switchAuthTab('login')">Sign in here</button>
+        </p>
+      </form>
+
+      <!-- Highlights Footer -->
+      <div class="feature-highlights">
+        <div class="highlight-item">
+          <i class="fa-solid fa-shield-halved"></i>
+          <span>Isolated Monitors</span>
+        </div>
+        <div class="highlight-item">
+          <i class="fa-solid fa-bell"></i>
+          <span>Personal Alerts</span>
+        </div>
+        <div class="highlight-item">
+          <i class="fa-solid fa-bolt"></i>
+          <span>Live 10s Updates</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // If user already has a valid token, redirect directly to /live
+    (function checkExistingSession() {
+      const token = localStorage.getItem('stockpulse_jwt_token');
+      if (token) {
+        // Quick verification before redirect
+        fetch('/api/auth/me', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        }).then(res => {
+          if (res.ok) {
+            window.location.replace('/live');
+          } else {
+            // Invalid/expired token: clear stale session
+            localStorage.removeItem('stockpulse_jwt_token');
+            localStorage.removeItem('stockpulse_user_profile');
+          }
+        }).catch(() => {});
+      }
+    })();
+
+    // Tab switcher
+    function switchAuthTab(mode) {
+      const tabLogin = document.getElementById('tab-login');
+      const tabRegister = document.getElementById('tab-register');
+      const formLogin = document.getElementById('form-login');
+      const formRegister = document.getElementById('form-register');
+      hideFeedback();
+
+      if (mode === 'register') {
+        tabLogin.classList.remove('active');
+        tabRegister.classList.add('active');
+        formLogin.style.display = 'none';
+        formRegister.style.display = 'block';
+        document.getElementById('register-name').focus();
+      } else {
+        tabRegister.classList.remove('active');
+        tabLogin.classList.add('active');
+        formRegister.style.display = 'none';
+        formLogin.style.display = 'block';
+        document.getElementById('login-identifier').focus();
+      }
+    }
+
+    // Toggle password eye
+    function togglePasswordVisibility(inputId, btnEl) {
+      const input = document.getElementById(inputId);
+      const icon = btnEl.querySelector('i');
+      if (input.type === 'password') {
+        input.type = 'text';
+        icon.className = 'fa-solid fa-eye-slash';
+      } else {
+        input.type = 'password';
+        icon.className = 'fa-solid fa-eye';
+      }
+    }
+
+    // Banner feedback helpers
+    function showFeedback(msg, isError = true) {
+      const banner = document.getElementById('auth-feedback');
+      const icon = document.getElementById('feedback-icon');
+      const text = document.getElementById('feedback-text');
+      banner.className = 'auth-feedback-banner ' + (isError ? 'error' : 'success');
+      icon.className = isError ? 'fa-solid fa-circle-exclamation' : 'fa-solid fa-circle-check';
+      text.textContent = msg;
+      banner.style.display = 'flex';
+    }
+
+    function hideFeedback() {
+      const banner = document.getElementById('auth-feedback');
+      banner.style.display = 'none';
+    }
+
+    // Handle Login Submit
+    async function handleLoginSubmit(e) {
+      e.preventDefault();
+      hideFeedback();
+
+      const identInput = document.getElementById('login-identifier');
+      const passInput = document.getElementById('login-password');
+      const btn = document.getElementById('btn-login-submit');
+
+      const identifier = identInput.value.trim();
+      const password = passInput.value;
+
+      if (!identifier || !password) {
+        showFeedback('Please enter both your email/username and password.');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Signing in...</span>';
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identifier, password })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          const detail = data && data.detail ? data.detail : 'Invalid credentials. Please try again.';
+          showFeedback(detail, true);
+          btn.disabled = false;
+          btn.innerHTML = '<span>Sign In to StockPulse</span> <i class="fa-solid fa-arrow-right"></i>';
+          return;
+        }
+
+        // Success!
+        localStorage.setItem('stockpulse_jwt_token', data.access_token);
+        localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
+        showFeedback(`Welcome back, ${data.user.name}! Redirecting...`, false);
+
+        setTimeout(() => {
+          window.location.href = '/live';
+        }, 400);
+
+      } catch (err) {
+        console.error('Login error:', err);
+        showFeedback('Network connection error. Please try again.', true);
+        btn.disabled = false;
+        btn.innerHTML = '<span>Sign In to StockPulse</span> <i class="fa-solid fa-arrow-right"></i>';
+      }
+    }
+
+    // Handle Register Submit
+    async function handleRegisterSubmit(e) {
+      e.preventDefault();
+      hideFeedback();
+
+      const nameInput = document.getElementById('register-name');
+      const userInput = document.getElementById('register-username');
+      const emailInput = document.getElementById('register-email');
+      const passInput = document.getElementById('register-password');
+      const btn = document.getElementById('btn-register-submit');
+
+      const name = nameInput.value.trim();
+      const username = userInput.value.trim();
+      const email = emailInput.value.trim();
+      const password = passInput.value;
+
+      if (!name || !email || !password) {
+        showFeedback('Please fill in all required fields.');
+        return;
+      }
+
+      if (password.length < 4) {
+        showFeedback('Password must be at least 4 characters long.');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Creating account...</span>';
+
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            email,
+            password,
+            username: username || null
+          })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          const detail = data && data.detail ? data.detail : 'Failed to create account. Please try again.';
+          showFeedback(detail, true);
+          btn.disabled = false;
+          btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
+          return;
+        }
+
+        // Success!
+        localStorage.setItem('stockpulse_jwt_token', data.access_token);
+        localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
+        showFeedback(`Account created! Welcome, ${data.user.name}! Redirecting...`, false);
+
+        setTimeout(() => {
+          window.location.href = '/live';
+        }, 500);
+
+      } catch (err) {
+        console.error('Registration error:', err);
+        showFeedback('Network connection error. Please try again.', true);
+        btn.disabled = false;
+        btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
+      }
+    }
+  </script>
+</body>
+</html>

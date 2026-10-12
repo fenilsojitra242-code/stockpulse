@@ -61,6 +61,14 @@ class NotificationService:
             priority = data.get("priority") or get_default_priority(event_type)
             symbol = data.get("symbol", "N/A").upper()
             alert_id = data.get("alert_id")
+            user_id = data.get("user_id")
+            if not user_id and alert_id and db:
+                try:
+                    found_alert = db.query(Alert).filter(Alert.id == alert_id).first()
+                    if found_alert and found_alert.user_id:
+                        user_id = found_alert.user_id
+                except Exception:
+                    pass
 
             # Resolve channels: only dashboard and popup are supported
             resolved_channels = ["dashboard", "popup"]
@@ -120,6 +128,7 @@ class NotificationService:
             try:
                 primary_channel = "popup" if "popup" in resolved_channels else (resolved_channels[0] if resolved_channels else "dashboard")
                 notif_record = Notification(
+                    user_id=user_id,
                     alert_id=alert_id,
                     symbol=symbol,
                     event_type=event_type,

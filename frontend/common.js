@@ -10,7 +10,60 @@ window.StockPulse = (function () {
   // Shared state across all separate pages
   const STORAGE_KEY_STOCK = 'stockpulse_selected_stock';
   const STORAGE_KEY_USER = 'stockpulse_user_profile';
+  const STORAGE_KEY_TOKEN = 'stockpulse_jwt_token';
   const STORAGE_KEY_SOUND = 'stockpulse_sound_enabled';
+
+  // Determine if current page is the login / register page
+  const currentPath = window.location.pathname.toLowerCase();
+  const isAuthPage = currentPath.startsWith('/login') ||
+                     currentPath.startsWith('/register') ||
+                     currentPath.startsWith('/signin');
+
+  // Enforce authentication gate: redirect unauthenticated users to /login immediately
+  const existingToken = localStorage.getItem(STORAGE_KEY_TOKEN);
+  if (!existingToken && !isAuthPage) {
+    window.location.replace('/login');
+    return {};
+  }
+
+  // Intercept window.fetch to automatically include JWT Authorization header and handle session expiry
+  if (!window._stockpulseFetchWrapped) {
+    window._stockpulseFetchWrapped = true;
+    const originalFetch = window.fetch;
+    window.fetch = async function (resource, init = {}) {
+      const token = localStorage.getItem(STORAGE_KEY_TOKEN);
+      if (token) {
+        init = init || {};
+        init.headers = init.headers || {};
+        if (init.headers instanceof Headers) {
+          if (!init.headers.has('Authorization')) {
+            init.headers.set('Authorization', 'Bearer ' + token);
+          }
+        } else if (Array.isArray(init.headers)) {
+          if (!init.headers.some(([k]) => k.toLowerCase() === 'authorization')) {
+            init.headers.push(['Authorization', 'Bearer ' + token]);
+          }
+        } else {
+          if (!init.headers['Authorization']) {
+            init.headers['Authorization'] = 'Bearer ' + token;
+          }
+        }
+      }
+
+      const response = await originalFetch(resource, init);
+
+      // Handle 401 Unauthorized by returning to /login
+      if (response.status === 401 && !isAuthPage) {
+        const urlStr = typeof resource === 'string' ? resource : (resource.url || '');
+        if (urlStr.includes('/api/')) {
+          localStorage.removeItem(STORAGE_KEY_TOKEN);
+          localStorage.removeItem(STORAGE_KEY_USER);
+          window.location.replace('/login');
+        }
+      }
+      return response;
+    };
+  }
 
   // IST timezone offset: UTC+5:30
   const IST_LOCALE = 'en-IN';
@@ -1322,6 +1375,60 @@ window.StockPulse = (function () {
     }
   }
 
+  // --- RENDER AUTHENTICATED USER PILL IN NAVBAR ---
+  function renderNavbarUserPill() {
+    const navActions = document.querySelector('.nav-actions');
+    if (!navActions) return;
+
+    let userPill = document.getElementById('nav-user-pill');
+    const user = getUser();
+    const displayName = (user && (user.name || user.username || user.email)) ? (user.name || user.username) : 'Trader';
+    const initial = displayName ? displayName.charAt(0).toUpperCase() : 'U';
+
+    if (!userPill) {
+      userPill = document.createElement('div');
+      userPill.id = 'nav-user-pill';
+      userPill.className = 'nav-user-pill';
+      userPill.style.display = 'inline-flex';
+      userPill.style.alignItems = 'center';
+      userPill.style.gap = '8px';
+      userPill.style.background = 'rgba(255, 255, 255, 0.08)';
+      userPill.style.border = '1px solid rgba(255, 255, 255, 0.15)';
+      userPill.style.borderRadius = '20px';
+      userPill.style.padding = '4px 12px 4px 6px';
+      userPill.style.marginLeft = '8px';
+
+      userPill.innerHTML = `
+        <span id="nav-user-avatar" style="width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, #2563eb, #3b82f6); color: #fff; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 0 10px rgba(37,99,235,0.4);">${initial}</span>
+        <span id="nav-user-name" style="font-size: 12px; font-weight: 600; color: #f8fafc; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${displayName}</span>
+        <button id="nav-btn-logout" title="Sign out of StockPulse" style="background: none; border: none; color: #94a3b8; cursor: pointer; padding: 2px 4px; font-size: 13px; display: inline-flex; align-items: center; margin-left: 2px; transition: color 0.2s;">
+          <i class="fa-solid fa-right-from-bracket"></i>
+        </button>
+      `;
+
+      navActions.insertBefore(userPill, navActions.firstChild);
+
+      const logoutBtn = document.getElementById('nav-btn-logout');
+      if (logoutBtn) {
+        logoutBtn.addEventListener('mouseenter', () => logoutBtn.style.color = '#ef4444');
+        logoutBtn.addEventListener('mouseleave', () => logoutBtn.style.color = '#94a3b8');
+        logoutBtn.addEventListener('click', async () => {
+          localStorage.removeItem(STORAGE_KEY_TOKEN);
+          localStorage.removeItem(STORAGE_KEY_USER);
+          try {
+            await fetch('/api/auth/logout', { method: 'POST' });
+          } catch (e) {}
+          window.location.replace('/login');
+        });
+      }
+    } else {
+      const nameEl = document.getElementById('nav-user-name');
+      const avatarEl = document.getElementById('nav-user-avatar');
+      if (nameEl) nameEl.textContent = displayName;
+      if (avatarEl) avatarEl.textContent = initial;
+    }
+  }
+
   // --- MOBILE TOGGLE ---
   function setupMobileMenu() {
     const btnToggle = document.getElementById('btn-mobile-toggle');
@@ -1335,8 +1442,10 @@ window.StockPulse = (function () {
 
   // --- AUTO INITIALIZE ON DOM READY ---
   document.addEventListener('DOMContentLoaded', () => {
+    if (isAuthPage) return;
     highlightCurrentNav();
     setupMobileMenu();
+    renderNavbarUserPill();
     setupAuthModal();
     setupSettingsModal();
     setupAudioUnlock();

@@ -20,12 +20,18 @@ from app.services.prediction import predict_target_probability
 from app.services.market_data import get_latest_market_snapshot
 from app.services.alert_engine import stop_alert_monitoring
 from app.services.scheduler import trigger_immediate_evaluation
+from app.api.auth import get_current_user
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
 
 
 @router.post("", response_model=AlertResponse, status_code=status.HTTP_201_CREATED)
-def create_alert(alert_in: AlertCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def create_alert(
+    alert_in: AlertCreate,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
     Configure a new early-warning alert.
     Validates dynamic percentage, warning window, direction, and stock symbol.
@@ -77,6 +83,7 @@ def create_alert(alert_in: AlertCreate, background_tasks: BackgroundTasks, db: S
         print(f"[AlertsAPI] Price initialization notice: {exc}")
 
     alert = Alert(
+        user_id=current_user.id,
         symbol=sym,
         stock_id=stock.id,
         direction=direction,
@@ -90,7 +97,7 @@ def create_alert(alert_in: AlertCreate, background_tasks: BackgroundTasks, db: S
         min_probability=auto_threshold,
         monitoring_interval=alert_in.monitoring_interval or 1,
         notification_method=alert_in.notification_method or "popup",
-        recipient_email=alert_in.recipient_email,
+        recipient_email=alert_in.recipient_email or current_user.email,
         cooldown_minutes=alert_in.cooldown_minutes or 0,
         status="MONITORING",
         created_at=now,
@@ -117,7 +124,10 @@ def create_alert(alert_in: AlertCreate, background_tasks: BackgroundTasks, db: S
 
 
 @router.get("/active", response_model=List[AlertResponse])
-def get_active_monitoring_sessions(db: Session = Depends(get_db)):
+def get_active_monitoring_sessions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
     Returns all active monitoring sessions for the dedicated side panel,
     enriched with current live price, current movement, remaining %, and live probability.
@@ -125,6 +135,7 @@ def get_active_monitoring_sessions(db: Session = Depends(get_db)):
     from app.services.alert_engine import compute_target_price, compute_stop_loss_price
     cutoff_time = datetime.utcnow() - timedelta(minutes=30)
     active_alerts = db.query(Alert).filter(
+        Alert.user_id == current_user.id,
         or_(
             Alert.status.in_(["MONITORING", "EARLY_WARNING", "TARGET_TRIGGERED", "DATA_UNAVAILABLE", "MODEL_UNAVAILABLE"]),
             and_(Alert.status == "EXPIRED", Alert.stopped_at >= cutoff_time)
@@ -278,7 +289,11 @@ def get_alert_notifications(alert_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{alert_id}/stop", response_model=AlertResponse)
-def stop_monitoring_endpoint(alert_id: int, db: Session = Depends(get_db)):
+def stop_monitoring_endpoint(
+    alert_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
     Stop monitoring for this alert:
     1. Stops background monitoring process.
@@ -286,6 +301,12 @@ def stop_monitoring_endpoint(alert_id: int, db: Session = Depends(get_db)):
     3. Changes status to STOPPED.
     4. Saves the monitoring session in history with duration.
     """
+    target = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    if target.user_id and target.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized to modify this alert")
+
     alert = stop_alert_monitoring(alert_id, db)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
@@ -293,11 +314,17 @@ def stop_monitoring_endpoint(alert_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/{alert_id}")
-def delete_alert(alert_id: int, db: Session = Depends(get_db)):
+def delete_alert(
+    alert_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Delete an alert."""
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
+    if alert.user_id and alert.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized to delete this alert")
     db.delete(alert)
     db.commit()
     return {"message": "Alert deleted successfully", "id": alert_id}
@@ -396,11 +423,18 @@ def validate_target_endpoint(req: TargetValidationRequest):
 
 
 @router.post("/{alert_id}/extend", response_model=AlertResponse)
-def extend_alert_window(alert_id: int, minutes: int = 1, db: Session = Depends(get_db)):
+def extend_alert_window(
+    alert_id: int,
+    minutes: int = 1,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Extend the warning window of an active alert by N minutes."""
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
+    if alert.user_id and alert.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized to modify this alert")
     alert.warning_minutes = max(1, alert.warning_minutes + minutes)
     db.commit()
     db.refresh(alert)
@@ -408,11 +442,17 @@ def extend_alert_window(alert_id: int, minutes: int = 1, db: Session = Depends(g
 
 
 @router.post("/{alert_id}/reset_ref", response_model=AlertResponse)
-def reset_alert_reference(alert_id: int, db: Session = Depends(get_db)):
+def reset_alert_reference(
+    alert_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Reset reference price to latest live market quote."""
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
+    if alert.user_id and alert.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized to modify this alert")
     from app.services.market_data import get_latest_market_snapshot
     snap = get_latest_market_snapshot(alert.symbol)
     if snap and snap.get("price"):

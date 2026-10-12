@@ -536,6 +536,7 @@ def evaluate_active_alerts(db: Session) -> List[Dict[str, Any]]:
 
             start_t = alert.started_at or alert.created_at or now
             hist_entry = AlertHistory(
+                user_id=alert.user_id,
                 alert_id=alert.id,
                 symbol=sym,
                 direction=hit_dir_now,
@@ -663,6 +664,7 @@ def evaluate_active_alerts(db: Session) -> List[Dict[str, Any]]:
             )
 
             history_entry = AlertHistory(
+                user_id=alert.user_id,
                 alert_id=alert.id,
                 symbol=sym,
                 direction=detected_dir,
@@ -794,6 +796,7 @@ def check_pending_outcomes(db: Session, snapshots: Dict[str, Any]):
 
         if not hists:
             new_hist = AlertHistory(
+                user_id=alert.user_id,
                 alert_id=alert.id,
                 symbol=sym,
                 direction=direction,
@@ -1014,6 +1017,7 @@ def stop_alert_monitoring(alert_id: int, db: Session) -> Optional[Alert]:
         print(f"[AlertEngine] Stop notification error for {alert.symbol}: {exc}")
 
     hist = AlertHistory(
+        user_id=alert.user_id,
         alert_id=alert.id,
         symbol=alert.symbol,
         direction=alert.direction,

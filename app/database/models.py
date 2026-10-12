@@ -8,11 +8,14 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), nullable=False, default="Default User")
+    name = Column(String(100), nullable=False, default="Trader")
+    username = Column(String(50), unique=True, index=True, nullable=True)
     email = Column(String(150), unique=True, index=True, nullable=False, default="user@stockpulse.io")
+    password_hash = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     alerts = relationship("Alert", back_populates="user", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
 
 
 class Stock(Base):
@@ -83,6 +86,7 @@ class AlertHistory(Base):
     __tablename__ = "alert_history"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     alert_id = Column(Integer, ForeignKey("alerts.id", ondelete="CASCADE"), nullable=True)
     symbol = Column(String(30), nullable=False, index=True)
     direction = Column(String(10), nullable=False)
@@ -111,6 +115,7 @@ class AlertHistory(Base):
     outcome_notes = Column(Text, nullable=True)
 
     alert = relationship("Alert", back_populates="history")
+    user = relationship("User")
 
 
 class SystemSetting(Base):
@@ -125,6 +130,7 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     alert_id = Column(Integer, ForeignKey("alerts.id", ondelete="SET NULL"), nullable=True, index=True)
     symbol = Column(String(30), nullable=False, index=True)
     event_type = Column(String(50), nullable=False, index=True)
@@ -141,4 +147,5 @@ class Notification(Base):
     extra_data = Column(Text, nullable=True)
 
     alert = relationship("Alert", back_populates="notifications")
+    user = relationship("User", back_populates="notifications")
 

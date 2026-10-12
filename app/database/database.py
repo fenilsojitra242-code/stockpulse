@@ -33,21 +33,38 @@ def run_db_migrations(db_engine):
     from sqlalchemy import inspect, text
     try:
         inspector = inspect(db_engine)
-        if "alerts" in inspector.get_table_names():
-            existing_cols = {col["name"] for col in inspector.get_columns("alerts")}
-            new_columns = [
+        table_names = inspector.get_table_names()
+
+        table_migrations = {
+            "alerts": [
                 ("enable_supertrend", "BOOLEAN DEFAULT 1"),
                 ("supertrend_proximity_points", "FLOAT DEFAULT 1.0"),
                 ("last_supertrend_direction", "VARCHAR(10)"),
                 ("last_supertrend_price", "FLOAT"),
                 ("supertrend_approaching_sent", "BOOLEAN DEFAULT 0"),
+                ("user_id", "INTEGER"),
+            ],
+            "users": [
+                ("username", "VARCHAR(50)"),
+                ("password_hash", "VARCHAR(255)"),
+            ],
+            "notifications": [
+                ("user_id", "INTEGER"),
+            ],
+            "alert_history": [
+                ("user_id", "INTEGER"),
             ]
-            with db_engine.connect() as conn:
-                for col_name, col_type in new_columns:
-                    if col_name not in existing_cols:
-                        conn.execute(text(f"ALTER TABLE alerts ADD COLUMN {col_name} {col_type}"))
-                        conn.commit()
-                        print(f"[DB Migration] Added missing column alerts.{col_name}")
+        }
+
+        with db_engine.connect() as conn:
+            for tbl, new_columns in table_migrations.items():
+                if tbl in table_names:
+                    existing_cols = {col["name"] for col in inspector.get_columns(tbl)}
+                    for col_name, col_type in new_columns:
+                        if col_name not in existing_cols:
+                            conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN {col_name} {col_type}"))
+                            conn.commit()
+                            print(f"[DB Migration] Added missing column {tbl}.{col_name}")
     except Exception as e:
         print(f"[DB Migration] Schema migration note: {e}")
 
