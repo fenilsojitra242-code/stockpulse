@@ -747,13 +747,13 @@
         const res = await fetch('/api/auth/send-registration-otp', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, name })
+          body: JSON.stringify({ email, name, username: username || null })
         });
 
         const data = await res.json();
 
         if (!res.ok) {
-          const detail = data && data.detail ? data.detail : 'Email verification failed. Please try again.';
+          const detail = data && data.detail ? data.detail : 'Registration failed. Please try again.';
           showFeedback(detail, true);
           btn.disabled = false;
           btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';

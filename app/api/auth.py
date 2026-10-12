@@ -171,6 +171,7 @@ class LoginRequest(BaseModel):
 class SendOTPRequest(BaseModel):
     email: str = Field(..., description="Email address to verify")
     name: str = Field(..., min_length=2, max_length=100, description="Full name of user")
+    username: Optional[str] = Field(None, max_length=50, description="Optional chosen username")
 
     @field_validator("email")
     @classmethod
@@ -201,7 +202,8 @@ def send_registration_otp(req: SendOTPRequest, db: Session = Depends(get_db)):
     """
     1. Validates email syntax, blocks dummy/test emails and disposable providers.
     2. Performs DNS MX lookup to ensure domain has real mail servers.
-    3. Generates 6-digit OTP code and dispatches branded email via SMTP.
+    3. Checks if email or username is already taken.
+    4. Generates 6-digit OTP code and dispatches branded email via SMTP.
     """
     clean_email = req.email.strip().lower()
     clean_name = req.name.strip()
@@ -221,6 +223,16 @@ def send_registration_otp(req: SendOTPRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="An account with this email already exists. Please sign in."
         )
+
+    # Check if username is already taken
+    if req.username and req.username.strip():
+        clean_username = req.username.strip().lower()
+        existing_by_user = db.query(User).filter(func.lower(User.username) == clean_username).first()
+        if existing_by_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This username is already taken. Please choose a different username."
+            )
 
     # Rate limiting: max 1 OTP request every 25 seconds for the same email
     now = datetime.utcnow()
