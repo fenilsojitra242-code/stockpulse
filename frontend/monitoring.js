@@ -595,9 +595,12 @@
         el.btnStartMonitoring.disabled = true;
         if (el.btnStartLabel) el.btnStartLabel.textContent = 'STARTING...';
       }
+      const alertHeaders = { 'Content-Type': 'application/json' };
+      const authToken = (window.StockPulse && StockPulse.getAuthToken) ? StockPulse.getAuthToken() : null;
+      if (authToken) alertHeaders['Authorization'] = `Bearer ${authToken}`;
       res = await fetch('/api/alerts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: alertHeaders,
         body: JSON.stringify(payload)
       });
     } catch (e) {

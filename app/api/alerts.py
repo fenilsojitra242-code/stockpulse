@@ -20,12 +20,18 @@ from app.services.prediction import predict_target_probability
 from app.services.market_data import get_latest_market_snapshot
 from app.services.alert_engine import stop_alert_monitoring
 from app.services.scheduler import trigger_immediate_evaluation
+from app.api.auth import get_current_user_optional
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
 
 
 @router.post("", response_model=AlertResponse, status_code=status.HTTP_201_CREATED)
-def create_alert(alert_in: AlertCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def create_alert(
+    alert_in: AlertCreate,
+    background_tasks: BackgroundTasks,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db)
+):
     """
     Configure a new early-warning alert.
     Validates dynamic percentage, warning window, direction, and stock symbol.
@@ -76,9 +82,13 @@ def create_alert(alert_in: AlertCreate, background_tasks: BackgroundTasks, db: S
     except Exception as exc:
         print(f"[AlertsAPI] Price initialization notice: {exc}")
 
+    effective_user_id = current_user.id if current_user else None
+    effective_email = alert_in.recipient_email or (current_user.email if current_user else None)
+
     alert = Alert(
         symbol=sym,
         stock_id=stock.id,
+        user_id=effective_user_id,
         direction=direction,
         target_percent=alert_in.target_percent,
         target_price=target_price_init,
@@ -90,7 +100,7 @@ def create_alert(alert_in: AlertCreate, background_tasks: BackgroundTasks, db: S
         min_probability=auto_threshold,
         monitoring_interval=alert_in.monitoring_interval or 1,
         notification_method=alert_in.notification_method or "popup",
-        recipient_email=alert_in.recipient_email,
+        recipient_email=effective_email,
         cooldown_minutes=alert_in.cooldown_minutes or 0,
         status="MONITORING",
         created_at=now,

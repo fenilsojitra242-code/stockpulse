@@ -33,7 +33,10 @@ def run_db_migrations(db_engine):
     from sqlalchemy import inspect, text
     try:
         inspector = inspect(db_engine)
-        if "alerts" in inspector.get_table_names():
+        table_names = inspector.get_table_names()
+        
+        # Check alerts table
+        if "alerts" in table_names:
             existing_cols = {col["name"] for col in inspector.get_columns("alerts")}
             new_columns = [
                 ("enable_supertrend", "BOOLEAN DEFAULT 1"),
@@ -48,6 +51,15 @@ def run_db_migrations(db_engine):
                         conn.execute(text(f"ALTER TABLE alerts ADD COLUMN {col_name} {col_type}"))
                         conn.commit()
                         print(f"[DB Migration] Added missing column alerts.{col_name}")
+
+        # Check users table for password_hash
+        if "users" in table_names:
+            existing_user_cols = {col["name"] for col in inspector.get_columns("users")}
+            if "password_hash" not in existing_user_cols:
+                with db_engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)"))
+                    conn.commit()
+                    print("[DB Migration] Added missing column users.password_hash")
     except Exception as e:
         print(f"[DB Migration] Schema migration note: {e}")
 

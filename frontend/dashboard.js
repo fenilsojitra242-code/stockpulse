@@ -963,9 +963,12 @@
 
     // 3. Register with Backend Monitoring & Automated Messaging Engine
     try {
+      const alertHeaders = { 'Content-Type': 'application/json' };
+      const authToken = (window.StockPulse && StockPulse.getAuthToken) ? StockPulse.getAuthToken() : (localStorage.getItem('stockpulse_jwt_token') || null);
+      if (authToken) alertHeaders['Authorization'] = `Bearer ${authToken}`;
       const resp = await fetch('/api/alerts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: alertHeaders,
         body: JSON.stringify({
           symbol: state.symbol,
           direction: state.direction,

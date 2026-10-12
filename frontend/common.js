@@ -10,6 +10,7 @@ window.StockPulse = (function () {
   // Shared state across all separate pages
   const STORAGE_KEY_STOCK = 'stockpulse_selected_stock';
   const STORAGE_KEY_USER = 'stockpulse_user_profile';
+  const STORAGE_KEY_TOKEN = 'stockpulse_jwt_token';
   const STORAGE_KEY_SOUND = 'stockpulse_sound_enabled';
 
   // IST timezone offset: UTC+5:30
@@ -1092,12 +1093,25 @@ window.StockPulse = (function () {
     }
   }
 
-  function setUser(user) {
-    if (!user) {
-      localStorage.removeItem(STORAGE_KEY_USER);
+  function getAuthToken() {
+    return localStorage.getItem(STORAGE_KEY_TOKEN);
+  }
+
+  function setAuthToken(token) {
+    if (!token) {
+      localStorage.removeItem(STORAGE_KEY_TOKEN);
     } else {
-      localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
+      localStorage.setItem(STORAGE_KEY_TOKEN, token);
     }
+  }
+
+  function authFetch(url, options = {}) {
+    const token = getAuthToken();
+    const headers = Object.assign({}, options.headers || {});
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    return fetch(url, Object.assign({}, options, { headers }));
   }
 
   // --- POPULATE STOCK SELECT DROPDOWNS ---
@@ -1195,98 +1209,402 @@ window.StockPulse = (function () {
     }
   }
 
-  // --- USER AUTHENTICATION / PREFERENCES MODAL LOGIC ---
+  // --- MODERN USER AUTHENTICATION & PROFILE SYSTEM ---
   function setupAuthModal() {
-    const btnOpenLogin = document.getElementById('btn-open-login');
-    const loginModal = document.getElementById('login-modal-backdrop');
-    const btnCloseLogin = document.getElementById('btn-close-login-modal');
-    const btnDismissLogin = document.getElementById('btn-dismiss-login-modal');
-    const formLogin = document.getElementById('form-user-login');
-    const btnLogout = document.getElementById('btn-logout-user');
-    const nameInput = document.getElementById('login-name-input');
-    const emailInput = document.getElementById('login-email-input');
-    const feedbackMsg = document.getElementById('login-feedback-msg');
-    const activeCard = document.getElementById('login-active-card');
-    const activeName = document.getElementById('active-user-name');
-    const activeEmail = document.getElementById('active-user-email');
-    const navUserLabel = document.getElementById('nav-user-label');
-    const navUserIcon = document.getElementById('nav-user-icon');
+    // 1. Ensure modal container exists in DOM
+    let authModal = document.getElementById('auth-modal-backdrop');
+    if (!authModal) {
+      authModal = document.createElement('div');
+      authModal.id = 'auth-modal-backdrop';
+      authModal.className = 'modal-backdrop';
+      authModal.style.display = 'none';
+      authModal.innerHTML = `
+        <div class="auth-modal-card" role="dialog" aria-modal="true">
+          <!-- Auth Form View (Sign In / Register) -->
+          <div id="auth-view-form">
+            <div class="modal-header" style="padding: 18px 24px 14px 24px; border-bottom: none;">
+              <div class="modal-icon-badge" style="background: rgba(37, 99, 235, 0.1); color: #2563eb;">
+                <i class="fa-solid fa-shield-halved"></i>
+              </div>
+              <div class="modal-header-titles">
+                <h3 class="modal-title" id="auth-modal-heading" style="font-size: 17px; margin-bottom: 2px;">StockPulse Account</h3>
+                <p class="modal-subtitle" id="auth-modal-subheading" style="font-size: 12.5px;">Sign in to sync your active stock alerts and monitors</p>
+              </div>
+              <button type="button" class="modal-close-btn" id="btn-close-auth-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            
+            <div class="auth-tabs-header">
+              <button type="button" class="auth-tab-btn active" id="tab-auth-login">Sign In</button>
+              <button type="button" class="auth-tab-btn" id="tab-auth-register">Create Account</button>
+            </div>
 
-    function renderUserUI() {
-      const user = getUser();
-      if (user && (user.name || user.email)) {
-        if (navUserLabel) navUserLabel.textContent = user.name || (user.email ? user.email.split('@')[0] : 'Trader');
-        if (navUserIcon) navUserIcon.className = 'fa-solid fa-user-check text-green';
-        if (activeCard) activeCard.style.display = 'flex';
-        if (activeName) activeName.textContent = user.name || 'Trader';
-        if (activeEmail) activeEmail.textContent = user.email || 'Popup Alerts Active';
-        if (emailInput) emailInput.value = user.email || '';
-        if (nameInput) nameInput.value = user.name || '';
-        if (btnLogout) btnLogout.style.display = 'inline-flex';
+            <form id="form-auth-submit" class="auth-modal-content">
+              <div id="auth-alert-message" class="auth-alert-box" style="display: none;"></div>
+
+              <div class="auth-input-group" id="group-auth-name" style="display: none;">
+                <label class="auth-input-label" for="auth-input-name">Full Name</label>
+                <div class="auth-input-wrapper">
+                  <i class="fa-solid fa-user auth-input-icon"></i>
+                  <input type="text" id="auth-input-name" class="auth-input-field" placeholder="e.g. Fenil Sojitra" autocomplete="name">
+                </div>
+              </div>
+
+              <div class="auth-input-group">
+                <label class="auth-input-label" for="auth-input-email">Email Address</label>
+                <div class="auth-input-wrapper">
+                  <i class="fa-solid fa-envelope auth-input-icon"></i>
+                  <input type="email" id="auth-input-email" class="auth-input-field" placeholder="you@example.com" required autocomplete="email">
+                </div>
+              </div>
+
+              <div class="auth-input-group">
+                <label class="auth-input-label" for="auth-input-password">Password</label>
+                <div class="auth-input-wrapper">
+                  <i class="fa-solid fa-lock auth-input-icon"></i>
+                  <input type="password" id="auth-input-password" class="auth-input-field" placeholder="At least 6 characters" required autocomplete="current-password">
+                  <button type="button" class="auth-toggle-pwd" id="btn-toggle-pwd" title="Show/Hide Password">
+                    <i class="fa-solid fa-eye" id="icon-toggle-pwd"></i>
+                  </button>
+                </div>
+              </div>
+
+              <button type="submit" class="auth-submit-btn" id="btn-submit-auth">
+                <span id="auth-btn-text">Sign In</span>
+                <i class="fa-solid fa-arrow-right" id="auth-btn-icon"></i>
+              </button>
+            </form>
+          </div>
+
+          <!-- Profile View (When Logged In) -->
+          <div id="auth-view-profile" style="display: none;">
+            <div class="modal-header" style="padding: 18px 24px 14px 24px;">
+              <div class="modal-icon-badge" style="background: rgba(16, 185, 129, 0.1); color: #10b981;">
+                <i class="fa-solid fa-circle-check"></i>
+              </div>
+              <div class="modal-header-titles">
+                <h3 class="modal-title" style="font-size: 17px; margin-bottom: 2px;">Your Account</h3>
+                <p class="modal-subtitle" style="font-size: 12.5px;">Manage active monitors and alerts</p>
+              </div>
+              <button type="button" class="modal-close-btn" id="btn-close-profile-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+
+            <div class="auth-modal-content">
+              <div class="auth-profile-badge">
+                <div class="auth-profile-avatar" id="auth-profile-avatar">U</div>
+                <div class="auth-profile-details">
+                  <div class="auth-profile-name" id="auth-profile-name">User</div>
+                  <div class="auth-profile-email" id="auth-profile-email">user@example.com</div>
+                </div>
+              </div>
+
+              <div class="auth-stats-grid">
+                <div class="auth-stat-card">
+                  <div class="auth-stat-value" id="auth-stat-alerts">0</div>
+                  <div class="auth-stat-label">Active Monitors</div>
+                </div>
+                <div class="auth-stat-card">
+                  <div class="auth-stat-value" style="color: #16a34a;"><i class="fa-solid fa-shield-check"></i></div>
+                  <div class="auth-stat-label">Verified Session</div>
+                </div>
+              </div>
+
+              <div style="margin-bottom: 16px;">
+                <button type="button" onclick="StockPulse.testNotificationSound()" class="btn-primary-action"
+                  style="width: 100%; justify-content: center; height: 38px; font-size: 13px;">
+                  <i class="fa-solid fa-play"></i> Play Test Audio Chime &amp; Popup
+                </button>
+              </div>
+
+              <button type="button" class="auth-logout-btn" id="btn-logout-auth">
+                <i class="fa-solid fa-arrow-right-from-bracket"></i>
+                <span>Sign Out</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(authModal);
+    }
+
+    // 2. Inject Nav Auth button into .nav-actions if not present
+    const navActions = document.querySelector('.nav-actions');
+    let navAuthBtn = document.getElementById('btn-open-auth-modal');
+    if (navActions && !navAuthBtn) {
+      navAuthBtn = document.createElement('button');
+      navAuthBtn.type = 'button';
+      navAuthBtn.id = 'btn-open-auth-modal';
+      navAuthBtn.className = 'nav-auth-btn';
+      navAuthBtn.title = 'Account & Authentication';
+      navAuthBtn.innerHTML = `
+        <i class="fa-solid fa-circle-user"></i>
+        <span id="nav-auth-label">Sign In</span>
+      `;
+      const mobileToggle = document.getElementById('btn-mobile-toggle');
+      if (mobileToggle) {
+        navActions.insertBefore(navAuthBtn, mobileToggle);
       } else {
-        if (navUserLabel) navUserLabel.textContent = 'Alert Settings';
-        if (navUserIcon) navUserIcon.className = 'fa-solid fa-sliders';
-        if (activeCard) activeCard.style.display = 'none';
-        if (btnLogout) btnLogout.style.display = 'none';
+        navActions.appendChild(navAuthBtn);
       }
     }
 
-    if (btnOpenLogin && loginModal) {
-      btnOpenLogin.addEventListener('click', () => {
-        renderUserUI();
-        if (feedbackMsg) feedbackMsg.style.display = 'none';
-        loginModal.style.display = 'flex';
-        requestDesktopNotificationPermission();
+    // 3. UI State Elements
+    let currentAuthMode = 'login'; // 'login' | 'register'
+    const viewForm = document.getElementById('auth-view-form');
+    const viewProfile = document.getElementById('auth-view-profile');
+    const tabLogin = document.getElementById('tab-auth-login');
+    const tabRegister = document.getElementById('tab-auth-register');
+    const groupName = document.getElementById('group-auth-name');
+    const inputName = document.getElementById('auth-input-name');
+    const inputEmail = document.getElementById('auth-input-email');
+    const inputPwd = document.getElementById('auth-input-password');
+    const btnTogglePwd = document.getElementById('btn-toggle-pwd');
+    const iconTogglePwd = document.getElementById('icon-toggle-pwd');
+    const formSubmit = document.getElementById('form-auth-submit');
+    const btnSubmit = document.getElementById('btn-submit-auth');
+    const btnSubmitText = document.getElementById('auth-btn-text');
+    const alertBox = document.getElementById('auth-alert-message');
+    const btnCloseAuth = document.getElementById('btn-close-auth-modal');
+    const btnCloseProfile = document.getElementById('btn-close-profile-modal');
+    const btnLogout = document.getElementById('btn-logout-auth');
+
+    const profileAvatar = document.getElementById('auth-profile-avatar');
+    const profileName = document.getElementById('auth-profile-name');
+    const profileEmail = document.getElementById('auth-profile-email');
+    const statAlerts = document.getElementById('auth-stat-alerts');
+    const navAuthLabel = document.getElementById('nav-auth-label');
+
+    function showAlert(msg, isError = true) {
+      if (!alertBox) return;
+      alertBox.className = 'auth-alert-box ' + (isError ? 'error' : 'success');
+      alertBox.innerHTML = `
+        <i class="fa-solid ${isError ? 'fa-triangle-exclamation' : 'fa-circle-check'}"></i>
+        <span>${msg}</span>
+      `;
+      alertBox.style.display = 'flex';
+    }
+
+    function hideAlert() {
+      if (alertBox) alertBox.style.display = 'none';
+    }
+
+    function setAuthMode(mode) {
+      currentAuthMode = mode;
+      hideAlert();
+      if (mode === 'login') {
+        if (tabLogin) tabLogin.classList.add('active');
+        if (tabRegister) tabRegister.classList.remove('active');
+        if (groupName) groupName.style.display = 'none';
+        if (inputName) inputName.required = false;
+        if (btnSubmitText) btnSubmitText.textContent = 'Sign In';
+        if (inputPwd) inputPwd.placeholder = 'Your password';
+      } else {
+        if (tabLogin) tabLogin.classList.remove('active');
+        if (tabRegister) tabRegister.classList.add('active');
+        if (groupName) groupName.style.display = 'block';
+        if (inputName) inputName.required = true;
+        if (btnSubmitText) btnSubmitText.textContent = 'Create Account';
+        if (inputPwd) inputPwd.placeholder = 'At least 6 characters';
+      }
+    }
+
+    function updateNavAndModalViews() {
+      const token = getAuthToken();
+      const user = getUser();
+
+      if (token && user && user.email) {
+        // User is authenticated
+        const displayName = user.name || user.email.split('@')[0];
+        const initial = displayName.charAt(0).toUpperCase();
+
+        if (navAuthBtn) {
+          navAuthBtn.classList.add('logged-in');
+          navAuthBtn.innerHTML = `
+            <span class="nav-user-initials">${initial}</span>
+            <span id="nav-auth-label">${displayName}</span>
+          `;
+        }
+
+        if (viewForm) viewForm.style.display = 'none';
+        if (viewProfile) viewProfile.style.display = 'block';
+        if (profileAvatar) profileAvatar.textContent = initial;
+        if (profileName) profileName.textContent = displayName;
+        if (profileEmail) profileEmail.textContent = user.email;
+        if (statAlerts) statAlerts.textContent = user.active_alerts_count || '0';
+      } else {
+        // Guest mode
+        if (navAuthBtn) {
+          navAuthBtn.classList.remove('logged-in');
+          navAuthBtn.innerHTML = `
+            <i class="fa-solid fa-circle-user"></i>
+            <span id="nav-auth-label">Sign In</span>
+          `;
+        }
+
+        if (viewForm) viewForm.style.display = 'block';
+        if (viewProfile) viewProfile.style.display = 'none';
+      }
+    }
+
+    // Tab buttons
+    if (tabLogin) tabLogin.addEventListener('click', () => setAuthMode('login'));
+    if (tabRegister) tabRegister.addEventListener('click', () => setAuthMode('register'));
+
+    // Password visibility toggle
+    if (btnTogglePwd && inputPwd && iconTogglePwd) {
+      btnTogglePwd.addEventListener('click', () => {
+        if (inputPwd.type === 'password') {
+          inputPwd.type = 'text';
+          iconTogglePwd.className = 'fa-solid fa-eye-slash';
+        } else {
+          inputPwd.type = 'password';
+          iconTogglePwd.className = 'fa-solid fa-eye';
+        }
       });
     }
 
-    if (btnCloseLogin && loginModal) {
-      btnCloseLogin.addEventListener('click', () => {
-        loginModal.style.display = 'none';
+    // Open Modal
+    function openModal() {
+      updateNavAndModalViews();
+      hideAlert();
+      authModal.style.display = 'flex';
+      if (!getAuthToken() && inputEmail) {
+        setTimeout(() => inputEmail.focus(), 150);
+      }
+    }
+
+    function closeModal() {
+      authModal.style.display = 'none';
+      hideAlert();
+    }
+
+    if (navAuthBtn) navAuthBtn.addEventListener('click', openModal);
+    if (btnCloseAuth) btnCloseAuth.addEventListener('click', closeModal);
+    if (btnCloseProfile) btnCloseProfile.addEventListener('click', closeModal);
+
+    // Also support any legacy trigger buttons (#btn-open-login)
+    const legacyOpenBtn = document.getElementById('btn-open-login');
+    if (legacyOpenBtn) legacyOpenBtn.addEventListener('click', openModal);
+
+    // Close on backdrop click
+    authModal.addEventListener('click', (e) => {
+      if (e.target === authModal) closeModal();
+    });
+
+    // Form submission (Login / Register)
+    if (formSubmit) {
+      formSubmit.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        hideAlert();
+
+        const email = inputEmail ? inputEmail.value.trim().toLowerCase() : '';
+        const password = inputPwd ? inputPwd.value : '';
+        const name = inputName ? inputName.value.trim() : '';
+
+        if (!email || !password) {
+          showAlert('Please provide both email and password.');
+          return;
+        }
+
+        if (currentAuthMode === 'register' && password.length < 6) {
+          showAlert('Password must be at least 6 characters.');
+          return;
+        }
+
+        if (btnSubmit) {
+          btnSubmit.disabled = true;
+          if (btnSubmitText) btnSubmitText.textContent = currentAuthMode === 'login' ? 'Signing In...' : 'Creating Account...';
+        }
+
+        try {
+          const endpoint = currentAuthMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+          const payload = currentAuthMode === 'login' 
+            ? { email, password }
+            : { name: name || email.split('@')[0], email, password };
+
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          const data = await res.json();
+
+          if (!res.ok) {
+            showAlert(data.detail || data.message || 'Authentication failed. Please verify your details.');
+            return;
+          }
+
+          // Successful authentication!
+          if (data.token || data.access_token) {
+            setAuthToken(data.token || data.access_token);
+          }
+          if (data.user) {
+            setUser(data.user);
+          }
+
+          showAlert(data.message || 'Success! Welcome to StockPulse.', false);
+          updateNavAndModalViews();
+
+          setTimeout(() => {
+            closeModal();
+            if (inputPwd) inputPwd.value = '';
+          }, 800);
+
+        } catch (err) {
+          console.error('[StockPulse Auth Error]:', err);
+          showAlert('Network connection error. Please ensure the server is reachable.');
+        } finally {
+          if (btnSubmit) {
+            btnSubmit.disabled = false;
+            setAuthMode(currentAuthMode);
+          }
+        }
       });
     }
 
-    if (btnDismissLogin && loginModal) {
-      btnDismissLogin.addEventListener('click', () => {
-        loginModal.style.display = 'none';
-      });
-    }
-
+    // Logout
     if (btnLogout) {
       btnLogout.addEventListener('click', async () => {
-        setUser(null);
         try {
-          await fetch('/api/auth/logout', { method: 'POST' });
+          await authFetch('/api/auth/logout', { method: 'POST' });
         } catch (e) {}
-        renderUserUI();
-        if (feedbackMsg) {
-          feedbackMsg.className = 'login-feedback-msg success';
-          feedbackMsg.textContent = 'Settings reset successfully.';
-          feedbackMsg.style.display = 'block';
-        }
+        setAuthToken(null);
+        setUser(null);
+        updateNavAndModalViews();
+        setAuthMode('login');
       });
     }
 
-    if (formLogin) {
-      formLogin.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const email = emailInput ? emailInput.value.trim() : '';
-        const name = nameInput ? nameInput.value.trim() : '';
-
-        setUser({ email: email || 'trader@stockpulse.local', name: name || 'Trader' });
-        renderUserUI();
-        if (feedbackMsg) {
-          feedbackMsg.className = 'login-feedback-msg success';
-          feedbackMsg.textContent = 'Preferences saved! Popup alerts are ready.';
-          feedbackMsg.style.display = 'block';
+    // Verify session on page load
+    async function verifySession() {
+      const token = getAuthToken();
+      if (!token) {
+        updateNavAndModalViews();
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.logged_in && data.user) {
+            setUser(data.user);
+          } else {
+            setAuthToken(null);
+            setUser(null);
+          }
+        } else {
+          setAuthToken(null);
+          setUser(null);
         }
-        setTimeout(() => {
-          if (loginModal) loginModal.style.display = 'none';
-        }, 900);
-      });
+      } catch (e) {
+        console.warn('[StockPulse] Session verification skipped:', e);
+      }
+      updateNavAndModalViews();
     }
 
-    renderUserUI();
+    verifySession();
   }
 
   // --- SETTINGS MODAL LOGIC ---
@@ -1357,6 +1675,9 @@ window.StockPulse = (function () {
     setSelectedStock,
     getUser,
     setUser,
+    getAuthToken,
+    setAuthToken,
+    authFetch,
     populateStockDropdown,
     updateSystemStatus,
     playNotificationSound,
