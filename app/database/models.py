@@ -12,6 +12,7 @@ class User(Base):
     username = Column(String(50), unique=True, index=True, nullable=True)
     email = Column(String(150), unique=True, index=True, nullable=False, default="user@stockpulse.io")
     password_hash = Column(String(255), nullable=True)
+    is_verified = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     alerts = relationship("Alert", back_populates="user", cascade="all, delete-orphan")
@@ -148,4 +149,16 @@ class Notification(Base):
 
     alert = relationship("Alert", back_populates="notifications")
     user = relationship("User", back_populates="notifications")
+
+
+class EmailOTP(Base):
+    __tablename__ = "email_otps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(150), index=True, nullable=False)
+    otp_code = Column(String(10), nullable=False)
+    purpose = Column(String(30), default="REGISTRATION")
+    expires_at = Column(DateTime, nullable=False)
+    is_used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 

@@ -47,6 +47,7 @@ def run_db_migrations(db_engine):
             "users": [
                 ("username", "VARCHAR(50)"),
                 ("password_hash", "VARCHAR(255)"),
+                ("is_verified", "BOOLEAN DEFAULT 1"),
             ],
             "notifications": [
                 ("user_id", "INTEGER"),

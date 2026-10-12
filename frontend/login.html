@@ -336,6 +336,42 @@
       color: #10b981;
       font-size: 13px;
     }
+
+    /* 6-Digit OTP Inputs */
+    .otp-inputs-wrapper {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      margin: 14px 0 10px 0;
+    }
+
+    .otp-digit-input {
+      width: 46px;
+      height: 52px;
+      text-align: center;
+      font-size: 24px;
+      font-weight: 800;
+      font-family: inherit;
+      color: #0f172a;
+      background: #f8fafc;
+      border: 2px solid #cbd5e1;
+      border-radius: 12px;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .otp-digit-input:focus {
+      border-color: #2563eb;
+      background: #ffffff;
+      box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.14);
+      transform: translateY(-2px);
+    }
+
+    .otp-digit-input.filled {
+      border-color: #2563eb;
+      background: #eff6ff;
+      color: #1d4ed8;
+    }
   </style>
 </head>
 <body>
@@ -489,6 +525,47 @@
         </p>
       </form>
 
+      <!-- 3. EMAIL OTP VERIFICATION FORM -->
+      <form id="form-otp" class="auth-form" style="display: none;" onsubmit="handleOtpSubmit(event)">
+        <div style="text-align: center; margin-bottom: 18px;">
+          <div style="width: 52px; height: 52px; border-radius: 50%; background: #eff6ff; color: #2563eb; display: inline-flex; align-items: center; justify-content: center; font-size: 22px; margin-bottom: 12px; border: 1px solid #bfdbfe;">
+            <i class="fa-solid fa-envelope-circle-check"></i>
+          </div>
+          <h3 style="margin: 0 0 6px 0; color: #0f172a; font-size: 19px; font-weight: 700;">Verify Your Email</h3>
+          <p style="margin: 0; color: #64748b; font-size: 13px; line-height: 1.5;">
+            We sent a 6-digit verification code to<br>
+            <strong id="otp-target-email" style="color: #0f172a;">user@example.com</strong>
+          </p>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 18px;">
+          <label style="text-align: center; display: block; margin-bottom: 8px; font-weight: 600;">Enter 6-Digit Code</label>
+          <div class="otp-inputs-wrapper">
+            <input type="text" maxlength="1" class="otp-digit-input" data-idx="0" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" required>
+            <input type="text" maxlength="1" class="otp-digit-input" data-idx="1" inputmode="numeric" pattern="[0-9]*" required>
+            <input type="text" maxlength="1" class="otp-digit-input" data-idx="2" inputmode="numeric" pattern="[0-9]*" required>
+            <input type="text" maxlength="1" class="otp-digit-input" data-idx="3" inputmode="numeric" pattern="[0-9]*" required>
+            <input type="text" maxlength="1" class="otp-digit-input" data-idx="4" inputmode="numeric" pattern="[0-9]*" required>
+            <input type="text" maxlength="1" class="otp-digit-input" data-idx="5" inputmode="numeric" pattern="[0-9]*" required>
+          </div>
+        </div>
+
+        <button type="submit" id="btn-otp-verify" class="auth-submit-btn">
+          <span>Verify & Enter Dashboard</span>
+          <i class="fa-solid fa-arrow-right"></i>
+        </button>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 18px; padding-top: 14px; border-top: 1px solid #f1f5f9; font-size: 13px;">
+          <button type="button" class="auth-switch-link" onclick="backToRegisterEdit()" style="color: #64748b; text-decoration: none;">
+            <i class="fa-solid fa-arrow-left"></i> Change Email
+          </button>
+          <div>
+            <span id="otp-countdown-text" style="color: #94a3b8; font-size: 12px;">Resend in <strong id="otp-seconds">60</strong>s</span>
+            <button type="button" id="btn-resend-otp" class="auth-switch-link" style="display: none; font-weight: 700;" onclick="resendOtpCode()">Resend Code</button>
+          </div>
+        </div>
+      </form>
+
       <!-- Highlights Footer -->
       <div class="feature-highlights">
         <div class="highlight-item">
@@ -631,7 +708,11 @@
       }
     }
 
-    // Handle Register Submit
+    // Pending registration state while waiting for OTP
+    let pendingRegistration = null;
+    let otpCountdownInterval = null;
+
+    // Handle Register Submit -> Step 1: Send OTP
     async function handleRegisterSubmit(e) {
       e.preventDefault();
       hideFeedback();
@@ -658,45 +739,249 @@
       }
 
       btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Creating account...</span>';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Verifying email & sending code...</span>';
 
       try {
-        const res = await fetch('/api/auth/register', {
+        const res = await fetch('/api/auth/send-registration-otp', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name,
-            email,
-            password,
-            username: username || null
-          })
+          body: JSON.stringify({ email, name })
         });
 
         const data = await res.json();
 
         if (!res.ok) {
-          const detail = data && data.detail ? data.detail : 'Failed to create account. Please try again.';
+          const detail = data && data.detail ? data.detail : 'Email verification failed. Please try again.';
           showFeedback(detail, true);
           btn.disabled = false;
           btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
           return;
         }
 
-        // Success!
+        // OTP sent successfully!
+        pendingRegistration = { name, username, email, password };
+        btn.disabled = false;
+        btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
+
+        // Switch to OTP Verification View
+        document.getElementById('form-register').style.display = 'none';
+        document.querySelector('.auth-tabs').style.display = 'none';
+        document.getElementById('form-otp').style.display = 'block';
+        document.getElementById('otp-target-email').textContent = email;
+
+        showFeedback(`Verification code sent to ${email}. Please check your inbox.`, false);
+        startOtpCountdown(60);
+        setupOtpDigitInputs();
+
+        // If dev fallback code is returned (when SMTP is not yet set in .env), auto-fill or log
+        if (data.dev_otp) {
+          console.log('%c[StockPulse Dev OTP]: ' + data.dev_otp, 'color: #2563eb; font-weight: bold; font-size: 16px;');
+          setTimeout(() => {
+            fillOtpInputs(data.dev_otp);
+          }, 350);
+        }
+
+      } catch (err) {
+        console.error('OTP Send error:', err);
+        showFeedback('Network error. Unable to verify email.', true);
+        btn.disabled = false;
+        btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
+      }
+    }
+
+    // Setup interactive 6-digit OTP boxes
+    function setupOtpDigitInputs() {
+      const inputs = document.querySelectorAll('.otp-digit-input');
+      inputs.forEach((input, index) => {
+        input.value = '';
+        input.classList.remove('filled');
+
+        input.oninput = (e) => {
+          const val = e.target.value.replace(/\D/g, '');
+          e.target.value = val ? val[val.length - 1] : '';
+          e.target.classList.toggle('filled', !!e.target.value);
+
+          if (e.target.value && index < inputs.length - 1) {
+            inputs[index + 1].focus();
+          }
+
+          // Check if all 6 digits entered
+          const fullCode = Array.from(inputs).map(i => i.value).join('');
+          if (fullCode.length === 6) {
+            handleOtpSubmit();
+          }
+        };
+
+        input.onkeydown = (e) => {
+          if (e.key === 'Backspace' && !input.value && index > 0) {
+            inputs[index - 1].focus();
+          }
+        };
+
+        input.onpaste = (e) => {
+          e.preventDefault();
+          const pastedData = (e.clipboardData || window.clipboardData).getData('text').trim().replace(/\D/g, '');
+          if (pastedData) {
+            fillOtpInputs(pastedData.slice(0, 6));
+            if (pastedData.length >= 6) {
+              handleOtpSubmit();
+            }
+          }
+        };
+      });
+
+      if (inputs[0]) inputs[0].focus();
+    }
+
+    function fillOtpInputs(codeStr) {
+      const inputs = document.querySelectorAll('.otp-digit-input');
+      for (let i = 0; i < inputs.length; i++) {
+        inputs[i].value = codeStr[i] || '';
+        inputs[i].classList.toggle('filled', !!inputs[i].value);
+      }
+      const lastIdx = Math.min(codeStr.length, inputs.length) - 1;
+      if (lastIdx >= 0 && inputs[lastIdx]) inputs[lastIdx].focus();
+    }
+
+    // Handle OTP Verify Submit -> Step 2: Finalize Account
+    async function handleOtpSubmit(e) {
+      if (e) e.preventDefault();
+      hideFeedback();
+
+      if (!pendingRegistration) {
+        showFeedback('Registration session expired. Please start over.');
+        backToRegisterEdit();
+        return;
+      }
+
+      const inputs = document.querySelectorAll('.otp-digit-input');
+      const otpCode = Array.from(inputs).map(i => i.value).join('');
+
+      if (otpCode.length !== 6) {
+        showFeedback('Please enter the complete 6-digit verification code.');
+        return;
+      }
+
+      const btn = document.getElementById('btn-otp-verify');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Verifying code...</span>';
+
+      try {
+        const res = await fetch('/api/auth/verify-registration-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: pendingRegistration.email,
+            otp: otpCode,
+            name: pendingRegistration.name,
+            password: pendingRegistration.password,
+            username: pendingRegistration.username || null
+          })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          const detail = data && data.detail ? data.detail : 'Verification failed. Please check the code.';
+          showFeedback(detail, true);
+          btn.disabled = false;
+          btn.innerHTML = '<span>Verify & Enter Dashboard</span> <i class="fa-solid fa-arrow-right"></i>';
+          return;
+        }
+
+        // Verified!
+        clearInterval(otpCountdownInterval);
         localStorage.setItem('stockpulse_jwt_token', data.access_token);
         localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
-        showFeedback(`Account created! Welcome, ${data.user.name}! Redirecting...`, false);
+        showFeedback(`Email verified! Welcome, ${data.user.name}! Entering dashboard...`, false);
 
         setTimeout(() => {
           window.location.href = '/live';
         }, 500);
 
       } catch (err) {
-        console.error('Registration error:', err);
-        showFeedback('Network connection error. Please try again.', true);
+        console.error('OTP Verification error:', err);
+        showFeedback('Network error during verification. Please try again.', true);
         btn.disabled = false;
-        btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
+        btn.innerHTML = '<span>Verify & Enter Dashboard</span> <i class="fa-solid fa-arrow-right"></i>';
       }
+    }
+
+    // Resend OTP code
+    async function resendOtpCode() {
+      if (!pendingRegistration) return;
+      hideFeedback();
+      const btnResend = document.getElementById('btn-resend-otp');
+      btnResend.disabled = true;
+      btnResend.textContent = 'Sending...';
+
+      try {
+        const res = await fetch('/api/auth/resend-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: pendingRegistration.email,
+            name: pendingRegistration.name
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          showFeedback(data.detail || 'Could not resend code. Please wait.', true);
+          btnResend.disabled = false;
+          btnResend.textContent = 'Resend Code';
+          return;
+        }
+
+        showFeedback(`New code sent to ${pendingRegistration.email}!`, false);
+        startOtpCountdown(60);
+        setupOtpDigitInputs();
+
+        if (data.dev_otp) {
+          console.log('[StockPulse Resent Dev OTP]:', data.dev_otp);
+          setTimeout(() => fillOtpInputs(data.dev_otp), 300);
+        }
+      } catch (err) {
+        showFeedback('Network error. Failed to resend code.', true);
+        btnResend.disabled = false;
+        btnResend.textContent = 'Resend Code';
+      }
+    }
+
+    // Countdown timer for OTP
+    function startOtpCountdown(seconds = 60) {
+      clearInterval(otpCountdownInterval);
+      const textEl = document.getElementById('otp-countdown-text');
+      const secondsEl = document.getElementById('otp-seconds');
+      const btnResend = document.getElementById('btn-resend-otp');
+
+      btnResend.style.display = 'none';
+      btnResend.disabled = false;
+      btnResend.textContent = 'Resend Code';
+      textEl.style.display = 'inline';
+      secondsEl.textContent = seconds;
+
+      let remaining = seconds;
+      otpCountdownInterval = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          clearInterval(otpCountdownInterval);
+          textEl.style.display = 'none';
+          btnResend.style.display = 'inline';
+        } else {
+          secondsEl.textContent = remaining;
+        }
+      }, 1000);
+    }
+
+    // Back to edit email
+    function backToRegisterEdit() {
+      clearInterval(otpCountdownInterval);
+      hideFeedback();
+      document.getElementById('form-otp').style.display = 'none';
+      document.querySelector('.auth-tabs').style.display = 'flex';
+      document.getElementById('form-register').style.display = 'block';
+      document.getElementById('register-email').focus();
     }
   </script>
 </body>
