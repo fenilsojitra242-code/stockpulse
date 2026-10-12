@@ -56,11 +56,28 @@
     if (changeIcon) changeIcon.style.display = 'none';
   }
 
+  // Client-side cache for instantaneous 0ms display on stock switch & range toggle
+  const clientStockCache = new Map();
+
   // --- FETCH STOCK DATA ---
   async function fetchStockData(showLoading = false) {
     if (isFetching) return;
-    isFetching = true;
 
+    const cacheKey = `${currentSymbol}_${currentTimeRange}`;
+    const cachedEntry = clientStockCache.get(cacheKey);
+
+    // Instantaneous 0ms render if cached in client memory (Stale-While-Revalidate)
+    if (cachedEntry) {
+      renderDashboard(cachedEntry);
+      if (cachedEntry.supertrend) {
+        cachedSuperTrendData = cachedEntry.supertrend;
+        cachedSuperTrendSeries = cachedEntry.supertrend.series || [];
+        renderLiveSuperTrendHUD(cachedEntry.supertrend);
+      }
+      showLoading = false; // Never disrupt user with full overlay when data is already displayed
+    }
+
+    isFetching = true;
     const overlay = getEl('chart-loading-overlay');
     if (showLoading) {
       if (overlay) overlay.style.display = 'flex';
@@ -68,34 +85,42 @@
     }
 
     try {
-      // Parallel fetch for stock candles and SuperTrend indicator series
-      const [resStock, resST] = await Promise.all([
-        fetch(`/api/stocks/${currentSymbol}?range=${currentTimeRange}`),
-        fetch(`/api/stocks/${encodeURIComponent(currentSymbol)}/supertrend?range=${currentTimeRange}`).catch(() => null)
-      ]);
-
+      // Single fast fetch — SuperTrend is pre-bundled in stock visualization payload
+      const resStock = await fetch(`/api/stocks/${encodeURIComponent(currentSymbol)}?range=${encodeURIComponent(currentTimeRange)}`);
       if (!resStock.ok) throw new Error(`HTTP ${resStock.status}`);
       const data = await resStock.json();
 
-      if (resST && resST.ok) {
-        try {
-          const stData = await resST.json();
-          cachedSuperTrendData = stData;
-          cachedSuperTrendSeries = stData.series || [];
-          renderLiveSuperTrendHUD(stData);
-        } catch (stErr) {
-          console.warn('[Live] Error parsing SuperTrend response:', stErr);
-        }
+      // Process pre-bundled SuperTrend indicator or lazy-load if missing
+      if (data.supertrend) {
+        cachedSuperTrendData = data.supertrend;
+        cachedSuperTrendSeries = data.supertrend.series || [];
+        renderLiveSuperTrendHUD(data.supertrend);
+      } else {
+        fetch(`/api/stocks/${encodeURIComponent(currentSymbol)}/supertrend?range=${currentTimeRange}`)
+          .then(r => r.ok ? r.json() : null)
+          .then(stData => {
+            if (stData) {
+              cachedSuperTrendData = stData;
+              cachedSuperTrendSeries = stData.series || [];
+              renderLiveSuperTrendHUD(stData);
+              renderCandleChart();
+            }
+          })
+          .catch(() => null);
       }
 
+      // Update client cache with fresh payload
+      clientStockCache.set(cacheKey, data);
       renderDashboard(data);
     } catch (err) {
       console.warn('[LiveMarket] Fetch error:', err);
-      const unavail = getEl('unavailable-state');
-      const cContainer = getEl('canvas-container');
-      if (unavail && cContainer) {
-        unavail.style.display = 'block';
-        cContainer.style.display = 'none';
+      if (!cachedEntry) {
+        const unavail = getEl('unavailable-state');
+        const cContainer = getEl('canvas-container');
+        if (unavail && cContainer) {
+          unavail.style.display = 'block';
+          cContainer.style.display = 'none';
+        }
       }
     } finally {
       isFetching = false;

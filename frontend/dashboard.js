@@ -1534,9 +1534,22 @@
     }
   }
 
+  // Client-side cache for instantaneous 0ms display on stock switch & range toggle
+  const clientDashboardCache = new Map();
+
   // --- DATA FETCHING & LIVE STOCK VIEW UPDATES ---
   async function fetchStockData(symbol, timeRange, showLoadingOverlay = false) {
     if (state.isFetching) return;
+
+    const cacheKey = `${symbol}_${timeRange}`;
+    const cachedEntry = clientDashboardCache.get(cacheKey);
+
+    // Instantaneous 0ms render if cached in client memory (Stale-While-Revalidate)
+    if (cachedEntry) {
+      renderStockDashboard(cachedEntry);
+      showLoadingOverlay = false;
+    }
+
     state.isFetching = true;
 
     if (showLoadingOverlay) {
@@ -1553,15 +1566,16 @@
       const data = await response.json();
 
       if (data.status === 'UNAVAILABLE' || !data.price) {
-        renderUnavailableState();
+        if (!cachedEntry) renderUnavailableState();
         return;
       }
 
-      // Valid data received
+      // Valid data received — update client cache
+      clientDashboardCache.set(cacheKey, data);
       renderStockDashboard(data);
     } catch (err) {
       console.error('[StockPulse] Data fetch error:', err);
-      renderUnavailableState();
+      if (!cachedEntry) renderUnavailableState();
     } finally {
       state.isFetching = false;
       if (showLoadingOverlay) {

@@ -40,6 +40,13 @@ async def lifespan(app: FastAPI):
     # Attempt loading ML model
     load_model()
     
+    # Pre-warm market data cache in background
+    try:
+        from app.services.market_data import warmup_popular_stocks
+        warmup_popular_stocks()
+    except Exception as e:
+        print(f"[StockPulse] Warmup note: {e}")
+
     # Start continuous background monitoring scheduler
     start_scheduler(interval_seconds=10)
     print("[StockPulse] Background monitoring scheduler active (10s interval).")

@@ -270,6 +270,11 @@ def get_stock_supertrend(
 
     time_range_val = range.strip().upper() if range else "1D"
     vis = get_stock_visualization_data(symbol, time_range=time_range_val)
+
+    # Use pre-computed supertrend from visualization data if standard parameters match
+    if period == 10 and multiplier == 3.0 and proximity == 1.0 and vis.get("supertrend"):
+        return vis["supertrend"]
+
     candles = vis.get("candles", [])
     curr_price = float(vis.get("price", 100.0))
 

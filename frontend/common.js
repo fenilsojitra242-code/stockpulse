@@ -1524,7 +1524,7 @@ window.StockPulse = (function () {
     document.querySelectorAll('.btn-voice-toggle').forEach(btn => {
       btn.addEventListener('click', toggleVoiceEnabled);
     });
-    setInterval(updateSystemStatus, 2500);
+    setInterval(updateSystemStatus, 5000);
     // Dedicated fast notification poller (every 1.2 seconds, independent of stock quote fetching)
     checkRealtimeNotifications();
     setInterval(checkRealtimeNotifications, 1200);

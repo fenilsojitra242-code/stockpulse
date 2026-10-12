@@ -7,13 +7,23 @@ import numpy as np
 import yfinance as yf
 from typing import Dict, Optional, Tuple, List, Any
 
+import threading
+
 # Indian Standard Time (IST) ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
 
-# In-memory cache: (norm_sym, time_range) -> {"data": dict, "timestamp": float}
+# In-memory cache: (clean_sym, time_range) -> {"data": dict, "timestamp": float}
 _RANGE_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
-CACHE_TTL_INTRADAY = 15   # seconds; shared live-monitor cache
-CACHE_TTL_HISTORICAL = 60  # seconds
+_FAST_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
+
+CACHE_TTL_INTRADAY = 20     # seconds during open market
+CACHE_TTL_HISTORICAL = 120  # seconds for 5D, 1M, etc.
+CACHE_TTL_CLOSED = 600      # 10 minutes when market is closed (data doesn't change!)
+FAST_INFO_CACHE_TTL = 7200  # 2 hours for static stats (market cap, 52w high/low)
+
+# In-flight request deduplication to prevent redundant concurrent fetches
+_IN_FLIGHT_LOCK = threading.Lock()
+_IN_FLIGHT_EVENTS: Dict[Tuple[str, str], threading.Event] = {}
 
 # Known company metadata for Indian & global stocks
 STOCK_METADATA = {
@@ -215,16 +225,43 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
     range_key = time_range.upper()
     if range_key not in {"1D", "5D", "1M", "6M", "1Y"}:
         range_key = "1D"
-        
-    now_ts = time.time()
-    ttl = CACHE_TTL_INTRADAY if range_key == "1D" else (15 if range_key == "5D" else CACHE_TTL_HISTORICAL)
+
     cache_id = (clean_sym, range_key)
-    
+    now_ts = time.time()
+
+    # Determine dynamic TTL based on market open/closed status
+    market_status_val, _ = get_market_status()
+    is_market_open = (market_status_val == "OPEN")
+
+    if not is_market_open:
+        # Market is closed (historical candles never change until next trading session)
+        ttl = CACHE_TTL_CLOSED
+    elif range_key == "1D":
+        ttl = CACHE_TTL_INTRADAY
+    else:
+        ttl = CACHE_TTL_HISTORICAL
+
     if cache_id in _RANGE_CACHE:
         entry = _RANGE_CACHE[cache_id]
         if now_ts - entry["timestamp"] < ttl:
             return entry["data"].copy()
-            
+
+    # In-flight request deduplication: if another thread is currently fetching this exact item, wait for it
+    event_to_wait = None
+    is_fetcher = False
+    with _IN_FLIGHT_LOCK:
+        if cache_id in _IN_FLIGHT_EVENTS:
+            event_to_wait = _IN_FLIGHT_EVENTS[cache_id]
+        else:
+            event_to_wait = threading.Event()
+            _IN_FLIGHT_EVENTS[cache_id] = event_to_wait
+            is_fetcher = True
+
+    if not is_fetcher and event_to_wait is not None:
+        event_to_wait.wait(timeout=8.0)
+        if cache_id in _RANGE_CACHE:
+            return _RANGE_CACHE[cache_id]["data"].copy()
+
     range_config = {
         "1D": {"period": "1d", "interval": "1m"},
         "5D": {"period": "5d", "interval": "5m"},
@@ -236,18 +273,20 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
     server_time = datetime.now(IST)
 
     try:
-        # Determine candidate tickers to fetch:
+        # Determine candidate tickers to fetch (deduplicated):
         raw_upper = symbol.strip().upper()
         mapped = TICKER_ALIASES.get(raw_upper, TICKER_ALIASES.get(clean_sym))
+        candidates_raw = []
         if mapped:
-            candidate_syms = [mapped, f"{clean_sym}.NS", f"{clean_sym}.BO"]
+            candidates_raw.extend([mapped, f"{clean_sym}.NS", f"{clean_sym}.BO"])
         elif "." in raw_upper or "^" in raw_upper:
-            candidate_syms = [raw_upper]
+            candidates_raw.append(raw_upper)
         elif clean_sym in {"AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "SPY", "QQQ", "PRX", "PROSY"}:
-            candidate_syms = [clean_sym]
+            candidates_raw.append(clean_sym)
         else:
-            # For Indian equities, probe NSE (.NS) first, then BSE (.BO)
-            candidate_syms = [f"{clean_sym}.NS", f"{clean_sym}.BO"]
+            candidates_raw.extend([f"{clean_sym}.NS", f"{clean_sym}.BO"])
+
+        candidate_syms = list(dict.fromkeys(candidates_raw))
 
         best_df = pd.DataFrame()
         best_ticker = None
@@ -256,12 +295,12 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         for cand in candidate_syms:
             try:
                 t = yf.Ticker(cand)
-                # Request 1m intraday data for 1D monitoring (Section 3)
-                df_cand = t.history(period=cfg["period"], interval=cfg["interval"], auto_adjust=False, timeout=8)
+                # Request intraday or historical data with low latency timeout
+                df_cand = t.history(period=cfg["period"], interval=cfg["interval"], auto_adjust=False, timeout=6)
 
                 # Fallback for 1D if 1d 1m is empty (e.g. pre-market, weekend, holiday): strictly 1m, not 5m!
                 if df_cand.empty and range_key == "1D":
-                    df_cand = t.history(period="5d", interval="1m", auto_adjust=False, timeout=8)
+                    df_cand = t.history(period="5d", interval="1m", auto_adjust=False, timeout=6)
                     if not df_cand.empty:
                         last_date = df_cand.index[-1].date()
                         df_cand = df_cand[df_cand.index.date == last_date]
@@ -286,30 +325,53 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         df.columns = [c.lower() for c in df.columns]
         df = df.sort_index()
 
-        # Fast info & metadata extraction
-        fi_last_price = None
-        fi_prev_close = None
-        fi_open = None
-        fi_year_high = None
-        fi_year_low = None
-        fi_market_cap = None
-        fi_avg_vol = None
-        fi_currency = "INR" if (".NS" in norm_sym or ".BO" in norm_sym) else "USD"
+        # Fast info & metadata extraction with local 2-hour caching
+        fi_cached = _FAST_INFO_CACHE.get(clean_sym)
+        if fi_cached and (now_ts - fi_cached.get("ts", 0) < FAST_INFO_CACHE_TTL):
+            fi_currency = fi_cached.get("currency", "INR" if (".NS" in norm_sym or ".BO" in norm_sym) else "USD")
+            fi_last_price = fi_cached.get("last_price")
+            fi_prev_close = fi_cached.get("previous_close")
+            fi_open = fi_cached.get("open")
+            fi_year_high = fi_cached.get("year_high")
+            fi_year_low = fi_cached.get("year_low")
+            fi_market_cap = fi_cached.get("market_cap")
+            fi_avg_vol = fi_cached.get("avg_vol")
+        else:
+            fi_last_price = None
+            fi_prev_close = None
+            fi_open = None
+            fi_year_high = None
+            fi_year_low = None
+            fi_market_cap = None
+            fi_avg_vol = None
+            fi_currency = "INR" if (".NS" in norm_sym or ".BO" in norm_sym) else "USD"
 
-        if ticker:
-            try:
-                fi = getattr(ticker, 'fast_info', None)
-                if fi:
-                    fi_currency = getattr(fi, 'currency', fi_currency) or fi_currency
-                    fi_last_price = getattr(fi, 'last_price', None) or getattr(fi, 'lastPrice', None)
-                    fi_prev_close = getattr(fi, 'previous_close', None) or getattr(fi, 'previousClose', None)
-                    fi_open = getattr(fi, 'open', None)
-                    fi_year_high = getattr(fi, 'year_high', None) or getattr(fi, 'yearHigh', None)
-                    fi_year_low = getattr(fi, 'year_low', None) or getattr(fi, 'yearLow', None)
-                    fi_market_cap = getattr(fi, 'market_cap', None) or getattr(fi, 'marketCap', None)
-                    fi_avg_vol = getattr(fi, 'three_month_average_volume', None) or getattr(fi, 'ten_day_average_volume', None)
-            except Exception:
-                pass
+            if ticker:
+                try:
+                    fi = getattr(ticker, 'fast_info', None)
+                    if fi:
+                        fi_currency = getattr(fi, 'currency', fi_currency) or fi_currency
+                        fi_last_price = getattr(fi, 'last_price', None) or getattr(fi, 'lastPrice', None)
+                        fi_prev_close = getattr(fi, 'previous_close', None) or getattr(fi, 'previousClose', None)
+                        fi_open = getattr(fi, 'open', None)
+                        fi_year_high = getattr(fi, 'year_high', None) or getattr(fi, 'yearHigh', None)
+                        fi_year_low = getattr(fi, 'year_low', None) or getattr(fi, 'yearLow', None)
+                        fi_market_cap = getattr(fi, 'market_cap', None) or getattr(fi, 'marketCap', None)
+                        fi_avg_vol = getattr(fi, 'three_month_average_volume', None) or getattr(fi, 'ten_day_average_volume', None)
+
+                        _FAST_INFO_CACHE[clean_sym] = {
+                            "ts": now_ts,
+                            "currency": fi_currency,
+                            "last_price": fi_last_price,
+                            "previous_close": fi_prev_close,
+                            "open": fi_open,
+                            "year_high": fi_year_high,
+                            "year_low": fi_year_low,
+                            "market_cap": fi_market_cap,
+                            "avg_vol": fi_avg_vol
+                        }
+                except Exception:
+                    pass
 
         # Determine best current price: prefer real-time fast_info quote if available and valid
         if fi_last_price and not np.isnan(fi_last_price) and fi_last_price > 0:
@@ -538,6 +600,32 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
             "chart_points": chart_points
         }
 
+        # Pre-compute SuperTrend so frontend does not need a separate roundtrip
+        try:
+            from app.services.feature_engine import analyze_supertrend_hit
+            st_analysis = analyze_supertrend_hit(
+                candles_or_df=chart_points,
+                current_price=round(curr_price, 2),
+                period=10,
+                multiplier=3.0,
+                proximity_points=1.0
+            )
+            result["supertrend"] = {
+                "symbol": display_sym,
+                "name": display_name,
+                "price": round(curr_price, 2),
+                "supertrend_price": st_analysis.get("supertrend_price"),
+                "direction": st_analysis.get("direction"),
+                "distance_points": st_analysis.get("distance_points"),
+                "proximity_threshold": st_analysis.get("proximity_threshold"),
+                "is_approaching": st_analysis.get("is_approaching"),
+                "is_flipped": st_analysis.get("is_flipped"),
+                "flip_signal": st_analysis.get("flip_signal"),
+                "series": st_analysis.get("series", [])
+            }
+        except Exception:
+            result["supertrend"] = None
+
         # Cache result
         _RANGE_CACHE[cache_id] = {
             "data": result,
@@ -561,6 +649,25 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
             "data_age_seconds": None,
             "last_updated": "--:--:--"
         }
+    finally:
+        if is_fetcher and event_to_wait is not None:
+            with _IN_FLIGHT_LOCK:
+                event_to_wait.set()
+                _IN_FLIGHT_EVENTS.pop(cache_id, None)
+
+
+def warmup_popular_stocks():
+    """Asynchronously pre-warms cache for popular symbols in a background thread."""
+    def _warmup_worker():
+        time.sleep(1.2)  # Wait for uvicorn to finish startup
+        popular = ["TCS", "INFY", "RELIANCE", "HDFCBANK", "TATAMOTORS", "SBIN", "ICICIBANK"]
+        for sym in popular:
+            try:
+                get_stock_visualization_data(sym, "1D")
+            except Exception:
+                pass
+    t = threading.Thread(target=_warmup_worker, daemon=True, name="StockPulseCacheWarmer")
+    t.start()
 
 
 def get_stock_data_status(symbol: str) -> Dict[str, Any]:
