@@ -3,8 +3,9 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 
 from app.database.database import get_db
-from app.database.models import Stock
+from app.database.models import Stock, User
 from app.schemas.stock import StockResponse, StockCreate
+from app.api.auth import get_current_user
 from app.services.market_data import (
     get_stock_visualization_data,
     get_available_stocks_list,
@@ -219,22 +220,25 @@ class SuperTrendSettingsPayload(BaseModel):
 
 
 @router.get("/supertrend/settings")
-def get_supertrend_settings_endpoint(db: Session = Depends(get_db)):
+def get_supertrend_settings_endpoint(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
-    Returns global SuperTrend settings, including the list of user-selected shares
-    that are exclusively monitored for early warnings and hits.
+    Returns SuperTrend settings for the current user, including user-selected shares.
     """
     from app.services.alert_engine import get_supertrend_settings
-    return get_supertrend_settings(db)
+    return get_supertrend_settings(db, user_id=current_user.id)
 
 
 @router.post("/supertrend/settings")
 def save_supertrend_settings_endpoint(
     payload: SuperTrendSettingsPayload,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Saves SuperTrend settings:
+    Saves SuperTrend settings for the current user:
     - enabled (bool)
     - proximity_points (float)
     - selected_symbols (list of stock symbols)
@@ -244,7 +248,8 @@ def save_supertrend_settings_endpoint(
         db=db,
         enabled=payload.enabled,
         proximity_points=payload.proximity_points,
-        selected_symbols=payload.selected_symbols
+        selected_symbols=payload.selected_symbols,
+        user_id=current_user.id
     )
 
 
@@ -295,6 +300,7 @@ def get_stock_supertrend(
 def test_supertrend_notification(
     symbol: str,
     signal_type: str = Query("APPROACHING", description="'APPROACHING', 'BUY', or 'SELL'"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -309,8 +315,8 @@ def test_supertrend_notification(
     curr_price = float(vis.get("price", 4120.0))
     clean_sym = vis.get("symbol", symbol).upper()
 
-    # Find or use existing alert
-    alert = db.query(Alert).filter(Alert.symbol == clean_sym).first()
+    # Find or use existing alert owned by current user
+    alert = db.query(Alert).filter(Alert.symbol == clean_sym, Alert.user_id == current_user.id).first()
 
     sig = signal_type.strip().upper()
     if sig == "BUY":
@@ -322,7 +328,8 @@ def test_supertrend_notification(
             current_price=curr_price,
             supertrend_price=st_price,
             prev_direction="SELL",
-            db=db
+            db=db,
+            user_id=current_user.id
         )
     elif sig == "SELL":
         st_price = round(curr_price + 1.20, 2)
@@ -333,7 +340,8 @@ def test_supertrend_notification(
             current_price=curr_price,
             supertrend_price=st_price,
             prev_direction="BUY",
-            db=db
+            db=db,
+            user_id=current_user.id
         )
     else:  # APPROACHING
         st_price = round(curr_price + 0.65, 2)
@@ -345,7 +353,8 @@ def test_supertrend_notification(
             distance_points=0.65,
             proximity_threshold=1.0,
             current_direction="SELL",
-            db=db
+            db=db,
+            user_id=current_user.id
         )
 
     return {

@@ -131,16 +131,45 @@ window.StockPulse = (function () {
   // Deduplicate popup events to ensure only one popup appears per event (key -> timestamp)
   const recentPopups = new Map();
 
+  // --- USER SESSION & ISOLATED PREFERENCES ---
+  function getUser() {
+    try {
+      const data = localStorage.getItem(STORAGE_KEY_USER);
+      return data ? JSON.parse(data) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function setUser(user) {
+    if (!user) {
+      localStorage.removeItem(STORAGE_KEY_USER);
+    } else {
+      localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
+    }
+  }
+
+  function getUserPrefKey(baseKey) {
+    const user = getUser();
+    if (user && user.id) {
+      return `${baseKey}_u${user.id}`;
+    }
+    return baseKey;
+  }
+
   // --- AUDIO SYNTHESIZER (WEB AUDIO API) ---
   let audioCtx = null;
 
   function isSoundEnabled() {
-    const val = localStorage.getItem(STORAGE_KEY_SOUND);
-    return val === null ? true : val === 'true';
+    const key = getUserPrefKey(STORAGE_KEY_SOUND);
+    const val = localStorage.getItem(key);
+    if (val !== null) return val === 'true';
+    const legacyVal = localStorage.getItem(STORAGE_KEY_SOUND);
+    return legacyVal === null ? true : legacyVal === 'true';
   }
 
   function setSoundEnabled(enabled) {
-    localStorage.setItem(STORAGE_KEY_SOUND, enabled ? 'true' : 'false');
+    localStorage.setItem(getUserPrefKey(STORAGE_KEY_SOUND), enabled ? 'true' : 'false');
   }
 
   function getAudioContext() {
@@ -361,12 +390,15 @@ window.StockPulse = (function () {
   const STORAGE_KEY_VOICE = 'stockpulse_voice_enabled';
 
   function isVoiceEnabled() {
-    const val = localStorage.getItem(STORAGE_KEY_VOICE);
-    return val === null ? true : val === 'true';
+    const key = getUserPrefKey(STORAGE_KEY_VOICE);
+    const val = localStorage.getItem(key);
+    if (val !== null) return val === 'true';
+    const legacyVal = localStorage.getItem(STORAGE_KEY_VOICE);
+    return legacyVal === null ? true : legacyVal === 'true';
   }
 
   function setVoiceEnabled(enabled) {
-    localStorage.setItem(STORAGE_KEY_VOICE, enabled ? 'true' : 'false');
+    localStorage.setItem(getUserPrefKey(STORAGE_KEY_VOICE), enabled ? 'true' : 'false');
     updateVoiceUIButtons();
   }
 
@@ -1124,33 +1156,44 @@ window.StockPulse = (function () {
     }
   }
 
-  // --- STOCK SELECTOR PERSISTENCE ---
+  // --- STOCK SELECTOR PERSISTENCE (PER-USER ISOLATED) ---
   function getSelectedStock() {
-    return localStorage.getItem(STORAGE_KEY_STOCK) || 'TCS';
+    const key = getUserPrefKey(STORAGE_KEY_STOCK);
+    const val = localStorage.getItem(key);
+    if (val) return val;
+    const legacy = localStorage.getItem(STORAGE_KEY_STOCK);
+    return legacy || 'TCS';
   }
 
   function setSelectedStock(symbol) {
     if (!symbol) return;
     const clean = symbol.toUpperCase().replace(/\.(NS|BO)$/, '');
-    localStorage.setItem(STORAGE_KEY_STOCK, clean);
+    localStorage.setItem(getUserPrefKey(STORAGE_KEY_STOCK), clean);
     return clean;
   }
 
-  function getUser() {
-    try {
-      const data = localStorage.getItem(STORAGE_KEY_USER);
-      return data ? JSON.parse(data) : null;
-    } catch (e) {
-      return null;
-    }
+  function getChartMode() {
+    const key = getUserPrefKey('stockpulse_chart_mode');
+    const val = localStorage.getItem(key);
+    if (val) return val;
+    return localStorage.getItem('stockpulse_chart_mode') || 'line';
   }
 
-  function setUser(user) {
-    if (!user) {
-      localStorage.removeItem(STORAGE_KEY_USER);
-    } else {
-      localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
-    }
+  function setChartMode(mode) {
+    if (!mode) return;
+    localStorage.setItem(getUserPrefKey('stockpulse_chart_mode'), mode);
+  }
+
+  function getSupertrendOverlay() {
+    const key = getUserPrefKey('stockpulse_supertrend_overlay');
+    const val = localStorage.getItem(key);
+    if (val !== null) return val !== 'false';
+    const legacy = localStorage.getItem('stockpulse_supertrend_overlay');
+    return legacy !== 'false';
+  }
+
+  function setSupertrendOverlay(enabled) {
+    localStorage.setItem(getUserPrefKey('stockpulse_supertrend_overlay'), enabled ? 'true' : 'false');
   }
 
   // --- POPULATE STOCK SELECT DROPDOWNS ---
@@ -1509,6 +1552,10 @@ window.StockPulse = (function () {
     clearTabTitleFlash,
     isSoundEnabled,
     setSoundEnabled,
+    getChartMode,
+    setChartMode,
+    getSupertrendOverlay,
+    setSupertrendOverlay,
     formatIST
   };
 })();

@@ -5,16 +5,16 @@
 (function () {
   'use strict';
 
-  let currentSymbol = (window.StockPulse && window.StockPulse.getSelectedStock()) || localStorage.getItem('stockpulse_selected_stock') || 'TCS';
+  let currentSymbol = (window.StockPulse && window.StockPulse.getSelectedStock && window.StockPulse.getSelectedStock()) || 'TCS';
   let currentTimeRange = '1D';
-  let currentChartMode = localStorage.getItem('stockpulse_chart_mode') || 'line'; // 'line' | 'candles'
+  let currentChartMode = (window.StockPulse && window.StockPulse.getChartMode && window.StockPulse.getChartMode()) || 'line'; // 'line' | 'candles'
   let cachedCandles = [];
   let hoveredCandleIdx = -1;
   let chartInstance = null;
   let pollingTimer = null;
   let isFetching = false;
   let currentPriceVal = 0;
-  let supertrendOverlayEnabled = localStorage.getItem('stockpulse_supertrend_overlay') !== 'false';
+  let supertrendOverlayEnabled = (window.StockPulse && window.StockPulse.getSupertrendOverlay) ? window.StockPulse.getSupertrendOverlay() : true;
   let cachedSuperTrendData = null;
   let cachedSuperTrendSeries = [];
   let supertrendDirections = [];
@@ -374,7 +374,11 @@
       btnToggle.classList.toggle('active', supertrendOverlayEnabled);
       btnToggle.addEventListener('click', () => {
         supertrendOverlayEnabled = !supertrendOverlayEnabled;
-        localStorage.setItem('stockpulse_supertrend_overlay', supertrendOverlayEnabled ? 'true' : 'false');
+        if (window.StockPulse && window.StockPulse.setSupertrendOverlay) {
+          StockPulse.setSupertrendOverlay(supertrendOverlayEnabled);
+        } else {
+          localStorage.setItem('stockpulse_supertrend_overlay', supertrendOverlayEnabled ? 'true' : 'false');
+        }
         btnToggle.classList.toggle('active', supertrendOverlayEnabled);
 
         const legStBuy = getEl('legend-chip-st-buy');
@@ -745,7 +749,11 @@
   // --- CHART MODE TOGGLE (LINE VS CANDLES) ---
   function applyChartMode(mode, shouldRender = true) {
     currentChartMode = mode;
-    localStorage.setItem('stockpulse_chart_mode', mode);
+    if (window.StockPulse && window.StockPulse.setChartMode) {
+      StockPulse.setChartMode(mode);
+    } else {
+      localStorage.setItem('stockpulse_chart_mode', mode);
+    }
 
     const btnLine = getEl('btn-chart-mode-line');
     const btnCandles = getEl('btn-chart-mode-candles');

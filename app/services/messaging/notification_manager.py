@@ -439,15 +439,19 @@ class NotificationManager:
         distance_points: float,
         proximity_threshold: float,
         current_direction: str,
-        db: Session
+        db: Session,
+        user_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """Triggered when price comes within proximity threshold (e.g. 1 point) of SuperTrend level."""
         channels = cls._resolve_channels(alert)
         if alert:
             alert.last_event = NotificationEventType.SUPERTREND_APPROACHING.value
             db.commit()
+            if not user_id and getattr(alert, "user_id", None):
+                user_id = alert.user_id
 
         data = {
+            "user_id": user_id,
             "alert_id": alert.id if alert else None,
             "symbol": symbol.upper(),
             "current_price": current_price,
@@ -485,7 +489,8 @@ class NotificationManager:
         current_price: float,
         supertrend_price: float,
         prev_direction: Optional[str],
-        db: Session
+        db: Session,
+        user_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """Triggered when SuperTrend flips direction generating a confirmed BUY or SELL signal."""
         channels = cls._resolve_channels(alert)
@@ -495,8 +500,11 @@ class NotificationManager:
         if alert:
             alert.last_event = ev_type
             db.commit()
+            if not user_id and getattr(alert, "user_id", None):
+                user_id = alert.user_id
 
         data = {
+            "user_id": user_id,
             "alert_id": alert.id if alert else None,
             "symbol": symbol.upper(),
             "current_price": current_price,

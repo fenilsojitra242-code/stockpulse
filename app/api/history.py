@@ -38,7 +38,7 @@ def get_history_performance_stats(
     Returns empirical performance KPIs:
     Hit rate %, True Positive vs False Alert counts, Average probability.
     """
-    return get_performance_summary(db)
+    return get_performance_summary(db, user_id=current_user.id)
 
 
 @router.delete("/clear")

@@ -221,29 +221,45 @@ def get_active_monitoring_sessions(
 
 
 @router.get("", response_model=List[AlertResponse])
-def list_alerts(status_filter: Optional[str] = None, db: Session = Depends(get_db)):
-    """List all alerts, optionally filtered by status."""
-    query = db.query(Alert)
+def list_alerts(
+    status_filter: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all alerts for current user, optionally filtered by status."""
+    query = db.query(Alert).filter(Alert.user_id == current_user.id)
     if status_filter:
         query = query.filter(Alert.status == status_filter.upper())
     return query.order_by(Alert.created_at.desc()).all()
 
 
 @router.get("/{alert_id}", response_model=AlertResponse)
-def get_alert(alert_id: int, db: Session = Depends(get_db)):
+def get_alert(
+    alert_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get single alert details."""
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
+    if alert.user_id and alert.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized to access this alert")
     return alert
 
 
 @router.post("/{alert_id}/start", response_model=AlertResponse)
-def start_monitoring_alert(alert_id: int, db: Session = Depends(get_db)):
+def start_monitoring_alert(
+    alert_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Resume / start active monitoring for this alert."""
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
+    if alert.user_id and alert.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized to modify this alert")
         
     now = datetime.utcnow()
     alert.status = "MONITORING"
@@ -279,12 +295,18 @@ def start_monitoring_alert(alert_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{alert_id}/notifications", response_model=List[NotificationResponse])
-def get_alert_notifications(alert_id: int, db: Session = Depends(get_db)):
+def get_alert_notifications(
+    alert_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Fetch all notifications specifically linked to this alert session."""
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    items = db.query(Notification).filter(Notification.alert_id == alert_id).order_by(Notification.created_at.desc()).all()
+    if alert.user_id and alert.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized to access notifications for this alert")
+    items = db.query(Notification).filter(Notification.alert_id == alert_id, Notification.user_id == current_user.id).order_by(Notification.created_at.desc()).all()
     return items
 
 

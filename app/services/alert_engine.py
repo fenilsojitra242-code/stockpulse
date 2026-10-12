@@ -13,17 +13,24 @@ from app.services.messaging import notification_manager, NotificationEventType
 POPULAR_SUPERTREND_SYMBOLS = ["TCS", "INFY", "RELIANCE", "HDFCBANK", "TATAMOTORS", "SBIN", "ICICIBANK", "BHARTIARTL", "ITC", "WIPRO"]
 
 
-def get_supertrend_settings(db: Session) -> Dict[str, Any]:
+def get_supertrend_settings(db: Session, user_id: Optional[int] = None) -> Dict[str, Any]:
     """
-    Retrieves global SuperTrend indicator settings:
+    Retrieves user-specific SuperTrend indicator settings:
     - enabled: bool
     - proximity_points: float (e.g. 1.0 pt before hit)
     - selected_symbols: list of stock symbols to monitor (exclusively!)
     """
     try:
-        row_enabled = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_enabled").first()
-        row_prox = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_proximity_points").first()
-        row_syms = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_watchlist_symbols").first()
+        prefix = f"u{user_id}_" if user_id else ""
+        row_enabled = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_enabled").first()
+        row_prox = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_proximity_points").first()
+        row_syms = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_watchlist_symbols").first()
+
+        # Fallback to defaults if user setting not explicitly configured yet
+        if not row_enabled and user_id:
+            row_enabled = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_enabled").first()
+        if not row_prox and user_id:
+            row_prox = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_proximity_points").first()
 
         enabled = True if (not row_enabled or row_enabled.value.lower() == "true") else False
         prox = float(row_prox.value) if (row_prox and row_prox.value) else 1.0
@@ -58,25 +65,31 @@ def save_supertrend_settings(
     db: Session,
     enabled: Optional[bool] = None,
     proximity_points: Optional[float] = None,
-    selected_symbols: Optional[List[str]] = None
+    selected_symbols: Optional[List[str]] = None,
+    user_id: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Saves SuperTrend indicator settings into system_settings table.
+    Saves SuperTrend indicator settings scoped to the user into system_settings table.
     """
+    prefix = f"u{user_id}_" if user_id else ""
+    key_enabled = f"{prefix}supertrend_enabled"
+    key_prox = f"{prefix}supertrend_proximity_points"
+    key_syms = f"{prefix}supertrend_watchlist_symbols"
+
     try:
         if enabled is not None:
-            row_enabled = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_enabled").first()
+            row_enabled = db.query(SystemSetting).filter(SystemSetting.key == key_enabled).first()
             if not row_enabled:
-                row_enabled = SystemSetting(key="supertrend_enabled", value="true" if enabled else "false", description="SuperTrend hit notifier active")
+                row_enabled = SystemSetting(key=key_enabled, value="true" if enabled else "false", description=f"SuperTrend enabled for user {user_id}")
                 db.add(row_enabled)
             else:
                 row_enabled.value = "true" if enabled else "false"
 
         if proximity_points is not None:
             prox_val = str(max(0.1, min(100.0, float(proximity_points))))
-            row_prox = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_proximity_points").first()
+            row_prox = db.query(SystemSetting).filter(SystemSetting.key == key_prox).first()
             if not row_prox:
-                row_prox = SystemSetting(key="supertrend_proximity_points", value=prox_val, description="Points before SuperTrend hit")
+                row_prox = SystemSetting(key=key_prox, value=prox_val, description=f"Points before SuperTrend hit for user {user_id}")
                 db.add(row_prox)
             else:
                 row_prox.value = prox_val
@@ -89,9 +102,9 @@ def save_supertrend_settings(
                 if c and c not in seen:
                     cleaned.append(c)
                     seen.add(c)
-            row_syms = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_watchlist_symbols").first()
+            row_syms = db.query(SystemSetting).filter(SystemSetting.key == key_syms).first()
             if not row_syms:
-                row_syms = SystemSetting(key="supertrend_watchlist_symbols", value=json.dumps(cleaned), description="List of shares monitored for SuperTrend")
+                row_syms = SystemSetting(key=key_syms, value=json.dumps(cleaned), description=f"List of shares monitored for SuperTrend for user {user_id}")
                 db.add(row_syms)
             else:
                 row_syms.value = json.dumps(cleaned)
@@ -101,7 +114,7 @@ def save_supertrend_settings(
         print(f"[SuperTrend] Error saving settings: {e}")
         db.rollback()
 
-    return get_supertrend_settings(db)
+    return get_supertrend_settings(db, user_id=user_id)
 
 
 ACTIVE_STATES = ("MONITORING", "EARLY_WARNING", "DATA_UNAVAILABLE", "MODEL_UNAVAILABLE")
@@ -285,7 +298,7 @@ def _evaluate_supertrend_for_alert(alert: Alert, snap: Dict[str, Any], db: Sessi
         # 2. Check for Proximity Hit (testing the line within 1 point before flip/hit)
         if is_approaching:
             if not getattr(alert, "supertrend_approaching_sent", False):
-                print(f"[SuperTrend] Alert #{alert.id} ({sym}): Price is {dist_pts:.2f} pts from SuperTrend (₹{st_price:.2f})! Emitting hit warning.")
+                print(f"[SuperTrend] Alert #{alert.id} ({sym}): Price is {dist_pts:.2f} pts from SuperTrend (Rs. {st_price:.2f})! Emitting hit warning.")
                 notification_manager.emit_supertrend_approaching(
                     alert=alert,
                     symbol=sym,
@@ -313,7 +326,11 @@ def _evaluate_supertrend_for_alert(alert: Alert, snap: Dict[str, Any], db: Sessi
 _WATCHLIST_ST_STATE: Dict[str, Dict[str, Any]] = {}
 
 
-def scan_default_watchlist_supertrend(db: Session, watchlist_symbols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def scan_default_watchlist_supertrend(
+    db: Session,
+    watchlist_symbols: Optional[List[str]] = None,
+    user_id: Optional[int] = None
+) -> List[Dict[str, Any]]:
     """
     Scans user-selected stocks for SuperTrend hits and early proximity warnings.
     Strictly restricted to the shares selected by the user in SuperTrend settings!
@@ -324,7 +341,7 @@ def scan_default_watchlist_supertrend(db: Session, watchlist_symbols: Optional[L
     from app.services.feature_engine import analyze_supertrend_hit
     from app.services.messaging import notification_manager
 
-    settings = get_supertrend_settings(db)
+    settings = get_supertrend_settings(db, user_id=user_id)
     if not settings.get("enabled", True):
         return []
 
@@ -345,11 +362,14 @@ def scan_default_watchlist_supertrend(db: Session, watchlist_symbols: Optional[L
         clean_sym = sym.strip().upper()
         try:
             # If the user already has an explicit custom alert for this stock, let that handle it
-            has_custom_alert = db.query(Alert).filter(
+            alert_query = db.query(Alert).filter(
                 Alert.symbol == clean_sym,
                 Alert.status.in_(ACTIVE_STATES),
                 Alert.enable_supertrend == True
-            ).first()
+            )
+            if user_id:
+                alert_query = alert_query.filter(Alert.user_id == user_id)
+            has_custom_alert = alert_query.first()
             if has_custom_alert:
                 continue
 
@@ -369,7 +389,8 @@ def scan_default_watchlist_supertrend(db: Session, watchlist_symbols: Optional[L
             if not candles or len(candles) < 2:
                 continue
 
-            state = _WATCHLIST_ST_STATE.setdefault(clean_sym, {
+            state_key = f"u{user_id}_{clean_sym}" if user_id else clean_sym
+            state = _WATCHLIST_ST_STATE.setdefault(state_key, {
                 "last_direction": None,
                 "last_price": None,
                 "approaching_sent": False
@@ -396,7 +417,7 @@ def scan_default_watchlist_supertrend(db: Session, watchlist_symbols: Optional[L
 
             # 1. Direction Flip (BUY or SELL Hit)
             if is_flipped and prev_dir is not None:
-                print(f"[AutoWatchlist] {clean_sym} SuperTrend HIT! Flipped from {prev_dir} to {curr_dir}! Price: ₹{curr_price:.2f}, ST: ₹{st_price:.2f}")
+                print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} SuperTrend HIT! Flipped from {prev_dir} to {curr_dir}! Price: Rs. {curr_price:.2f}, ST: Rs. {st_price:.2f}")
                 notification_manager.emit_supertrend_signal(
                     alert=None,
                     symbol=clean_sym,
@@ -404,7 +425,8 @@ def scan_default_watchlist_supertrend(db: Session, watchlist_symbols: Optional[L
                     current_price=curr_price,
                     supertrend_price=st_price,
                     prev_direction=prev_dir,
-                    db=db
+                    db=db,
+                    user_id=user_id
                 )
                 state["last_direction"] = curr_dir
                 state["approaching_sent"] = False
@@ -416,7 +438,7 @@ def scan_default_watchlist_supertrend(db: Session, watchlist_symbols: Optional[L
             # 2. Early Proximity Warning (<= 1.0 pt)
             elif is_approaching and not is_flipped:
                 if not state["approaching_sent"]:
-                    print(f"[AutoWatchlist] {clean_sym} Early Warning: price ₹{curr_price:.2f} within {dist_pts} pts of ST ₹{st_price:.2f}!")
+                    print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} Early Warning: price Rs. {curr_price:.2f} within {dist_pts} pts of ST Rs. {st_price:.2f}!")
                     notification_manager.emit_supertrend_approaching(
                         alert=None,
                         symbol=clean_sym,
@@ -425,7 +447,8 @@ def scan_default_watchlist_supertrend(db: Session, watchlist_symbols: Optional[L
                         distance_points=dist_pts,
                         proximity_threshold=prox_pts,
                         current_direction=curr_dir,
-                        db=db
+                        db=db,
+                        user_id=user_id
                     )
                     state["approaching_sent"] = True
                     results.append({"symbol": clean_sym, "type": "APPROACHING", "distance": dist_pts})
@@ -435,7 +458,7 @@ def scan_default_watchlist_supertrend(db: Session, watchlist_symbols: Optional[L
                     state["approaching_sent"] = False
 
         except Exception as err:
-            print(f"[AutoWatchlist] Error evaluating {clean_sym}: {err}")
+            print(f"[AutoWatchlist] Error evaluating {clean_sym} for user {user_id}: {err}")
 
     return results
 
@@ -444,8 +467,14 @@ def evaluate_active_alerts(db: Session) -> List[Dict[str, Any]]:
     """
     Continuous per-alert state machine.
     """
-    # Auto-scan popular watchlist stocks even when no user alert is added
-    scan_default_watchlist_supertrend(db)
+    # Auto-scan watchlist stocks per active user
+    from app.database.models import User
+    users = db.query(User).all()
+    if users:
+        for u in users:
+            scan_default_watchlist_supertrend(db, user_id=u.id)
+    else:
+        scan_default_watchlist_supertrend(db, user_id=None)
 
     active_alerts = db.query(Alert).filter(Alert.status.in_(ACTIVE_STATES)).all()
     if not active_alerts:
@@ -860,7 +889,7 @@ def check_pending_outcomes(db: Session, snapshots: Dict[str, Any]):
             except Exception as exc:
                 print(f"[AlertEngine] Stop-loss notification error for {sym}: {exc}")
 
-            print(f"[AlertEngine] Alert #{alert.id} for {sym}: STOP-LOSS TRIGGERED at ₹{curr_price:.2f}. Capital protected.")
+            print(f"[AlertEngine] Alert #{alert.id} for {sym}: STOP-LOSS TRIGGERED at Rs. {curr_price:.2f}. Capital protected.")
             continue
 
         elif hit:
@@ -872,7 +901,7 @@ def check_pending_outcomes(db: Session, snapshots: Dict[str, Any]):
                 h.current_price = curr_price
                 h.current_change = curr_change
                 h.target_price = target_price
-                h.outcome_notes = f"Target {alert.target_percent:.2f}% reached at ₹{curr_price:.2f} ({curr_change:+.2f}%) within {elapsed_minutes:.2f} minute(s)."
+                h.outcome_notes = f"Target {alert.target_percent:.2f}% reached at Rs. {curr_price:.2f} ({curr_change:+.2f}%) within {elapsed_minutes:.2f} minute(s)."
 
             alert.status = "SUCCESS"
             alert.stopped_at = now
@@ -921,7 +950,7 @@ def check_pending_outcomes(db: Session, snapshots: Dict[str, Any]):
                             target_price=target_price,
                             db=db
                         )
-                        print(f"[AlertEngine] Alert #{alert.id} ({sym}): 50% Milestone reached at ₹{curr_price:.2f} ({curr_change:+.2f}%)!")
+                        print(f"[AlertEngine] Alert #{alert.id} ({sym}): 50% Milestone reached at Rs. {curr_price:.2f} ({curr_change:+.2f}%)!")
                     except Exception as exc:
                         print(f"[AlertEngine] Halfway milestone notification error for {sym}: {exc}")
 
@@ -1042,8 +1071,11 @@ def stop_alert_monitoring(alert_id: int, db: Session) -> Optional[Alert]:
     return alert
 
 
-def get_performance_summary(db: Session) -> Dict[str, Any]:
-    all_history = db.query(AlertHistory).all()
+def get_performance_summary(db: Session, user_id: Optional[int] = None) -> Dict[str, Any]:
+    query = db.query(AlertHistory)
+    if user_id is not None:
+        query = query.filter(AlertHistory.user_id == user_id)
+    all_history = query.all()
     total = len(all_history)
     if total == 0:
         return {
