@@ -1375,43 +1375,67 @@ window.StockPulse = (function () {
     }
   }
 
-  // --- RENDER AUTHENTICATED USER PILL IN NAVBAR ---
+  // --- RENDER AUTHENTICATED USER CIRCLE IN NAVBAR ---
   function renderNavbarUserPill() {
     const navActions = document.querySelector('.nav-actions');
     if (!navActions) return;
 
-    let userPill = document.getElementById('nav-user-pill');
+    let userWrapper = document.getElementById('nav-user-circle-wrapper');
     const user = getUser();
-    const displayName = (user && (user.name || user.username || user.email)) ? (user.name || user.username) : 'Trader';
-    const initial = displayName ? displayName.charAt(0).toUpperCase() : 'U';
+    const displayName = (user && (user.name || user.username || user.email)) ? (user.name || user.username) : 'User';
+    const emailStr = user && user.email ? user.email : '';
+    const initial = displayName ? displayName.trim().charAt(0).toUpperCase() : 'U';
 
-    if (!userPill) {
-      userPill = document.createElement('div');
-      userPill.id = 'nav-user-pill';
-      userPill.className = 'nav-user-pill';
-      userPill.style.display = 'inline-flex';
-      userPill.style.alignItems = 'center';
-      userPill.style.gap = '8px';
-      userPill.style.background = 'rgba(255, 255, 255, 0.08)';
-      userPill.style.border = '1px solid rgba(255, 255, 255, 0.15)';
-      userPill.style.borderRadius = '20px';
-      userPill.style.padding = '4px 12px 4px 6px';
-      userPill.style.marginLeft = '8px';
+    if (!userWrapper) {
+      userWrapper = document.createElement('div');
+      userWrapper.id = 'nav-user-circle-wrapper';
+      userWrapper.className = 'nav-user-circle-wrapper';
+      userWrapper.style.position = 'relative';
+      userWrapper.style.display = 'inline-flex';
+      userWrapper.style.alignItems = 'center';
+      userWrapper.style.marginLeft = '10px';
 
-      userPill.innerHTML = `
-        <span id="nav-user-avatar" style="width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, #2563eb, #3b82f6); color: #fff; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 0 10px rgba(37,99,235,0.4);">${initial}</span>
-        <span id="nav-user-name" style="font-size: 12px; font-weight: 600; color: #f8fafc; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${displayName}</span>
-        <button id="nav-btn-logout" title="Sign out of StockPulse" style="background: none; border: none; color: #94a3b8; cursor: pointer; padding: 2px 4px; font-size: 13px; display: inline-flex; align-items: center; margin-left: 2px; transition: color 0.2s;">
-          <i class="fa-solid fa-right-from-bracket"></i>
+      userWrapper.innerHTML = `
+        <button type="button" id="nav-user-circle-btn" title="Account profile & sign out" style="width: 33px; height: 33px; border-radius: 50%; background: linear-gradient(135deg, #2563eb, #3b82f6); color: #ffffff; font-size: 14px; font-weight: 800; border: 2px solid rgba(255, 255, 255, 0.4); display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 2px 10px rgba(37, 99, 235, 0.35); transition: transform 0.15s ease, box-shadow 0.15s ease; padding: 0; outline: none;">
+          ${initial}
         </button>
+        <div id="nav-user-dropdown-card" style="display: none; position: absolute; right: 0; top: 42px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px; box-shadow: 0 16px 36px -4px rgba(15, 23, 42, 0.18), 0 0 1px rgba(0, 0, 0, 0.1); width: 220px; z-index: 10000; padding: 14px; text-align: left;">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #f1f5f9;">
+            <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #2563eb, #3b82f6); color: #ffffff; font-weight: 800; font-size: 15px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">${initial}</div>
+            <div style="overflow: hidden; flex: 1;">
+              <div id="nav-dropdown-name" style="font-size: 13px; font-weight: 700; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${displayName}</div>
+              <div id="nav-dropdown-email" style="font-size: 11px; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${emailStr}</div>
+            </div>
+          </div>
+          <button type="button" id="nav-dropdown-logout-btn" style="width: 100%; height: 34px; background: #fef2f2; border: 1px solid #fee2e2; border-radius: 8px; color: #dc2626; font-size: 13px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: background 0.2s;">
+            <i class="fa-solid fa-right-from-bracket"></i> Sign Out
+          </button>
+        </div>
       `;
 
-      navActions.insertBefore(userPill, navActions.firstChild);
+      navActions.insertBefore(userWrapper, navActions.firstChild);
 
-      const logoutBtn = document.getElementById('nav-btn-logout');
+      const circleBtn = document.getElementById('nav-user-circle-btn');
+      const dropdownCard = document.getElementById('nav-user-dropdown-card');
+      const logoutBtn = document.getElementById('nav-dropdown-logout-btn');
+
+      if (circleBtn && dropdownCard) {
+        circleBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isShown = dropdownCard.style.display === 'block';
+          dropdownCard.style.display = isShown ? 'none' : 'block';
+        });
+
+        document.addEventListener('click', (e) => {
+          if (!userWrapper.contains(e.target)) {
+            dropdownCard.style.display = 'none';
+          }
+        });
+      }
+
       if (logoutBtn) {
-        logoutBtn.addEventListener('mouseenter', () => logoutBtn.style.color = '#ef4444');
-        logoutBtn.addEventListener('mouseleave', () => logoutBtn.style.color = '#94a3b8');
+        logoutBtn.addEventListener('mouseenter', () => logoutBtn.style.background = '#fee2e2');
+        logoutBtn.addEventListener('mouseleave', () => logoutBtn.style.background = '#fef2f2');
         logoutBtn.addEventListener('click', async () => {
           localStorage.removeItem(STORAGE_KEY_TOKEN);
           localStorage.removeItem(STORAGE_KEY_USER);
@@ -1422,10 +1446,12 @@ window.StockPulse = (function () {
         });
       }
     } else {
-      const nameEl = document.getElementById('nav-user-name');
-      const avatarEl = document.getElementById('nav-user-avatar');
+      const circleBtn = document.getElementById('nav-user-circle-btn');
+      const nameEl = document.getElementById('nav-dropdown-name');
+      const emailEl = document.getElementById('nav-dropdown-email');
+      if (circleBtn) circleBtn.textContent = initial;
       if (nameEl) nameEl.textContent = displayName;
-      if (avatarEl) avatarEl.textContent = initial;
+      if (emailEl) emailEl.textContent = emailStr;
     }
   }
 

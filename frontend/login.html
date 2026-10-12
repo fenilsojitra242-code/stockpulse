@@ -11,13 +11,13 @@
   <link rel="stylesheet" href="/static/style.css">
   <style>
     :root {
-      --auth-bg: #090d16;
-      --auth-card: rgba(15, 23, 42, 0.85);
-      --auth-border: rgba(255, 255, 255, 0.1);
+      --auth-bg: #f8fafc;
+      --auth-card: #ffffff;
+      --auth-border: #e2e8f0;
       --auth-accent: #2563eb;
       --auth-accent-hover: #1d4ed8;
-      --auth-text: #f8fafc;
-      --auth-muted: #94a3b8;
+      --auth-text: #0f172a;
+      --auth-muted: #64748b;
     }
 
     * {
@@ -28,7 +28,7 @@
 
     body {
       min-height: 100vh;
-      background: radial-gradient(circle at 50% 0%, #1e293b 0%, #090d16 65%, #05070c 100%);
+      background: radial-gradient(circle at 50% 0%, #eff6ff 0%, #f8fafc 60%, #f1f5f9 100%);
       font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
       color: var(--auth-text);
       display: flex;
@@ -48,9 +48,9 @@
       left: 0;
       right: 0;
       bottom: 0;
-      background-image: linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-                        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-      background-size: 40px 40px;
+      background-image: linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+                        linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+      background-size: 32px 32px;
       pointer-events: none;
       z-index: 0;
     }
@@ -66,7 +66,7 @@
     /* Brand Header */
     .brand-header {
       text-align: center;
-      margin-bottom: 28px;
+      margin-bottom: 24px;
     }
 
     .brand-logo-badge {
@@ -79,52 +79,42 @@
       background: linear-gradient(135deg, #2563eb, #3b82f6);
       color: #fff;
       font-size: 26px;
-      box-shadow: 0 0 25px rgba(37, 99, 235, 0.45);
-      margin-bottom: 14px;
-      animation: pulse-glow 3s infinite ease-in-out;
-    }
-
-    @keyframes pulse-glow {
-      0%, 100% { box-shadow: 0 0 20px rgba(37, 99, 235, 0.4); }
-      50% { box-shadow: 0 0 35px rgba(59, 130, 246, 0.7); }
+      box-shadow: 0 8px 24px rgba(37, 99, 235, 0.25);
+      margin-bottom: 12px;
     }
 
     .brand-title {
       font-size: 28px;
       font-weight: 800;
       letter-spacing: -0.5px;
-      background: linear-gradient(135deg, #ffffff 40%, #94a3b8 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      margin-bottom: 6px;
+      color: #0f172a;
+      margin-bottom: 4px;
     }
 
     .brand-subtitle {
-      font-size: 13px;
+      font-size: 13.5px;
       color: var(--auth-muted);
       line-height: 1.4;
     }
 
-    /* Auth Card */
+    /* Auth Card (White Theme) */
     .auth-card {
       background: var(--auth-card);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
       border: 1px solid var(--auth-border);
       border-radius: 20px;
       padding: 32px;
-      box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.7),
-                  0 0 0 1px rgba(255, 255, 255, 0.05);
+      box-shadow: 0 20px 45px -12px rgba(15, 23, 42, 0.08),
+                  0 4px 16px -2px rgba(15, 23, 42, 0.04);
     }
 
     /* Segmented Tab Switcher */
     .auth-tabs {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      background: rgba(0, 0, 0, 0.35);
+      background: #f1f5f9;
       padding: 4px;
       border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      border: 1px solid #e2e8f0;
       margin-bottom: 24px;
     }
 
@@ -132,7 +122,7 @@
       padding: 10px 16px;
       border: none;
       background: transparent;
-      color: var(--auth-muted);
+      color: #64748b;
       font-size: 14px;
       font-weight: 600;
       border-radius: 9px;
@@ -145,13 +135,13 @@
     }
 
     .auth-tab-btn:hover {
-      color: #fff;
+      color: #0f172a;
     }
 
     .auth-tab-btn.active {
       background: var(--auth-accent);
       color: #ffffff;
-      box-shadow: 0 2px 10px rgba(37, 99, 235, 0.4);
+      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
     }
 
     /* Feedback message banner */
@@ -174,18 +164,18 @@
       display: flex;
       align-items: center;
       gap: 10px;
-      background: rgba(239, 68, 68, 0.15);
-      border: 1px solid rgba(239, 68, 68, 0.3);
-      color: #fca5a5;
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #dc2626;
     }
 
     .auth-feedback-banner.success {
       display: flex;
       align-items: center;
       gap: 10px;
-      background: rgba(34, 197, 94, 0.15);
-      border: 1px solid rgba(34, 197, 94, 0.3);
-      color: #86efac;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      color: #16a34a;
     }
 
     /* Form Groups */
@@ -197,7 +187,7 @@
       display: block;
       font-size: 13px;
       font-weight: 600;
-      color: #cbd5e1;
+      color: #334155;
       margin-bottom: 6px;
     }
 
@@ -210,7 +200,7 @@
       left: 14px;
       top: 50%;
       transform: translateY(-50%);
-      color: #64748b;
+      color: #94a3b8;
       font-size: 14px;
       pointer-events: none;
       transition: color 0.2s;
@@ -220,29 +210,29 @@
       width: 100%;
       height: 46px;
       padding: 0 14px 0 42px;
-      background: rgba(15, 23, 42, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
       border-radius: 10px;
-      color: #f8fafc;
+      color: #0f172a;
       font-size: 14px;
       font-family: inherit;
       transition: all 0.2s ease;
     }
 
     .auth-input::placeholder {
-      color: #64748b;
-      font-size: 13px;
+      color: #94a3b8;
+      font-size: 13.5px;
     }
 
     .auth-input:focus {
       outline: none;
-      border-color: #3b82f6;
-      background: rgba(15, 23, 42, 0.85);
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25);
+      border-color: #2563eb;
+      background: #ffffff;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
     }
 
     .input-wrapper:focus-within i.field-icon {
-      color: #3b82f6;
+      color: #2563eb;
     }
 
     .toggle-password-btn {
@@ -252,7 +242,7 @@
       transform: translateY(-50%);
       background: none;
       border: none;
-      color: #64748b;
+      color: #94a3b8;
       cursor: pointer;
       padding: 4px;
       font-size: 14px;
@@ -260,7 +250,7 @@
     }
 
     .toggle-password-btn:hover {
-      color: #cbd5e1;
+      color: #334155;
     }
 
     /* Submit Button */
@@ -280,14 +270,14 @@
       align-items: center;
       justify-content: center;
       gap: 10px;
-      box-shadow: 0 4px 15px rgba(37, 99, 235, 0.35);
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.25);
       transition: all 0.2s ease;
     }
 
     .auth-submit-btn:hover {
-      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      background: linear-gradient(135deg, #1d4ed8, #1e40af);
       transform: translateY(-1px);
-      box-shadow: 0 6px 20px rgba(37, 99, 235, 0.45);
+      box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35);
     }
 
     .auth-submit-btn:active {
@@ -295,7 +285,7 @@
     }
 
     .auth-submit-btn:disabled {
-      opacity: 0.6;
+      opacity: 0.65;
       cursor: not-allowed;
       transform: none;
     }
@@ -309,7 +299,7 @@
     }
 
     .auth-switch-link {
-      color: #60a5fa;
+      color: #2563eb;
       font-weight: 600;
       background: none;
       border: none;
@@ -322,23 +312,24 @@
     }
 
     .auth-switch-link:hover {
-      color: #93c5fd;
+      color: #1d4ed8;
     }
 
     .feature-highlights {
       margin-top: 24px;
       display: flex;
       justify-content: space-around;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      border-top: 1px solid #e2e8f0;
       padding-top: 18px;
     }
 
     .highlight-item {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 7px;
       font-size: 12px;
-      color: #94a3b8;
+      color: #64748b;
+      font-weight: 500;
     }
 
     .highlight-item i {
@@ -406,7 +397,7 @@
               required
               autocomplete="current-password"
             >
-            <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('login-password', this)">
+            <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('login-password', this)" title="Show/hide password">
               <i class="fa-solid fa-eye"></i>
             </button>
           </div>
@@ -441,7 +432,7 @@
         </div>
 
         <div class="form-group">
-          <label for="register-username">Username <span style="font-weight: 400; color: #64748b;">(optional)</span></label>
+          <label for="register-username">Username <span style="font-weight: 400; color: #94a3b8;">(optional)</span></label>
           <div class="input-wrapper">
             <i class="fa-solid fa-at field-icon"></i>
             <input
@@ -481,7 +472,7 @@
               required
               autocomplete="new-password"
             >
-            <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('register-password', this)">
+            <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('register-password', this)" title="Show/hide password">
               <i class="fa-solid fa-eye"></i>
             </button>
           </div>
@@ -521,14 +512,12 @@
     (function checkExistingSession() {
       const token = localStorage.getItem('stockpulse_jwt_token');
       if (token) {
-        // Quick verification before redirect
         fetch('/api/auth/me', {
           headers: { 'Authorization': 'Bearer ' + token }
         }).then(res => {
           if (res.ok) {
             window.location.replace('/live');
           } else {
-            // Invalid/expired token: clear stale session
             localStorage.removeItem('stockpulse_jwt_token');
             localStorage.removeItem('stockpulse_user_profile');
           }
