@@ -70,6 +70,10 @@ def _send_via_brevo_api(api_key: str, from_email: str, from_name: str, to_email:
                 print(f"[EmailService] Brevo API: OTP email successfully delivered to {to_email}")
                 return True, None
             return False, f"Brevo API status {resp.status}"
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode()
+        print(f"[EmailService] Brevo HTTP {e.code}: {err_body}")
+        return False, f"Brevo HTTP {e.code}: {err_body}"
     except Exception as e:
         return False, f"Brevo API error: {e}"
 
@@ -95,9 +99,10 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> Tuple[b
     from_email = os.getenv("SMTP_FROM_EMAIL", "").strip() or smtp_user or "verify@stockpulse.io"
     from_name = os.getenv("SMTP_FROM_NAME", "StockPulse Security").strip()
 
-    # Detect if Brevo API key was placed in SMTP_PASSWORD
-    if not brevo_key and smtp_pass.startswith("xkeysib-"):
-        brevo_key = smtp_pass
+    # Detect if Brevo credentials were provided via BREVO_API_KEY or SMTP_PASSWORD
+    if not brevo_key:
+        if smtp_pass.startswith(("xkeysib-", "xsmtpsib-")) or "brevo" in smtp_host.lower() or "sendinblue" in smtp_host.lower():
+            brevo_key = smtp_pass
 
     service_configured = bool(resend_key or brevo_key or (smtp_user and smtp_pass))
 
@@ -187,19 +192,20 @@ The StockPulse Security Team
 </html>
 """
 
-    # 1. Primary Cloud Delivery: Resend REST API (HTTPS Port 443 - Never blocked on Render Free)
+    # 1. Primary Cloud Delivery: Brevo REST API (HTTPS Port 443 - Sends to ANY recipient without custom domain)
+    if brevo_key:
+        brevo_sender = os.getenv("BREVO_SENDER_EMAIL", "").strip() or from_email or "fenilsojitra242@gmail.com"
+        ok, err = _send_via_brevo_api(brevo_key, brevo_sender, from_name, to_email, recipient_name, otp_code, html_content, plain_text)
+        if ok:
+            return True, None, True
+        print(f"[EmailService] Brevo attempt for {to_email}: {err}")
+
+    # 2. Cloud Delivery Alternative: Resend REST API (HTTPS Port 443)
     if resend_key:
         ok, err = _send_via_resend(resend_key, from_name, to_email, recipient_name, otp_code, html_content, plain_text)
         if ok:
             return True, None, True
         print(f"[EmailService] Resend attempt for {to_email}: {err}")
-
-    # 2. Cloud Delivery Alternative: Brevo REST API (HTTPS Port 443 - Never blocked on Render Free)
-    if brevo_key:
-        ok, err = _send_via_brevo_api(brevo_key, from_email, from_name, to_email, recipient_name, otp_code, html_content, plain_text)
-        if ok:
-            return True, None, True
-        print(f"[EmailService] Brevo attempt for {to_email}: {err}")
 
     # 3. Standard SMTP (Port 587)
     if smtp_user and smtp_pass:
