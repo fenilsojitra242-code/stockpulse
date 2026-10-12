@@ -1605,12 +1605,23 @@ window.StockPulse = (function () {
             setUser(data.user);
           }
 
-          showAlert(data.message || 'Success! Welcome to StockPulse.', false);
-          unlockApplication();
-
-          setTimeout(() => {
-            if (inputPwd) inputPwd.value = '';
-          }, 800);
+          if (currentAuthMode === 'register') {
+            showAlert(data.message || 'Account created! Unlocking and opening main dashboard...', false);
+            unlockApplication();
+            setTimeout(() => {
+              window.location.href = '/live';
+            }, 500);
+          } else {
+            showAlert(data.message || 'Welcome back to StockPulse!', false);
+            unlockApplication();
+            setTimeout(() => {
+              if (window.location.pathname !== '/' && window.location.pathname !== '/live') {
+                window.location.href = '/live';
+              } else if (inputPwd) {
+                inputPwd.value = '';
+              }
+            }, 600);
+          }
 
         } catch (err) {
           console.error('[StockPulse Auth Error]:', err);
