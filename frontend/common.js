@@ -120,7 +120,8 @@ window.StockPulse = (function () {
     document.addEventListener('touchstart', unlock, { once: true });
   }
 
-  function playNotificationSound(eventType) {
+  function playNotificationSound(eventType, force = false) {
+    if (!force && document.body.classList.contains('auth-locked')) return;
     if (!isSoundEnabled()) return;
     try {
       const ctx = getAudioContext();
@@ -335,6 +336,7 @@ window.StockPulse = (function () {
   }
 
   function speakVoiceAlert(notifData) {
+    if (document.body.classList.contains('auth-locked')) return;
     if (!isVoiceEnabled() || !('speechSynthesis' in window)) return;
     try {
       window.speechSynthesis.cancel(); // cancel previous active speech
@@ -455,6 +457,7 @@ window.StockPulse = (function () {
   }
 
   function showDesktopNotification(title, message, tag, notifData) {
+    if (document.body.classList.contains('auth-locked')) return;
     const alertSummary = (title || 'StockPulse Alert').replace(/<[^>]*>/g, '').trim();
     flashTabTitle(alertSummary);
 
@@ -676,7 +679,7 @@ window.StockPulse = (function () {
 
     updateDesktopAlertButtonUI();
 
-    if ('Notification' in window && Notification.permission === 'default') {
+    if ('Notification' in window && Notification.permission === 'default' && !document.body.classList.contains('auth-locked') && localStorage.getItem(STORAGE_KEY_TOKEN)) {
       const dismissed = sessionStorage.getItem(STORAGE_KEY_BANNER_DISMISSED);
       if (!dismissed && !document.getElementById('desktop-alert-banner')) {
         const banner = document.createElement('div');
@@ -734,7 +737,7 @@ window.StockPulse = (function () {
   }
 
   function showCustomizedPopup(notifData) {
-    if (!notifData) return;
+    if (!notifData || document.body.classList.contains('auth-locked') || !localStorage.getItem(STORAGE_KEY_TOKEN)) return;
     try {
       // Parse extra_data if available
       let extra = {};
@@ -998,6 +1001,9 @@ window.StockPulse = (function () {
 
   // --- REAL-TIME NOTIFICATION POLLER ---
   async function checkRealtimeNotifications() {
+    if (document.body.classList.contains('auth-locked') || !localStorage.getItem(STORAGE_KEY_TOKEN)) {
+      return;
+    }
     try {
       const res = await fetch('/api/notifications?limit=10');
       if (!res.ok) return;
@@ -1245,7 +1251,7 @@ window.StockPulse = (function () {
                 <label class="auth-input-label" for="auth-input-name">Full Name</label>
                 <div class="auth-input-wrapper">
                   <i class="fa-solid fa-user auth-input-icon"></i>
-                  <input type="text" id="auth-input-name" class="auth-input-field" placeholder="e.g. Fenil Sojitra" autocomplete="name">
+                  <input type="text" id="auth-input-name" class="auth-input-field" placeholder="Enter your name" autocomplete="name">
                 </div>
               </div>
 
@@ -1453,6 +1459,14 @@ window.StockPulse = (function () {
 
     function lockApplication() {
       document.body.classList.add('auth-locked');
+      // Dismiss and clear any popups or notification banners completely
+      const banner = document.getElementById('desktop-alert-banner');
+      if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
+      const popupContainer = document.getElementById('stockpulse-popup-container');
+      if (popupContainer) popupContainer.innerHTML = '';
+      const blockedModal = document.getElementById('desktop-blocked-modal');
+      if (blockedModal) blockedModal.style.display = 'none';
+
       authModal.classList.add('mandatory-auth-gate');
       authModal.style.display = 'flex';
       setAuthMode('login');
