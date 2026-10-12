@@ -942,6 +942,23 @@
       const alertEl = document.getElementById('otp-smtp-alert');
       if (!alertEl) return;
 
+      if (data && data.delivery_failed) {
+        alertEl.style.display = 'block';
+        alertEl.innerHTML = `
+          <div style="background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px 14px; border-radius: 10px; font-size: 13px; line-height: 1.5; text-align: left;">
+            <div style="font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
+              <i class="fa-solid fa-triangle-exclamation" style="color: #dc2626;"></i>
+              Email Delivery Restricted by Cloud Host
+            </div>
+            <div style="color: #7f1d1d; font-size: 12.5px; margin-bottom: 4px;">
+              ${data.cloud_firewall_blocked ? 'Render Free Tier blocks outbound SMTP Port 587. To send emails on Render, add a free <code>RESEND_API_KEY</code> (which uses HTTPS Port 443).' : (data.message || 'Unable to deliver email.')}
+            </div>
+          </div>
+        `;
+        showFeedback(data.message || 'Email delivery restricted by cloud host firewall.', true);
+        return;
+      }
+
       if (data && data.smtp_configured) {
         alertEl.style.display = 'block';
         alertEl.innerHTML = `
@@ -951,7 +968,7 @@
               Email Dispatched
             </div>
             <div style="color: #1e3a8a;">
-              6-digit verification code sent to <strong>${email}</strong> via SMTP. Please check your inbox (and spam folder).
+              6-digit verification code sent to <strong>${email}</strong>. Please check your inbox (and spam folder).
             </div>
           </div>
         `;
