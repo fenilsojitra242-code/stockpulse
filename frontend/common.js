@@ -1244,7 +1244,7 @@ window.StockPulse = (function () {
               <button type="button" class="auth-tab-btn" id="tab-auth-register">Create Account</button>
             </div>
 
-            <form id="form-auth-submit" class="auth-modal-content">
+            <form id="form-auth-submit" class="auth-modal-content" novalidate onsubmit="return false;">
               <div id="auth-alert-message" class="auth-alert-box" style="display: none;"></div>
 
               <div class="auth-input-group" id="group-auth-name" style="display: none;">
@@ -1259,7 +1259,7 @@ window.StockPulse = (function () {
                 <label class="auth-input-label" for="auth-input-email">Email Address</label>
                 <div class="auth-input-wrapper">
                   <i class="fa-solid fa-envelope auth-input-icon"></i>
-                  <input type="email" id="auth-input-email" class="auth-input-field" placeholder="you@example.com" required autocomplete="email">
+                  <input type="text" id="auth-input-email" class="auth-input-field" placeholder="you@example.com" autocomplete="email">
                 </div>
               </div>
 
@@ -1267,14 +1267,14 @@ window.StockPulse = (function () {
                 <label class="auth-input-label" for="auth-input-password">Password</label>
                 <div class="auth-input-wrapper">
                   <i class="fa-solid fa-lock auth-input-icon"></i>
-                  <input type="password" id="auth-input-password" class="auth-input-field" placeholder="At least 6 characters" required autocomplete="current-password">
+                  <input type="password" id="auth-input-password" class="auth-input-field" placeholder="At least 6 characters" autocomplete="current-password">
                   <button type="button" class="auth-toggle-pwd" id="btn-toggle-pwd" title="Show/Hide Password">
                     <i class="fa-solid fa-eye" id="icon-toggle-pwd"></i>
                   </button>
                 </div>
               </div>
 
-              <button type="submit" class="auth-submit-btn" id="btn-submit-auth">
+              <button type="button" class="auth-submit-btn" id="btn-submit-auth">
                 <span id="auth-btn-text">Sign In</span>
                 <i class="fa-solid fa-arrow-right" id="auth-btn-icon"></i>
               </button>
@@ -1400,14 +1400,12 @@ window.StockPulse = (function () {
         if (tabLogin) tabLogin.classList.add('active');
         if (tabRegister) tabRegister.classList.remove('active');
         if (groupName) groupName.style.display = 'none';
-        if (inputName) inputName.required = false;
         if (btnSubmitText) btnSubmitText.textContent = 'Sign In';
         if (inputPwd) inputPwd.placeholder = 'Your password';
       } else {
         if (tabLogin) tabLogin.classList.remove('active');
         if (tabRegister) tabRegister.classList.add('active');
         if (groupName) groupName.style.display = 'block';
-        if (inputName) inputName.required = true;
         if (btnSubmitText) btnSubmitText.textContent = 'Create Account';
         if (inputPwd) inputPwd.placeholder = 'At least 6 characters';
       }
@@ -1553,87 +1551,128 @@ window.StockPulse = (function () {
       }
     });
 
-    // Form submission (Login / Register)
-    if (formSubmit) {
-      formSubmit.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        hideAlert();
+    // Form submission (Login / Register) with guaranteed execution on button click or form submit
+    async function handleAuthSubmit() {
+      hideAlert();
 
-        const email = inputEmail ? inputEmail.value.trim().toLowerCase() : '';
-        const password = inputPwd ? inputPwd.value : '';
-        const name = inputName ? inputName.value.trim() : '';
+      const email = inputEmail ? inputEmail.value.trim().toLowerCase() : '';
+      const password = inputPwd ? inputPwd.value.trim() : '';
+      const name = inputName ? inputName.value.trim() : '';
 
-        if (!email || !password) {
-          showAlert('Please provide both email and password.');
+      if (currentAuthMode === 'register' && !name) {
+        showAlert('Please enter your full name.');
+        if (inputName) inputName.focus();
+        return;
+      }
+
+      if (!email) {
+        showAlert('Please enter your email address.');
+        if (inputEmail) inputEmail.focus();
+        return;
+      }
+
+      if (!email.includes('@') || !email.includes('.')) {
+        showAlert('Please enter a valid email address (e.g. user@example.com).');
+        if (inputEmail) inputEmail.focus();
+        return;
+      }
+
+      if (!password) {
+        showAlert('Please enter your password.');
+        if (inputPwd) inputPwd.focus();
+        return;
+      }
+
+      if (password.length < 6) {
+        showAlert('Password must be at least 6 characters.');
+        if (inputPwd) inputPwd.focus();
+        return;
+      }
+
+      if (btnSubmit) {
+        btnSubmit.disabled = true;
+        if (btnSubmitText) btnSubmitText.textContent = currentAuthMode === 'login' ? 'Signing In...' : 'Creating Account...';
+      }
+
+      try {
+        const endpoint = currentAuthMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+        const payload = currentAuthMode === 'login' 
+          ? { email, password }
+          : { name: name || email.split('@')[0], email, password };
+
+        console.log('[StockPulse] Submitting auth:', currentAuthMode, payload.email);
+
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          let errorMsg = 'Authentication failed. Please verify your details.';
+          if (data.detail) {
+            if (Array.isArray(data.detail)) {
+              errorMsg = data.detail.map(d => d.msg || JSON.stringify(d)).join(', ');
+            } else if (typeof data.detail === 'string') {
+              errorMsg = data.detail;
+            }
+          } else if (data.message) {
+            errorMsg = data.message;
+          }
+          showAlert(errorMsg);
           return;
         }
 
-        if (currentAuthMode === 'register' && password.length < 6) {
-          showAlert('Password must be at least 6 characters.');
-          return;
-        }
+        // Successful authentication!
+        const token = data.token || data.access_token;
+        if (token) setAuthToken(token);
+        if (data.user) setUser(data.user);
 
+        showAlert(data.message || 'Success! Unlocking StockPulse...', false);
+        unlockApplication();
+
+        // Redirect directly to the main page of the site
+        setTimeout(() => {
+          window.location.href = '/live';
+        }, 400);
+
+      } catch (err) {
+        console.error('[StockPulse Auth Error]:', err);
+        showAlert('Network connection error. Please ensure the server is running and retry.');
+      } finally {
         if (btnSubmit) {
-          btnSubmit.disabled = true;
-          if (btnSubmitText) btnSubmitText.textContent = currentAuthMode === 'login' ? 'Signing In...' : 'Creating Account...';
+          btnSubmit.disabled = false;
+          setAuthMode(currentAuthMode);
         }
+      }
+    }
 
-        try {
-          const endpoint = currentAuthMode === 'login' ? '/api/auth/login' : '/api/auth/register';
-          const payload = currentAuthMode === 'login' 
-            ? { email, password }
-            : { name: name || email.split('@')[0], email, password };
-
-          const res = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-
-          const data = await res.json();
-
-          if (!res.ok) {
-            showAlert(data.detail || data.message || 'Authentication failed. Please verify your details.');
-            return;
-          }
-
-          // Successful authentication!
-          if (data.token || data.access_token) {
-            setAuthToken(data.token || data.access_token);
-          }
-          if (data.user) {
-            setUser(data.user);
-          }
-
-          if (currentAuthMode === 'register') {
-            showAlert(data.message || 'Account created! Unlocking and opening main dashboard...', false);
-            unlockApplication();
-            setTimeout(() => {
-              window.location.href = '/live';
-            }, 500);
-          } else {
-            showAlert(data.message || 'Welcome back to StockPulse!', false);
-            unlockApplication();
-            setTimeout(() => {
-              if (window.location.pathname !== '/' && window.location.pathname !== '/live') {
-                window.location.href = '/live';
-              } else if (inputPwd) {
-                inputPwd.value = '';
-              }
-            }, 600);
-          }
-
-        } catch (err) {
-          console.error('[StockPulse Auth Error]:', err);
-          showAlert('Network connection error. Please ensure the server is reachable.');
-        } finally {
-          if (btnSubmit) {
-            btnSubmit.disabled = false;
-            setAuthMode(currentAuthMode);
-          }
-        }
+    if (formSubmit) {
+      formSubmit.addEventListener('submit', (e) => {
+        e.preventDefault();
+        handleAuthSubmit();
       });
     }
+
+    if (btnSubmit) {
+      btnSubmit.addEventListener('click', (e) => {
+        e.preventDefault();
+        handleAuthSubmit();
+      });
+    }
+
+    [inputName, inputEmail, inputPwd].forEach(inp => {
+      if (inp) {
+        inp.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            handleAuthSubmit();
+          }
+        });
+      }
+    });
 
     // Logout - immediately re-locks application
     if (btnLogout) {
