@@ -6091,3 +6091,52 @@ body.dark-mode .hud-threshold-item {
 .dark-mode .auth-stat-label {
   color: #94a3b8;
 }
+
+/* ==========================================================================
+   MANDATORY AUTHENTICATION GATE & LOCKOUT STYLES
+   ========================================================================== */
+body.auth-locked {
+  overflow: hidden !important;
+}
+
+body.auth-locked .dashboard-wrapper,
+body.auth-locked .floating-nav-wrapper,
+body.auth-locked .app-footer,
+body.auth-locked .search-bar-row,
+body.auth-locked main {
+  filter: blur(10px) brightness(0.85);
+  pointer-events: none !important;
+  user-select: none !important;
+  transition: filter 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mandatory-auth-gate {
+  position: fixed !important;
+  inset: 0 !important;
+  background: rgba(15, 23, 42, 0.88) !important;
+  backdrop-filter: blur(14px) !important;
+  -webkit-backdrop-filter: blur(14px) !important;
+  z-index: 999999 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.mandatory-auth-gate .modal-close-btn {
+  display: none !important;
+}
+
+.mandatory-auth-gate .auth-modal-card {
+  box-shadow: 0 30px 60px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+@keyframes authShake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-8px); }
+  40%, 80% { transform: translateX(8px); }
+}
+
+.auth-shake {
+  animation: authShake 0.4s ease-in-out !important;
+}

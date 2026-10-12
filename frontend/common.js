@@ -1445,6 +1445,36 @@ window.StockPulse = (function () {
       }
     }
 
+    function isUserAuthenticated() {
+      const token = getAuthToken();
+      const user = getUser();
+      return !!(token && user && user.email);
+    }
+
+    function lockApplication() {
+      document.body.classList.add('auth-locked');
+      authModal.classList.add('mandatory-auth-gate');
+      authModal.style.display = 'flex';
+      setAuthMode('login');
+      const heading = document.getElementById('auth-modal-heading');
+      const subheading = document.getElementById('auth-modal-subheading');
+      if (heading) heading.textContent = 'Sign In to StockPulse';
+      if (subheading) subheading.textContent = 'Authentication is required to view live market data, charts, and alerts.';
+      updateNavAndModalViews();
+      if (inputEmail) setTimeout(() => inputEmail.focus(), 150);
+    }
+
+    function unlockApplication() {
+      document.body.classList.remove('auth-locked');
+      authModal.classList.remove('mandatory-auth-gate');
+      authModal.style.display = 'none';
+      const heading = document.getElementById('auth-modal-heading');
+      const subheading = document.getElementById('auth-modal-subheading');
+      if (heading) heading.textContent = 'StockPulse Account';
+      if (subheading) subheading.textContent = 'Manage active monitors and profile settings';
+      updateNavAndModalViews();
+    }
+
     // Tab buttons
     if (tabLogin) tabLogin.addEventListener('click', () => setAuthMode('login'));
     if (tabRegister) tabRegister.addEventListener('click', () => setAuthMode('register'));
@@ -1467,12 +1497,21 @@ window.StockPulse = (function () {
       updateNavAndModalViews();
       hideAlert();
       authModal.style.display = 'flex';
-      if (!getAuthToken() && inputEmail) {
+      if (!isUserAuthenticated() && inputEmail) {
         setTimeout(() => inputEmail.focus(), 150);
       }
     }
 
     function closeModal() {
+      // If user is not logged in, enforce the mandatory gate - cannot close!
+      if (!isUserAuthenticated()) {
+        const card = authModal.querySelector('.auth-modal-card');
+        if (card) {
+          card.classList.add('auth-shake');
+          setTimeout(() => card.classList.remove('auth-shake'), 400);
+        }
+        return;
+      }
       authModal.style.display = 'none';
       hideAlert();
     }
@@ -1485,9 +1524,19 @@ window.StockPulse = (function () {
     const legacyOpenBtn = document.getElementById('btn-open-login');
     if (legacyOpenBtn) legacyOpenBtn.addEventListener('click', openModal);
 
-    // Close on backdrop click
+    // Close on backdrop click (blocked if not authenticated)
     authModal.addEventListener('click', (e) => {
-      if (e.target === authModal) closeModal();
+      if (e.target === authModal) {
+        if (!isUserAuthenticated()) {
+          const card = authModal.querySelector('.auth-modal-card');
+          if (card) {
+            card.classList.add('auth-shake');
+            setTimeout(() => card.classList.remove('auth-shake'), 400);
+          }
+          return;
+        }
+        closeModal();
+      }
     });
 
     // Form submission (Login / Register)
@@ -1543,10 +1592,9 @@ window.StockPulse = (function () {
           }
 
           showAlert(data.message || 'Success! Welcome to StockPulse.', false);
-          updateNavAndModalViews();
+          unlockApplication();
 
           setTimeout(() => {
-            closeModal();
             if (inputPwd) inputPwd.value = '';
           }, 800);
 
@@ -1562,7 +1610,7 @@ window.StockPulse = (function () {
       });
     }
 
-    // Logout
+    // Logout - immediately re-locks application
     if (btnLogout) {
       btnLogout.addEventListener('click', async () => {
         try {
@@ -1570,8 +1618,7 @@ window.StockPulse = (function () {
         } catch (e) {}
         setAuthToken(null);
         setUser(null);
-        updateNavAndModalViews();
-        setAuthMode('login');
+        lockApplication();
       });
     }
 
@@ -1579,7 +1626,7 @@ window.StockPulse = (function () {
     async function verifySession() {
       const token = getAuthToken();
       if (!token) {
-        updateNavAndModalViews();
+        lockApplication();
         return;
       }
       try {
@@ -1590,20 +1637,31 @@ window.StockPulse = (function () {
           const data = await res.json();
           if (data.logged_in && data.user) {
             setUser(data.user);
+            unlockApplication();
           } else {
             setAuthToken(null);
             setUser(null);
+            lockApplication();
           }
         } else {
           setAuthToken(null);
           setUser(null);
+          lockApplication();
         }
       } catch (e) {
-        console.warn('[StockPulse] Session verification skipped:', e);
+        console.warn('[StockPulse] Session verification check:', e);
+        if (getUser()) {
+          unlockApplication();
+        } else {
+          lockApplication();
+        }
       }
-      updateNavAndModalViews();
     }
 
+    // Immediate check on load
+    if (!getAuthToken()) {
+      lockApplication();
+    }
     verifySession();
   }
 
