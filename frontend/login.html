@@ -538,6 +538,8 @@
           </p>
         </div>
 
+        <div id="otp-smtp-alert" style="display: none; margin-bottom: 16px;"></div>
+
         <div class="form-group" style="margin-bottom: 18px;">
           <label style="text-align: center; display: block; margin-bottom: 8px; font-weight: 600;">Enter 6-Digit Code</label>
           <div class="otp-inputs-wrapper">
@@ -769,7 +771,7 @@
         document.getElementById('form-otp').style.display = 'block';
         document.getElementById('otp-target-email').textContent = email;
 
-        showFeedback(`Verification code sent to ${email}. Please check your inbox.`, false);
+        renderOtpDeliveryNotice(data, email);
         startOtpCountdown(60);
         setupOtpDigitInputs();
       } catch (err) {
@@ -924,7 +926,7 @@
           return;
         }
 
-        showFeedback(`New code sent to ${pendingRegistration.email}!`, false);
+        renderOtpDeliveryNotice(data, pendingRegistration.email);
         startOtpCountdown(60);
         setupOtpDigitInputs();
 
@@ -932,6 +934,50 @@
         showFeedback('Network error. Failed to resend code.', true);
         btnResend.disabled = false;
         btnResend.textContent = 'Resend Code';
+      }
+    }
+
+    // Render SMTP delivery status notice
+    function renderOtpDeliveryNotice(data, email) {
+      const alertEl = document.getElementById('otp-smtp-alert');
+      if (!alertEl) return;
+
+      if (data && data.smtp_configured) {
+        alertEl.style.display = 'block';
+        alertEl.innerHTML = `
+          <div style="background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 12px 14px; border-radius: 10px; font-size: 13px; line-height: 1.5; text-align: left;">
+            <div style="font-weight: 700; margin-bottom: 3px; display: flex; align-items: center; gap: 6px;">
+              <i class="fa-solid fa-paper-plane" style="color: #2563eb;"></i>
+              Email Dispatched
+            </div>
+            <div style="color: #1e3a8a;">
+              6-digit verification code sent to <strong>${email}</strong> via SMTP. Please check your inbox (and spam folder).
+            </div>
+          </div>
+        `;
+        showFeedback(data.message || `Verification code sent to ${email}. Please check your inbox.`, false);
+      } else {
+        alertEl.style.display = 'block';
+        const testCode = (data && data.test_otp) ? data.test_otp : '';
+        alertEl.innerHTML = `
+          <div style="background: #fffbeb; border: 1px solid #fde68a; color: #92400e; padding: 12px 14px; border-radius: 10px; font-size: 12.5px; line-height: 1.5; text-align: left;">
+            <div style="font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
+              <i class="fa-solid fa-triangle-exclamation" style="color: #d97706;"></i>
+              SMTP Mail Server Not Configured Yet
+            </div>
+            <div style="margin-bottom: 8px; color: #78350f;">
+              To receive emails in your real inbox, add <code>SMTP_USER</code> and <code>SMTP_PASSWORD</code> in your <code>.env</code> file.
+            </div>
+            ${testCode ? `
+            <div style="background: #ffffff; border: 1px dashed #f59e0b; border-radius: 8px; padding: 8px 12px; text-align: center;">
+              <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; color: #92400e; margin-bottom: 2px;">Your Verification Code:</div>
+              <div style="font-family: monospace; font-size: 20px; font-weight: 800; letter-spacing: 4px; color: #2563eb;">${testCode}</div>
+              <div style="font-size: 11px; color: #64748b; margin-top: 2px;">Enter this 6-digit code in the boxes below to continue</div>
+            </div>
+            ` : ''}
+          </div>
+        `;
+        showFeedback(data && data.message ? data.message : 'Please enter the verification code below.', false);
       }
     }
 
@@ -965,6 +1011,11 @@
     function backToRegisterEdit() {
       clearInterval(otpCountdownInterval);
       hideFeedback();
+      const alertEl = document.getElementById('otp-smtp-alert');
+      if (alertEl) {
+        alertEl.style.display = 'none';
+        alertEl.innerHTML = '';
+      }
       document.getElementById('form-otp').style.display = 'none';
       document.querySelector('.auth-tabs').style.display = 'flex';
       document.getElementById('form-register').style.display = 'block';

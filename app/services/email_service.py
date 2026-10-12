@@ -5,14 +5,14 @@ from email.mime.text import MIMEText
 from typing import Tuple, Optional
 
 
-def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> Tuple[bool, Optional[str]]:
+def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> Tuple[bool, Optional[str], bool]:
     """
     Sends a 6-digit OTP email for registration verification via SMTP.
     Supports standard SMTP (Gmail App Password, Brevo, SendGrid, Amazon SES, etc.).
     If SMTP credentials are not configured, prints the OTP in server logs for testing.
 
     Returns:
-        (success: bool, error_message: Optional[str])
+        (success: bool, error_message: Optional[str], smtp_configured: bool)
     """
     smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
@@ -21,6 +21,30 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> Tuple[b
     from_email = os.getenv("SMTP_FROM_EMAIL", smtp_user or "verify@stockpulse.io")
     from_name = os.getenv("SMTP_FROM_NAME", "StockPulse Security")
 
+    # Also check system_settings DB table if env vars are empty
+    if not smtp_user or not smtp_pass:
+        try:
+            from app.database.database import SessionLocal
+            from app.database.models import SystemSetting
+            db = SessionLocal()
+            try:
+                row_user = db.query(SystemSetting).filter(SystemSetting.key == "smtp_username").first()
+                row_pass = db.query(SystemSetting).filter(SystemSetting.key == "smtp_password").first()
+                row_host = db.query(SystemSetting).filter(SystemSetting.key == "smtp_host").first()
+                row_port = db.query(SystemSetting).filter(SystemSetting.key == "smtp_port").first()
+                if row_user and row_user.value and row_pass and row_pass.value:
+                    smtp_user = row_user.value
+                    smtp_pass = row_pass.value
+                    if row_host and row_host.value:
+                        smtp_host = row_host.value
+                    if row_port and row_port.value:
+                        smtp_port = int(row_port.value)
+                    from_email = smtp_user
+            finally:
+                db.close()
+        except Exception:
+            pass
+
     # If SMTP is not yet configured in .env, display a prominent log for easy testing
     if not smtp_user or not smtp_pass:
         print("\n" + "=" * 65)
@@ -28,7 +52,7 @@ def send_otp_email(to_email: str, recipient_name: str, otp_code: str) -> Tuple[b
         print(f"       >>> CODE: {otp_code} <<<")
         print(" [Notice: To deliver to real inboxes, add SMTP_USER & SMTP_PASSWORD to .env]")
         print("=" * 65 + "\n")
-        return True, None
+        return False, "SMTP is not configured in .env", False
 
     try:
         msg = MIMEMultipart("alternative")
@@ -135,11 +159,11 @@ The StockPulse Security Team
             server.sendmail(from_email, [to_email], msg.as_string())
 
         print(f"[EmailService] OTP successfully sent to {to_email}")
-        return True, None
+        return True, None, True
 
     except Exception as e:
         err_msg = str(e)
         print(f"[EmailService] Failed to send email to {to_email}: {err_msg}")
         # Even if SMTP connection throws error, print code to console so developer is never locked out
         print(f"[EmailService] FALLBACK OTP for {to_email}: {otp_code}")
-        return False, f"Email delivery error: {err_msg}"
+        return False, f"Email delivery error: {err_msg}", True

@@ -256,14 +256,27 @@ def send_registration_otp(req: SendOTPRequest, db: Session = Depends(get_db)):
     db.commit()
 
     # Dispatch email via SMTP
-    sent_ok, send_err = send_otp_email(clean_email, clean_name, otp_code)
+    sent_ok, send_err, smtp_configured = send_otp_email(clean_email, clean_name, otp_code)
 
     response_payload = {
         "status": "success",
-        "message": f"6-digit verification code sent to {clean_email}.",
         "email": clean_email,
-        "expires_in_seconds": 600
+        "expires_in_seconds": 600,
+        "smtp_configured": smtp_configured
     }
+
+    if smtp_configured and sent_ok:
+        response_payload["message"] = f"6-digit verification code sent to {clean_email}. Please check your inbox."
+    elif smtp_configured and not sent_ok:
+        response_payload["message"] = f"Email delivery error ({send_err}). For testing, OTP is {otp_code}."
+        response_payload["test_otp"] = otp_code
+    else:
+        response_payload["message"] = (
+            f"SMTP email service is not configured in .env yet. "
+            f"For testing, your OTP code is {otp_code}. "
+            f"To deliver to real inboxes, configure SMTP_USER and SMTP_PASSWORD."
+        )
+        response_payload["test_otp"] = otp_code
 
     return response_payload
 
