@@ -182,7 +182,7 @@
           </div>
         </div>
 
-        <!-- Time Range Selector Bar & Chart Style Mode Toggle -->
+        <!-- Time Range Selector Bar & Candlestick Controls -->
         <div class="chart-controls-bar">
           <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
             <div class="time-range-group" role="tablist" aria-label="Select Time Range">
@@ -193,18 +193,6 @@
               <button type="button" class="range-btn" data-range="1Y" role="tab" aria-selected="false">1Y</button>
             </div>
 
-            <!-- Chart Type Mode Toggle Button (Line vs Candles) -->
-            <div class="chart-mode-toggle" id="chart-mode-toggle" role="tablist" aria-label="Select Chart Style">
-              <button type="button" class="chart-btn-mode" data-mode="line" id="btn-chart-mode-line"
-                title="Switch to Line Chart">
-                <i class="fa-solid fa-chart-line"></i> Line
-              </button>
-              <button type="button" class="chart-btn-mode active" data-mode="candles" id="btn-chart-mode-candles"
-                title="Switch to Candlestick Chart">
-                <i class="fa-solid fa-chart-simple"></i> Candle
-              </button>
-            </div>
-
             <!-- SuperTrend Indicator Toggle Button -->
             <button type="button" class="chart-btn-mode active" id="btn-toggle-supertrend-overlay"
               title="Toggle SuperTrend overlay on chart"
@@ -212,9 +200,9 @@
               <i class="fa-solid fa-bolt" style="color: #f59e0b;"></i> SuperTrend Overlay
             </button>
 
-            <!-- Candlestick Zoom & Pan Toolbar (Active in Candle Mode) -->
+            <!-- Candlestick Zoom & Pan Toolbar -->
             <div class="chart-zoom-controls" id="chart-zoom-controls"
-              style="display: none; align-items: center; gap: 2px; background: var(--bg-subtle); padding: 3px; border-radius: 8px; border: 1px solid var(--border-light);">
+              style="display: inline-flex; align-items: center; gap: 2px; background: var(--bg-subtle); padding: 3px; border-radius: 8px; border: 1px solid var(--border-light);">
               <button type="button" class="chart-btn-range" id="btn-zoom-in" title="Zoom In (Scroll Up)">
                 <i class="fa-solid fa-plus"></i>
               </button>
@@ -228,12 +216,12 @@
           </div>
 
           <div class="range-info" id="range-info">
-            Intraday 1-Minute Interval
+            Intraday 1-Minute Candlestick Interval
           </div>
         </div>
 
-        <!-- Interactive Crosshair OHLC HUD Bar (Active in Candlestick Mode) -->
-        <div class="chart-ohlc-hud" id="live-ohlc-hud" style="display: none; margin-top: 10px; margin-bottom: 0;">
+        <!-- Interactive Crosshair OHLC HUD Bar -->
+        <div class="chart-ohlc-hud" id="live-ohlc-hud" style="display: flex; margin-top: 10px; margin-bottom: 0;">
           <div class="ohlc-item"><span class="ohlc-label">TIME</span> <span class="ohlc-val"
               id="live-hud-time">--:--</span></div>
           <div class="ohlc-item"><span class="ohlc-label">O</span> <span class="ohlc-val"
@@ -244,13 +232,15 @@
               id="live-hud-low">₹--.--</span></div>
           <div class="ohlc-item"><span class="ohlc-label">C</span> <span class="ohlc-val"
               id="live-hud-close">₹--.--</span></div>
+          <div class="ohlc-item"><span class="ohlc-label">CHG</span> <span class="ohlc-val"
+              id="live-hud-change" style="font-weight: 700;">--</span></div>
           <div class="ohlc-item"><span class="ohlc-label">VOL</span> <span class="ohlc-val" id="live-hud-vol">--</span>
           </div>
           <div class="ohlc-item" id="live-hud-st-item"><span class="ohlc-label">SUPERTREND</span> <span class="ohlc-val" id="live-hud-st" style="font-weight: 700;">₹--.--</span>
           </div>
         </div>
 
-        <!-- Live Price Chart Container -->
+        <!-- Live Candlestick Chart Container -->
         <div class="chart-wrapper">
           <!-- Loading Overlay -->
           <div class="chart-loading-overlay" id="chart-loading-overlay">
@@ -266,19 +256,14 @@
               try again later.</p>
           </div>
 
-          <!-- Line Chart (Chart.js Canvas) -->
-          <div class="canvas-container" id="canvas-container">
-            <canvas id="live-price-chart"></canvas>
-          </div>
-
           <!-- Candlestick Chart Canvas Wrapper -->
-          <div class="live-candle-canvas-wrapper" id="live-candle-wrapper" style="display: none;">
+          <div class="live-candle-canvas-wrapper" id="live-candle-wrapper" style="display: block; width: 100%; height: 100%;">
             <canvas id="live-candle-canvas"></canvas>
           </div>
         </div>
 
         <!-- Candlestick Footer Legend -->
-        <div class="monitoring-chart-footer" id="live-candle-footer" style="display: none;">
+        <div class="monitoring-chart-footer" id="live-candle-footer" style="display: flex;">
           <div class="chart-legend-items">
             <span class="legend-chip"><span class="legend-sq green"></span> Bullish Candle</span>
             <span class="legend-chip"><span class="legend-sq red"></span> Bearish Candle</span>

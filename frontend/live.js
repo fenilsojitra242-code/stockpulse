@@ -7,10 +7,9 @@
 
   let currentSymbol = (window.StockPulse && window.StockPulse.getSelectedStock && window.StockPulse.getSelectedStock()) || 'TCS';
   let currentTimeRange = '1D';
-  let currentChartMode = (window.StockPulse && window.StockPulse.getChartMode && window.StockPulse.getChartMode()) || 'line'; // 'line' | 'candles'
+  let currentChartMode = 'candles'; // Sole premier chart mode: Candlestick
   let cachedCandles = [];
   let hoveredCandleIdx = -1;
-  let chartInstance = null;
   let pollingTimer = null;
   let isFetching = false;
   let currentPriceVal = 0;
@@ -19,7 +18,7 @@
   let cachedSuperTrendSeries = [];
   let supertrendDirections = [];
 
-  // Candlestick Zoom & Pan State (like TradingView / share websites)
+  // Candlestick Zoom & Pan State (like TradingView)
   let zoomVisibleStart = null;
   let zoomVisibleEnd = null;
   let isPanning = false;
@@ -31,165 +30,6 @@
 
   function getEl(id) {
     return document.getElementById(id);
-  }
-
-  // --- INIT CHART.JS ---
-  function initChart() {
-    const canvas = getEl('live-price-chart');
-    if (!canvas) return;
-
-    if (chartInstance) {
-      try { chartInstance.destroy(); } catch (e) { }
-      chartInstance = null;
-    }
-
-    const ctx = canvas.getContext('2d');
-
-    // Custom horizontal current price line plugin
-    const currentPricePlugin = {
-      id: 'currentPriceLine',
-      afterDraw: (chart) => {
-        const { ctx, chartArea, scales } = chart;
-        if (!chartArea || !scales.y || !currentPriceVal || currentPriceVal <= 0) return;
-
-        const yPos = scales.y.getPixelForValue(currentPriceVal);
-        if (yPos < chartArea.top || yPos > chartArea.bottom) return;
-
-        ctx.save();
-        ctx.beginPath();
-        ctx.setLineDash([4, 4]);
-        ctx.strokeStyle = '#64748b';
-        ctx.lineWidth = 1;
-        ctx.moveTo(chartArea.left, yPos);
-        ctx.lineTo(chartArea.right, yPos);
-        ctx.stroke();
-
-        // Right badge with current price
-        const labelText = `₹${currentPriceVal.toFixed(2)}`;
-        ctx.font = '600 11px JetBrains Mono, monospace';
-        const textWidth = ctx.measureText(labelText).width;
-        const boxWidth = textWidth + 12;
-        const boxHeight = 18;
-        const boxX = chartArea.right - boxWidth;
-        const boxY = yPos - boxHeight / 2;
-
-        ctx.fillStyle = '#0f172a';
-        ctx.beginPath();
-        if (ctx.roundRect) {
-          ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 4);
-        } else {
-          ctx.rect(boxX, boxY, boxWidth, boxHeight);
-        }
-        ctx.fill();
-
-        ctx.fillStyle = '#ffffff';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(labelText, boxX + 6, yPos);
-        ctx.restore();
-      }
-    };
-
-    chartInstance = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: [],
-        datasets: [{
-          label: `${currentSymbol} Price`,
-          data: [],
-          borderColor: '#16a34a',
-          borderWidth: 2,
-          pointRadius: 0,
-          pointHoverRadius: 6,
-          pointHoverBackgroundColor: '#16a34a',
-          pointHoverBorderColor: '#ffffff',
-          pointHoverBorderWidth: 2,
-          fill: true,
-          backgroundColor: 'rgba(22, 163, 74, 0.08)',
-          tension: 0.15
-        }, {
-          label: 'SuperTrend',
-          data: [],
-          borderColor: '#10b981',
-          borderWidth: 2.2,
-          pointRadius: 0,
-          pointHoverRadius: 5,
-          pointHoverBackgroundColor: (ctx) => {
-            const dir = supertrendDirections[ctx.dataIndex] || (cachedSuperTrendData ? cachedSuperTrendData.direction : 'BUY');
-            return dir === 'BUY' ? '#10b981' : '#ef4444';
-          },
-          fill: {
-            target: 0,
-            above: 'rgba(239, 68, 68, 0.12)', // Light red shadow when SuperTrend > Price (SELL)
-            below: 'rgba(16, 185, 129, 0.12)'  // Light green shadow when SuperTrend < Price (BUY)
-          },
-          tension: 0,
-          segment: {
-            borderColor: (ctx) => {
-              const idx0 = ctx.p0DataIndex;
-              const idx1 = ctx.p1DataIndex;
-              const d0 = supertrendDirections[idx0];
-              const d1 = supertrendDirections[idx1];
-              // Disconnect line during reversal so it does not draw an awkward diagonal cross
-              if (d0 && d1 && d0 !== d1) {
-                return 'transparent';
-              }
-              const dir = d1 || d0 || (cachedSuperTrendData ? cachedSuperTrendData.direction : 'BUY');
-              return dir === 'BUY' ? '#10b981' : '#ef4444';
-            }
-          },
-          hidden: false
-        }]
-      },
-      plugins: [currentPricePlugin],
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: false,
-        interaction: { intersect: false, mode: 'index' },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: 'rgba(15, 23, 42, 0.94)',
-            titleColor: '#94a3b8',
-            titleFont: { size: 12, family: "'Plus Jakarta Sans', sans-serif" },
-            bodyColor: '#ffffff',
-            bodyFont: { size: 14, weight: 'bold', family: "'JetBrains Mono', monospace" },
-            padding: 10,
-            cornerRadius: 8,
-            displayColors: false,
-            callbacks: {
-              label: (ctx) => {
-                if (ctx.datasetIndex === 1) {
-                  const dir = supertrendDirections[ctx.dataIndex] || (cachedSuperTrendData ? cachedSuperTrendData.direction : 'BUY');
-                  const dirTag = dir === 'BUY' ? 'BUY (Bullish)' : 'SELL (Bearish)';
-                  return ` SuperTrend: ₹${Number(ctx.parsed.y).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} [${dirTag}]`;
-                }
-                return ` Price: ₹${Number(ctx.parsed.y).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-              }
-            }
-          }
-        },
-        scales: {
-          x: {
-            grid: { display: false },
-            ticks: {
-              color: '#64748b',
-              font: { size: 11, family: "'Plus Jakarta Sans', sans-serif" },
-              maxTicksLimit: 8
-            }
-          },
-          y: {
-            position: 'right',
-            grid: { color: 'rgba(226, 232, 240, 0.7)' },
-            ticks: {
-              color: '#64748b',
-              font: { size: 11, family: "'JetBrains Mono', monospace" },
-              callback: (val) => `₹${Number(val).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
-            }
-          }
-        }
-      }
-    });
   }
 
   function setLiveBufferingState() {
@@ -273,61 +113,10 @@
       cachedSuperTrendData = data;
       cachedSuperTrendSeries = data.series || [];
       renderLiveSuperTrendHUD(data);
-      if (currentChartMode === 'candles') {
-        renderCandleChart();
-      } else if (chartInstance) {
-        updateChartSuperTrendDataset();
-        chartInstance.update('none');
-      }
+      renderCandleChart();
     } catch (e) {
       console.warn('[Live] SuperTrend fetch error:', e);
     }
-  }
-
-  function updateChartSuperTrendDataset(labels) {
-    if (!chartInstance || !chartInstance.data || !chartInstance.data.datasets || chartInstance.data.datasets.length < 2) return;
-    const lbls = labels || chartInstance.data.labels || [];
-    if (!supertrendOverlayEnabled || !cachedSuperTrendData || !cachedSuperTrendData.supertrend_price || lbls.length === 0) {
-      chartInstance.data.datasets[1].data = [];
-      supertrendDirections = [];
-      chartInstance.data.datasets[1].hidden = true;
-      return;
-    }
-
-    const fallbackVal = Number(cachedSuperTrendData.supertrend_price);
-    const fallbackDir = cachedSuperTrendData.direction || 'BUY';
-
-    let stData = [];
-    let stDirs = [];
-
-    if (cachedSuperTrendSeries && cachedSuperTrendSeries.length > 0) {
-      const seriesMap = new Map();
-      cachedSuperTrendSeries.forEach(s => {
-        if (s.time) {
-          seriesMap.set(s.time, { price: Number(s.supertrend), dir: s.direction || 'BUY' });
-        }
-      });
-
-      let lastSeenPrice = fallbackVal;
-      let lastSeenDir = fallbackDir;
-
-      lbls.forEach(t => {
-        if (seriesMap.has(t)) {
-          const item = seriesMap.get(t);
-          lastSeenPrice = item.price;
-          lastSeenDir = item.dir;
-        }
-        stData.push(lastSeenPrice);
-        stDirs.push(lastSeenDir);
-      });
-    } else {
-      stData = lbls.map(() => fallbackVal);
-      stDirs = lbls.map(() => fallbackDir);
-    }
-
-    supertrendDirections = stDirs;
-    chartInstance.data.datasets[1].data = stData;
-    chartInstance.data.datasets[1].hidden = false;
   }
 
   function renderLiveSuperTrendHUD(data) {
@@ -549,52 +338,8 @@
       }
     }
 
-    if (currentChartMode === 'candles') {
-      renderCandleChart();
-      updateZoomHint();
-    } else {
-      if (!chartInstance) {
-        initChart();
-      }
-
-      if (chartInstance && points.length > 0) {
-        const labels = points.map(p => p.time);
-        const prices = points.map(p => p.price);
-
-        const color = isUp ? '#16a34a' : '#dc2626';
-        const canvas = getEl('live-price-chart');
-        let gradient = 'rgba(22, 163, 74, 0.08)';
-
-        if (canvas) {
-          const ctx = canvas.getContext('2d');
-          const g = ctx.createLinearGradient(0, 0, 0, 360);
-          g.addColorStop(0, isUp ? 'rgba(22, 163, 74, 0.20)' : 'rgba(220, 38, 38, 0.20)');
-          g.addColorStop(1, 'rgba(255, 255, 255, 0.00)');
-          gradient = g;
-        }
-
-        chartInstance.data.labels = labels;
-        chartInstance.data.datasets[0].data = prices;
-        chartInstance.data.datasets[0].borderColor = color;
-        chartInstance.data.datasets[0].backgroundColor = gradient;
-        chartInstance.data.datasets[0].pointHoverBackgroundColor = color;
-
-        updateChartSuperTrendDataset(labels);
-
-        // Dynamic Y-axis limits with padding
-        let allVals = [...prices];
-        if (supertrendOverlayEnabled && cachedSuperTrendData && cachedSuperTrendData.supertrend_price) {
-          allVals.push(Number(cachedSuperTrendData.supertrend_price));
-        }
-        const minVal = Math.min(...allVals);
-        const maxVal = Math.max(...allVals);
-        const padding = (maxVal - minVal) * 0.08 || 2;
-        chartInstance.options.scales.y.suggestedMin = minVal - padding;
-        chartInstance.options.scales.y.suggestedMax = maxVal + padding;
-
-        chartInstance.update('none');
-      }
-    }
+    renderCandleChart();
+    updateZoomHint();
   }
 
   // --- CHANGE STOCK ---
@@ -747,62 +492,17 @@
   }
 
   // --- CHART MODE TOGGLE (LINE VS CANDLES) ---
-  function applyChartMode(mode, shouldRender = true) {
-    currentChartMode = mode;
-    if (window.StockPulse && window.StockPulse.setChartMode) {
-      StockPulse.setChartMode(mode);
-    } else {
-      localStorage.setItem('stockpulse_chart_mode', mode);
-    }
-
-    const btnLine = getEl('btn-chart-mode-line');
-    const btnCandles = getEl('btn-chart-mode-candles');
-    const lineWrap = getEl('canvas-container');
+  // Ensure Candlestick Elements are Active
+  function ensureCandleElementsActive() {
     const candleWrap = getEl('live-candle-wrapper');
     const ohlcHud = getEl('live-ohlc-hud');
     const candleFooter = getEl('live-candle-footer');
     const zoomControls = getEl('chart-zoom-controls');
 
-    if (mode === 'candles') {
-      if (btnCandles) btnCandles.classList.add('active');
-      if (btnLine) btnLine.classList.remove('active');
-
-      if (lineWrap) lineWrap.style.display = 'none';
-      if (candleWrap) candleWrap.style.display = 'block';
-      if (ohlcHud) ohlcHud.style.display = 'flex';
-      if (candleFooter) candleFooter.style.display = 'flex';
-      if (zoomControls) zoomControls.style.display = 'inline-flex';
-
-      if (shouldRender) {
-        renderCandleChart();
-        updateZoomHint();
-      }
-    } else {
-      if (btnLine) btnLine.classList.add('active');
-      if (btnCandles) btnCandles.classList.remove('active');
-
-      if (lineWrap) lineWrap.style.display = 'block';
-      if (candleWrap) candleWrap.style.display = 'none';
-      if (ohlcHud) ohlcHud.style.display = 'none';
-      if (candleFooter) candleFooter.style.display = 'none';
-      if (zoomControls) zoomControls.style.display = 'none';
-
-      if (shouldRender && chartInstance) {
-        chartInstance.resize();
-        chartInstance.update('none');
-      }
-    }
-  }
-
-  function setupChartModeToggle() {
-    const btnLine = getEl('btn-chart-mode-line');
-    const btnCandles = getEl('btn-chart-mode-candles');
-    if (!btnLine || !btnCandles) return;
-
-    btnLine.addEventListener('click', () => applyChartMode('line', true));
-    btnCandles.addEventListener('click', () => applyChartMode('candles', true));
-
-    applyChartMode(currentChartMode, false);
+    if (candleWrap) candleWrap.style.display = 'block';
+    if (ohlcHud) ohlcHud.style.display = 'flex';
+    if (candleFooter) candleFooter.style.display = 'flex';
+    if (zoomControls) zoomControls.style.display = 'inline-flex';
   }
 
   // --- CANDLESTICK ZOOM & PAN MATH (LIKE TRADINGVIEW) ---
@@ -1083,24 +783,33 @@
 
     const rect = wrapper.getBoundingClientRect();
     const width = Math.floor(rect.width);
-    const height = Math.floor(rect.height || 380);
+    const height = Math.floor(rect.height || 420);
     if (width <= 0 || height <= 0) return;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
 
     const ctx = canvas.getContext('2d');
     if (ctx.resetTransform) ctx.resetTransform();
     else ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
 
+    // Pixel snap helper for crisp 1px lines
+    const px = (v) => Math.round(v) + 0.5;
+
     const isDarkMode = document.body.classList.contains('dark-mode');
     const bgSurface = isDarkMode ? '#0f172a' : '#ffffff';
-    const gridColor = isDarkMode ? 'rgba(51, 65, 85, 0.4)' : 'rgba(226, 232, 240, 0.8)';
+    const gridColor = isDarkMode ? 'rgba(51, 65, 85, 0.45)' : 'rgba(226, 232, 240, 0.85)';
     const textMuted = isDarkMode ? '#94a3b8' : '#64748b';
-    const greenBull = '#10b981';
-    const redBear = '#ef4444';
+    const axisBorderColor = isDarkMode ? '#334155' : '#e2e8f0';
+
+    // Premium TradingView-style candlestick palette
+    const greenBull = '#089981';
+    const greenBullBorder = '#057a67';
+    const redBear = '#f23645';
+    const redBearBorder = '#c92534';
+    const dojiColor = '#64748b';
 
     // Clear background
     ctx.fillStyle = bgSurface;
@@ -1111,7 +820,7 @@
       ctx.font = '600 13px "Plus Jakarta Sans", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('Loading candlestick market data...', width / 2, height / 2);
+      ctx.fillText('Loading live candlestick market data...', width / 2, height / 2);
       return;
     }
 
@@ -1122,16 +831,16 @@
 
     const livePrice = currentPriceVal || (cachedCandles[cachedCandles.length - 1].price || 0);
 
-    const padTop = 18;
-    const padBottom = 26;
-    const padLeft = 14;
-    const padRight = 82;
+    const padTop = 20;
+    const padBottom = 28;
+    const padLeft = 16;
+    const padRight = 86;
 
     const chartW = width - padLeft - padRight;
     const chartTotalH = height - padTop - padBottom;
-    const priceAreaH = chartTotalH * 0.78;
+    const priceAreaH = chartTotalH * 0.77;
     const volAreaH = chartTotalH * 0.20;
-    const volAreaTop = padTop + priceAreaH + (chartTotalH * 0.02);
+    const volAreaTop = padTop + priceAreaH + (chartTotalH * 0.03);
 
     // Pre-resolve SuperTrend values for visible candles so scaling accommodates both candles & indicator
     const seriesMap = new Map();
@@ -1155,7 +864,6 @@
       const absIdx = range.start + i;
       let matchedSt = null;
 
-      // Primary: exact index alignment with series
       if (cachedSuperTrendSeries && cachedSuperTrendSeries[absIdx]) {
         const s = cachedSuperTrendSeries[absIdx];
         if (s.supertrend != null) {
@@ -1163,7 +871,6 @@
         }
       }
 
-      // Secondary: timestamp map
       if (!matchedSt && c.time && seriesMap.has(c.time)) {
         matchedSt = seriesMap.get(c.time);
       }
@@ -1193,7 +900,6 @@
       if (high > maxP) maxP = high;
       if (c.volume && c.volume > maxV) maxV = c.volume;
 
-      // Include SuperTrend level in vertical scale if overlay is active
       if (supertrendOverlayEnabled && cachedSuperTrendData && visibleStValues[i] && visibleStValues[i].price > 0) {
         const stP = visibleStValues[i].price;
         if (stP < minP) minP = stP;
@@ -1206,13 +912,13 @@
       maxP = Math.max(maxP, livePrice);
     }
 
-    if (minP === maxP) {
-      minP -= 1.0;
-      maxP += 1.0;
+    if (minP === maxP || !isFinite(minP) || !isFinite(maxP)) {
+      minP = (livePrice || 100) - 1.0;
+      maxP = (livePrice || 100) + 1.0;
     }
 
     const pSpan = maxP - minP;
-    const pPad = Math.max(0.2, pSpan * 0.05);
+    const pPad = Math.max(0.25, pSpan * 0.06);
     const scaleMin = minP - pPad;
     const scaleMax = maxP + pPad;
     const scaleSpan = scaleMax - scaleMin;
@@ -1222,20 +928,21 @@
     }
 
     const candleSlotW = chartW / nCandles;
-    const candleW = Math.max(2, Math.min(26, candleSlotW * 0.72));
+    const candleW = Math.max(2.5, Math.min(26, candleSlotW * 0.74));
 
-    // 1. Grid lines & Price tick labels
-    const numTicks = 5;
+    // 1. Grid Lines & Price Ticks
+    const numTicks = 6;
     ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
     ctx.strokeStyle = gridColor;
     ctx.fillStyle = textMuted;
-    ctx.font = '600 10px "JetBrains Mono", monospace';
+    ctx.font = '600 10.5px "JetBrains Mono", monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
 
     for (let t = 0; t <= numTicks; t++) {
       const pVal = scaleMin + (scaleSpan * t) / numTicks;
-      const y = priceToY(pVal);
+      const y = px(priceToY(pVal));
 
       ctx.beginPath();
       ctx.moveTo(padLeft, y);
@@ -1244,18 +951,46 @@
 
       ctx.fillText(`₹${pVal.toFixed(2)}`, width - padRight + 8, y);
     }
+    ctx.setLineDash([]); // Reset dashed
+
+    // Right Y-axis vertical divider
+    ctx.strokeStyle = axisBorderColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(px(width - padRight), padTop);
+    ctx.lineTo(px(width - padRight), height - padBottom);
+    ctx.stroke();
+
+    // Volume Area Divider
+    ctx.save();
+    ctx.strokeStyle = gridColor;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(padLeft, px(volAreaTop - 4));
+    ctx.lineTo(width - padRight, px(volAreaTop - 4));
+    ctx.stroke();
+    ctx.restore();
+
+    // Volume label
+    ctx.fillStyle = textMuted;
+    ctx.font = '600 9.5px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    const volMaxStr = maxV >= 1e6 ? `${(maxV / 1e6).toFixed(1)}M` : (maxV >= 1e3 ? `${(maxV / 1e3).toFixed(0)}K` : `${maxV}`);
+    ctx.fillText(`VOL (MAX: ${volMaxStr})`, padLeft + 2, volAreaTop - 6);
 
     // 2. Volume Bars
     for (let i = 0; i < nCandles; i++) {
       const c = visibleCandles[i];
       const cx = padLeft + (i + 0.5) * candleSlotW;
       const open = c.open != null ? c.open : c.price;
-      const vH = c.volume ? (c.volume / maxV) * volAreaH : 0;
+      const vH = c.volume ? Math.max(2, (c.volume / maxV) * volAreaH) : 0;
       const vy = volAreaTop + volAreaH - vH;
       const isBull = c.price >= open;
 
-      ctx.fillStyle = isBull ? 'rgba(16, 185, 129, 0.28)' : 'rgba(239, 68, 68, 0.28)';
-      ctx.fillRect(cx - candleW / 2, vy, candleW, vH);
+      ctx.fillStyle = isBull ? 'rgba(8, 153, 129, 0.40)' : 'rgba(242, 54, 69, 0.40)';
+      ctx.fillRect(Math.round(cx - candleW / 2), Math.round(vy), Math.round(candleW), Math.round(vH));
     }
 
     // Pre-calculate SuperTrend series & coordinates for visible candles
@@ -1268,21 +1003,19 @@
         const cy = priceToY(stItem.price);
         const cHigh = c.high != null ? c.high : c.price;
         const cLow = c.low != null ? c.low : c.price;
-        const cHighY = priceToY(cHigh);
-        const cLowY = priceToY(cLow);
         stPoints.push({
           x: cx,
           y: cy,
           price: stItem.price,
           dir: stItem.dir,
           time: c.time,
-          cHighY,
-          cLowY
+          cHighY: priceToY(cHigh),
+          cLowY: priceToY(cLow)
         });
       }
     }
 
-    // 2b. SuperTrend Shaded Shadow / Cloud Ribbon (rendered behind candlesticks)
+    // 2b. SuperTrend Shaded Ribbon Fill (behind candlesticks)
     if (supertrendOverlayEnabled && cachedSuperTrendData && stPoints.length > 0) {
       const segments = [];
       let currSeg = [stPoints[0]];
@@ -1295,9 +1028,7 @@
           currSeg = [stPoints[j]];
         }
       }
-      if (currSeg.length > 0) {
-        segments.push(currSeg);
-      }
+      if (currSeg.length > 0) segments.push(currSeg);
 
       ctx.save();
       for (const seg of segments) {
@@ -1305,39 +1036,38 @@
         const isBuy = seg[0].dir === 'BUY';
 
         ctx.beginPath();
-        // 1. Trace forward along the solid SuperTrend line
         ctx.moveTo(seg[0].x, seg[0].y);
         for (let k = 1; k < seg.length; k++) {
           ctx.lineTo(seg[k].x, seg[k].y);
         }
-
-        // 2. Trace backward along the candle boundary facing the SuperTrend line:
         for (let k = seg.length - 1; k >= 0; k--) {
           const pt = seg[k];
           const candleY = isBuy ? Math.min(pt.y, pt.cLowY) : Math.max(pt.y, pt.cHighY);
           ctx.lineTo(pt.x, candleY);
         }
-
         ctx.closePath();
 
         ctx.fillStyle = isBuy
-          ? (isDarkMode ? 'rgba(16, 185, 129, 0.16)' : 'rgba(16, 185, 129, 0.12)')
-          : (isDarkMode ? 'rgba(239, 68, 68, 0.16)' : 'rgba(239, 68, 68, 0.12)');
+          ? (isDarkMode ? 'rgba(8, 153, 129, 0.16)' : 'rgba(8, 153, 129, 0.12)')
+          : (isDarkMode ? 'rgba(242, 54, 69, 0.16)' : 'rgba(242, 54, 69, 0.12)');
         ctx.fill();
       }
       ctx.restore();
     }
 
-    // 3. Candlesticks
+    // 3. Candlesticks (Wick & Body)
     for (let i = 0; i < nCandles; i++) {
       const c = visibleCandles[i];
-      const cx = padLeft + (i + 0.5) * candleSlotW;
+      const cx = px(padLeft + (i + 0.5) * candleSlotW);
       const open = c.open != null ? c.open : c.price;
       const close = c.price;
       const high = c.high != null ? c.high : Math.max(open, close);
       const low = c.low != null ? c.low : Math.min(open, close);
-      const isBull = close >= open;
-      const color = isBull ? greenBull : redBear;
+
+      const isBull = close > open;
+      const isBear = close < open;
+      const bodyColor = isBull ? greenBull : (isBear ? redBear : dojiColor);
+      const borderColor = isBull ? greenBullBorder : (isBear ? redBearBorder : dojiColor);
 
       const yOpen = priceToY(open);
       const yClose = priceToY(close);
@@ -1345,22 +1075,31 @@
       const yLow = priceToY(low);
 
       const bodyTop = Math.min(yOpen, yClose);
-      const bodyH = Math.max(1.5, Math.abs(yClose - yOpen));
+      const bodyH = Math.max(1.8, Math.abs(yClose - yOpen));
 
-      // Wick
-      ctx.strokeStyle = color;
-      ctx.lineWidth = Math.max(1, Math.min(2.5, candleW * 0.18));
+      // Wick (Crisp high-contrast center line)
+      ctx.strokeStyle = bodyColor;
+      ctx.lineWidth = Math.max(1.2, Math.min(2.5, candleW * 0.16));
       ctx.beginPath();
       ctx.moveTo(cx, yHigh);
       ctx.lineTo(cx, yLow);
       ctx.stroke();
 
-      // Body
-      ctx.fillStyle = color;
-      ctx.fillRect(cx - candleW / 2, bodyTop, candleW, bodyH);
+      // Body (Rectangle with border)
+      const bx = Math.round(cx - candleW / 2);
+      const by = Math.round(bodyTop);
+      const bw = Math.round(candleW);
+      const bh = Math.round(bodyH);
+
+      ctx.fillStyle = bodyColor;
+      ctx.fillRect(bx, by, bw, bh);
+
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx, by, bw, bh);
     }
 
-    // 4. Time Axis Labels
+    // 4. Time Axis Labels & Ticks
     const maxTimeLabels = Math.min(8, nCandles);
     const step = Math.max(1, Math.floor(nCandles / maxTimeLabels));
     ctx.fillStyle = textMuted;
@@ -1369,18 +1108,35 @@
     ctx.textBaseline = 'top';
 
     for (let i = 0; i < nCandles; i += step) {
-      const cx = padLeft + (i + 0.5) * candleSlotW;
+      const cx = px(padLeft + (i + 0.5) * candleSlotW);
       const tLabel = visibleCandles[i].time || '';
-      ctx.fillText(tLabel, cx, height - padBottom + 8);
+
+      // Subtle bottom axis tick
+      ctx.strokeStyle = axisBorderColor;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx, height - padBottom);
+      ctx.lineTo(cx, height - padBottom + 4);
+      ctx.stroke();
+
+      ctx.fillText(tLabel, cx, height - padBottom + 7);
     }
 
-    // 5. Live Price Reference Line
+    // Bottom X-axis horizontal divider
+    ctx.strokeStyle = axisBorderColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padLeft, px(height - padBottom));
+    ctx.lineTo(width - padRight, px(height - padBottom));
+    ctx.stroke();
+
+    // 5. Live Price Horizontal Line & Glowing Marker
     if (livePrice > 0 && livePrice >= scaleMin && livePrice <= scaleMax) {
-      const lpY = priceToY(livePrice);
+      const lpY = px(priceToY(livePrice));
 
       ctx.save();
       ctx.setLineDash([3, 3]);
-      ctx.strokeStyle = '#3b82f6';
+      ctx.strokeStyle = '#2563eb';
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.moveTo(padLeft, lpY);
@@ -1388,50 +1144,59 @@
       ctx.stroke();
       ctx.restore();
 
-      drawAxisPill(ctx, width - padRight + 4, lpY, 'LIVE', `₹${livePrice.toFixed(2)}`, '#3b82f6', '#ffffff');
+      // Right axis live price pill badge
+      drawAxisPill(ctx, width - padRight + 4, lpY, 'LIVE', `₹${livePrice.toFixed(2)}`, '#2563eb', '#ffffff');
+
+      // Glowing pulsing dot on newest candle close
+      if (range.end === cachedCandles.length - 1) {
+        const lastCandleX = padLeft + (nCandles - 1 + 0.5) * candleSlotW;
+        ctx.save();
+        ctx.fillStyle = 'rgba(37, 99, 235, 0.25)';
+        ctx.beginPath();
+        ctx.arc(lastCandleX, lpY, 7.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#2563eb';
+        ctx.beginPath();
+        ctx.arc(lastCandleX, lpY, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+      }
     }
 
-    // 5b. SuperTrend Multi-Colored Solid Line on Candlestick Chart (Green for BUY, Red for SELL)
+    // 5b. SuperTrend Multi-Colored Solid Line & Reversal Badges
     if (supertrendOverlayEnabled && cachedSuperTrendData && stPoints.length > 0) {
       ctx.save();
-      ctx.lineWidth = 2.6;
-      ctx.setLineDash([]); // 100% Solid line
+      ctx.lineWidth = 2.8;
+      ctx.setLineDash([]);
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
-      if (stPoints.length === 1) {
-        // Single point fallback: horizontal marker
-        const p = stPoints[0];
-        ctx.strokeStyle = p.dir === 'BUY' ? greenBull : redBear;
-        ctx.beginPath();
-        ctx.moveTo(p.x - candleSlotW / 2, p.y);
-        ctx.lineTo(p.x + candleSlotW / 2, p.y);
-        ctx.stroke();
-      } else {
-        for (let i = 1; i < stPoints.length; i++) {
-          const pPrev = stPoints[i - 1];
-          const pCurr = stPoints[i];
+      for (let i = 1; i < stPoints.length; i++) {
+        const pPrev = stPoints[i - 1];
+        const pCurr = stPoints[i];
 
-          // If direction flipped between candles, don't draw diagonal cross; draw flip marker dot
-          if (pPrev.dir !== pCurr.dir) {
-            ctx.fillStyle = pCurr.dir === 'BUY' ? greenBull : redBear;
-            ctx.beginPath();
-            ctx.arc(pCurr.x, pCurr.y, 4.5, 0, Math.PI * 2);
-            ctx.fill();
-            continue;
-          }
-
-          ctx.strokeStyle = pCurr.dir === 'BUY' ? greenBull : redBear;
-          ctx.beginPath();
-          ctx.moveTo(pPrev.x, pPrev.y);
-          ctx.lineTo(pCurr.x, pCurr.y);
-          ctx.stroke();
+        // Draw trend flip signal badge
+        if (pPrev.dir !== pCurr.dir) {
+          const isBuyReversal = pCurr.dir === 'BUY';
+          const badgeY = isBuyReversal ? pCurr.cLowY + 16 : pCurr.cHighY - 16;
+          drawReversalBadge(ctx, pCurr.x, badgeY, isBuyReversal ? '▲ BUY' : '▼ SELL', isBuyReversal ? greenBull : redBear);
+          continue;
         }
-      }
 
+        ctx.strokeStyle = pCurr.dir === 'BUY' ? greenBull : redBear;
+        ctx.beginPath();
+        ctx.moveTo(pPrev.x, pPrev.y);
+        ctx.lineTo(pCurr.x, pCurr.y);
+        ctx.stroke();
+      }
       ctx.restore();
 
-      // Latest SuperTrend Axis Pill on right edge - clamped to ensure always visible
+      // Latest SuperTrend Right Axis Pill
       const latestSt = stPoints[stPoints.length - 1];
       if (latestSt && latestSt.price > 0) {
         const rawStY = priceToY(latestSt.price);
@@ -1442,37 +1207,32 @@
       }
     }
 
-    // 6. Crosshair & Hover
-    let activeCandle = null;
-    if (hoveredCandleIdx >= 0 && hoveredCandleIdx < nCandles) {
-      activeCandle = visibleCandles[hoveredCandleIdx];
-    } else {
-      activeCandle = visibleCandles[nCandles - 1];
-    }
+    // 6. Crosshair & Dynamic Cursor Price/Time Tags
+    let activeCandle = (hoveredCandleIdx >= 0 && hoveredCandleIdx < nCandles) ? visibleCandles[hoveredCandleIdx] : visibleCandles[nCandles - 1];
 
     if (hoveredCandleIdx >= 0 && hoveredCandleIdx < nCandles && mouseX != null && mouseY != null && !isPanning) {
-      const cx = padLeft + (hoveredCandleIdx + 0.5) * candleSlotW;
-      const cy = priceToY(activeCandle.price);
+      const cx = px(padLeft + (hoveredCandleIdx + 0.5) * candleSlotW);
+      const cy = px(priceToY(activeCandle.price));
 
       ctx.save();
       ctx.setLineDash([3, 3]);
       ctx.strokeStyle = isDarkMode ? 'rgba(148, 163, 184, 0.7)' : 'rgba(71, 85, 105, 0.7)';
       ctx.lineWidth = 1;
 
-      // Vertical line
+      // Vertical crosshair
       ctx.beginPath();
       ctx.moveTo(cx, padTop);
-      ctx.lineTo(cx, padTop + priceAreaH);
+      ctx.lineTo(cx, height - padBottom);
       ctx.stroke();
 
-      // Horizontal line
-      const clampedMouseY = Math.max(padTop, Math.min(padTop + priceAreaH, mouseY));
+      // Horizontal crosshair
+      const clampedMouseY = px(Math.max(padTop, Math.min(height - padBottom, mouseY)));
       ctx.beginPath();
       ctx.moveTo(padLeft, clampedMouseY);
       ctx.lineTo(width - padRight, clampedMouseY);
       ctx.stroke();
 
-      // Point circle
+      // Point circle on active candle close
       const activeOpen = activeCandle.open != null ? activeCandle.open : activeCandle.price;
       ctx.fillStyle = activeCandle.price >= activeOpen ? greenBull : redBear;
       ctx.beginPath();
@@ -1482,28 +1242,49 @@
       ctx.strokeStyle = '#ffffff';
       ctx.stroke();
       ctx.restore();
+
+      // Dynamic cursor price pill on right Y-axis
+      const cursorPriceVal = scaleMin + (1.0 - (mouseY - padTop) / priceAreaH) * scaleSpan;
+      if (mouseY >= padTop && mouseY <= padTop + priceAreaH) {
+        drawAxisPill(ctx, width - padRight + 4, clampedMouseY, '', `₹${cursorPriceVal.toFixed(2)}`, isDarkMode ? '#334155' : '#0f172a', '#ffffff');
+      }
+
+      // Dynamic cursor time pill on bottom X-axis
+      if (activeCandle.time) {
+        drawTimePill(ctx, cx, height - padBottom + 13, activeCandle.time, isDarkMode ? '#334155' : '#0f172a', '#ffffff');
+      }
     }
 
-    // Update OHLC HUD
+    // 7. Update Real-Time OHLC & Change HUD Bar
     if (activeCandle) {
       const hTime = getEl('live-hud-time');
       const hOpen = getEl('live-hud-open');
       const hHigh = getEl('live-hud-high');
       const hLow = getEl('live-hud-low');
       const hClose = getEl('live-hud-close');
+      const hChange = getEl('live-hud-change');
       const hVol = getEl('live-hud-vol');
 
       const openVal = activeCandle.open != null ? activeCandle.open : activeCandle.price;
       const highVal = activeCandle.high != null ? activeCandle.high : Math.max(openVal, activeCandle.price);
       const lowVal = activeCandle.low != null ? activeCandle.low : Math.min(openVal, activeCandle.price);
+      const closeVal = activeCandle.price;
+
+      const diffVal = closeVal - openVal;
+      const pctVal = openVal > 0 ? (diffVal / openVal) * 100 : 0;
+      const sign = diffVal >= 0 ? '+' : '';
 
       if (hTime) hTime.textContent = activeCandle.time || '--:--';
       if (hOpen) hOpen.textContent = `₹${openVal.toFixed(2)}`;
       if (hHigh) hHigh.textContent = `₹${highVal.toFixed(2)}`;
       if (hLow) hLow.textContent = `₹${lowVal.toFixed(2)}`;
       if (hClose) {
-        hClose.textContent = `₹${activeCandle.price.toFixed(2)}`;
-        hClose.style.color = activeCandle.price >= openVal ? greenBull : redBear;
+        hClose.textContent = `₹${closeVal.toFixed(2)}`;
+        hClose.style.color = closeVal >= openVal ? greenBull : redBear;
+      }
+      if (hChange) {
+        hChange.textContent = `${sign}₹${diffVal.toFixed(2)} (${sign}${pctVal.toFixed(2)}%)`;
+        hChange.style.color = diffVal >= 0 ? greenBull : redBear;
       }
       if (hVol) hVol.textContent = activeCandle.volume ? activeCandle.volume.toLocaleString('en-IN') : '--';
 
@@ -1516,7 +1297,7 @@
         const stItem = visibleStValues[activeIdx];
         if (stItem && stItem.price > 0) {
           const isBuy = stItem.dir === 'BUY';
-          hSt.innerHTML = `<span style="color: ${isBuy ? greenBull : redBear}; font-weight: 800;">₹${stItem.price.toFixed(2)} <span style="font-size: 10px; padding: 1px 4px; border-radius: 4px; background: ${isBuy ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)'};">${stItem.dir}</span></span>`;
+          hSt.innerHTML = `<span style="color: ${isBuy ? greenBull : redBear}; font-weight: 800;">₹${stItem.price.toFixed(2)} <span style="font-size: 10px; padding: 1px 4px; border-radius: 4px; background: ${isBuy ? 'rgba(8, 153, 129, 0.15)' : 'rgba(242, 54, 69, 0.15)'};">${stItem.dir}</span></span>`;
         } else {
           hSt.textContent = '₹--.--';
         }
@@ -1531,10 +1312,10 @@
       if (legStSell) legStSell.style.display = supertrendOverlayEnabled ? 'inline-flex' : 'none';
     }
 
-    // Watermark badge when zoomed
+    // Zoom badge in corner
     if (range.isZoomed) {
       ctx.save();
-      ctx.fillStyle = isDarkMode ? 'rgba(30, 41, 59, 0.75)' : 'rgba(241, 245, 249, 0.85)';
+      ctx.fillStyle = isDarkMode ? 'rgba(30, 41, 59, 0.85)' : 'rgba(241, 245, 249, 0.90)';
       ctx.strokeStyle = isDarkMode ? '#334155' : '#cbd5e1';
       ctx.lineWidth = 1;
       const badgeText = `ZOOM ${(cachedCandles.length / nCandles).toFixed(1)}x (${nCandles}/${cachedCandles.length})`;
@@ -1554,15 +1335,16 @@
     }
   }
 
+  // --- AXIS PILL BADGE HELPERS ---
   function drawAxisPill(ctx, x, y, tagText, priceText, bgColor, textColor) {
     ctx.save();
     ctx.font = '700 9px "JetBrains Mono", monospace';
-    const tagW = ctx.measureText(tagText).width;
-    ctx.font = '800 10px "JetBrains Mono", monospace';
+    const tagW = tagText ? ctx.measureText(tagText).width + 6 : 0;
+    ctx.font = '800 10.5px "JetBrains Mono", monospace';
     const priceW = ctx.measureText(priceText).width;
 
-    const boxW = Math.max(76, tagW + priceW + 14);
-    const boxH = 18;
+    const boxW = Math.max(68, tagW + priceW + 12);
+    const boxH = 19;
     const boxY = y - boxH / 2;
 
     ctx.fillStyle = bgColor;
@@ -1576,18 +1358,63 @@
 
     ctx.fillStyle = textColor;
     ctx.textBaseline = 'middle';
-    ctx.font = '700 9px "JetBrains Mono", monospace';
-    ctx.fillText(tagText, x + 4, y);
+    if (tagText) {
+      ctx.font = '700 9px "JetBrains Mono", monospace';
+      ctx.fillText(tagText, x + 4, y);
+    }
 
-    ctx.font = '800 10px "JetBrains Mono", monospace';
-    ctx.fillText(priceText, x + tagW + 8, y);
+    ctx.font = '800 10.5px "JetBrains Mono", monospace';
+    ctx.fillText(priceText, x + tagW + 4, y);
+    ctx.restore();
+  }
+
+  function drawTimePill(ctx, x, y, timeText, bgColor, textColor) {
+    ctx.save();
+    ctx.font = '700 10px "JetBrains Mono", monospace';
+    const textW = ctx.measureText(timeText).width;
+    const boxW = textW + 12;
+    const boxH = 18;
+    const boxX = x - boxW / 2;
+    const boxY = y - boxH / 2;
+
+    ctx.fillStyle = bgColor;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(boxX, boxY, boxW, boxH, 4);
+    else ctx.rect(boxX, boxY, boxW, boxH);
+    ctx.fill();
+
+    ctx.fillStyle = textColor;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(timeText, x, y);
+    ctx.restore();
+  }
+
+  function drawReversalBadge(ctx, x, y, text, color) {
+    ctx.save();
+    ctx.font = '800 9.5px "JetBrains Mono", monospace';
+    const tW = ctx.measureText(text).width;
+    const bW = tW + 10;
+    const bH = 16;
+    const bX = x - bW / 2;
+    const bY = y - bH / 2;
+
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bX, bY, bW, bH, 4);
+    else ctx.rect(bX, bY, bW, bH);
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y);
     ctx.restore();
   }
 
   // --- INITIALIZATION ---
   function init() {
-    initChart();
-    setupChartModeToggle();
+    ensureCandleElementsActive();
     setupCandleChartEvents();
     setupSuperTrendControls();
     setupSearch();
