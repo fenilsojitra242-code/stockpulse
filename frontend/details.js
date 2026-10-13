@@ -159,7 +159,7 @@
 
     if (el.statMarketCap) el.statMarketCap.textContent = mcap;
     if (el.statExchange) el.statExchange.textContent = data.exchange || 'NSE';
-    if (el.statCurrency) el.statCurrency.textContent = data.currency_symbol === '₹' ? 'INR (₹)' : 'USD ($)';
+    if (el.statCurrency) el.statCurrency.textContent = `${data.exchange || 'NSE'} (${data.currency_symbol === '₹' ? 'INR ₹' : 'USD $'})`;
     if (el.statDataStatus) el.statDataStatus.textContent = data.data_status || 'LIVE';
   }
 
