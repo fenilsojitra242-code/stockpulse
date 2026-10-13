@@ -106,6 +106,18 @@ def serve_favicon():
     return FileResponse(os.path.join("frontend", "favicon.ico"), media_type="image/x-icon")
 
 
+@app.get("/favicon.svg")
+def serve_favicon_svg():
+    """Serve the application SVG favicon."""
+    return FileResponse(os.path.join("frontend", "favicon.svg"), media_type="image/svg+xml")
+
+
+@app.get("/favicon.png")
+def serve_favicon_png():
+    """Serve the application PNG favicon."""
+    return FileResponse(os.path.join("frontend", "favicon.png"), media_type="image/png")
+
+
 @app.get("/")
 def serve_dashboard():
     """Serve the main StockPulse web dashboard (Live Market & Charts)."""
