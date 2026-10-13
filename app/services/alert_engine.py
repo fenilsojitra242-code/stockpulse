@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
 
 import json
@@ -215,6 +215,48 @@ def _ensure_reference(alert: Alert, current_price: float, prev_close: float, res
         alert.target_price = compute_target_price(prev_close, current_price, alert.target_percent, alert.direction)
 
 
+SUPERTREND_FLIP_COOLDOWN_SECONDS = 180.0  # 3-minute cooldown between opposing signals to stop whipsaw spam
+_ALERT_ST_SIGNAL_TIME: Dict[int, float] = {}
+
+
+def validate_supertrend_flip_with_model(
+    symbol: str,
+    target_points: float,
+    current_price: float,
+    signal_direction: str,
+    market_snapshot: Optional[Dict[str, Any]] = None
+) -> Tuple[bool, float]:
+    """
+    Evaluates candidate SuperTrend change using the probabilistic monitoring model.
+    Checks whether momentum, volume, and volatility predict genuine conviction
+    to sustain the move in the candidate direction according to the given points.
+
+    Returns:
+        (is_confirmed: bool, probability: float)
+    """
+    try:
+        from app.services.prediction import predict_target_probability
+
+        target_pct = max(0.08, round((float(target_points) / max(current_price, 1.0)) * 100, 3))
+        pred_dir = "UP" if signal_direction.upper() == "BUY" else "DOWN"
+
+        pred_res = predict_target_probability(
+            symbol=symbol,
+            target_percent=target_pct,
+            warning_minutes=10,
+            direction=pred_dir,
+            market_snapshot=market_snapshot
+        )
+
+        prob = float(pred_res.get("probability", 0.50))
+        # Conviction threshold: require at least 48% probability to confirm conviction
+        is_confirmed = prob >= 0.48
+        return is_confirmed, prob
+    except Exception as e:
+        print(f"[SuperTrend] Model evaluation note for {symbol}: {e}")
+        return True, 0.50
+
+
 def _evaluate_supertrend_for_alert(alert: Alert, snap: Dict[str, Any], db: Session, now: datetime):
     """
     Evaluates SuperTrend proximity (points) and BUY/SELL signals for this alert.
@@ -273,21 +315,42 @@ def _evaluate_supertrend_for_alert(alert: Alert, snap: Dict[str, Any], db: Sessi
 
         # 1. Check for Trend Direction Flip (BUY or SELL Signal)
         if is_flipped and prev_dir is not None:
-            signal = curr_dir  # 'BUY' or 'SELL'
-            print(f"[SuperTrend] Alert #{alert.id} ({sym}): SuperTrend HIT & Flipped to {signal}! Price: ₹{curr_price:.2f}, ST: ₹{st_price:.2f}")
-            notification_manager.emit_supertrend_signal(
-                alert=alert,
-                symbol=sym,
-                signal=signal,
-                current_price=curr_price,
-                supertrend_price=st_price,
-                prev_direction=prev_dir,
-                db=db
-            )
-            alert.last_supertrend_direction = curr_dir
-            alert.last_supertrend_price = st_price
-            alert.supertrend_approaching_sent = False  # Reset proximity lock on flip
-            db.commit()
+            now_ts = datetime.utcnow().timestamp()
+            last_ts = _ALERT_ST_SIGNAL_TIME.get(alert.id, 0.0)
+
+            # Anti-whipsaw cooldown guard (minimum 3 minutes)
+            if (now_ts - last_ts) < SUPERTREND_FLIP_COOLDOWN_SECONDS:
+                print(f"[SuperTrend] Alert #{alert.id} ({sym}): Candidate flip to {curr_dir} suppressed by anti-whipsaw cooldown ({int(now_ts - last_ts)}s < {int(SUPERTREND_FLIP_COOLDOWN_SECONDS)}s).")
+            else:
+                # Validate with the monitoring prediction model according to given points
+                is_confirmed, prob = validate_supertrend_flip_with_model(
+                    symbol=sym,
+                    target_points=prox_pts,
+                    current_price=curr_price,
+                    signal_direction=curr_dir,
+                    market_snapshot=snap
+                )
+                if not is_confirmed:
+                    print(f"[SuperTrend] Alert #{alert.id} ({sym}): Candidate flip to {curr_dir} rejected by monitoring model (probability {prob*100:.1f}% below conviction threshold).")
+                else:
+                    signal = curr_dir  # 'BUY' or 'SELL'
+                    print(f"[SuperTrend] Alert #{alert.id} ({sym}): SuperTrend HIT & Confirmed {signal} by monitoring model (Prob: {prob*100:.1f}%)! Price: ₹{curr_price:.2f}, ST: ₹{st_price:.2f}")
+                    notification_manager.emit_supertrend_signal(
+                        alert=alert,
+                        symbol=sym,
+                        signal=signal,
+                        current_price=curr_price,
+                        supertrend_price=st_price,
+                        prev_direction=prev_dir,
+                        db=db,
+                        model_probability=prob,
+                        points_distance=dist_pts
+                    )
+                    _ALERT_ST_SIGNAL_TIME[alert.id] = now_ts
+                    alert.last_supertrend_direction = curr_dir
+                    alert.last_supertrend_price = st_price
+                    alert.supertrend_approaching_sent = False  # Reset proximity lock on flip
+                    db.commit()
 
         elif prev_dir is None:
             # First initialization
@@ -417,20 +480,41 @@ def scan_default_watchlist_supertrend(
 
             # 1. Direction Flip (BUY or SELL Hit)
             if is_flipped and prev_dir is not None:
-                print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} SuperTrend HIT! Flipped from {prev_dir} to {curr_dir}! Price: Rs. {curr_price:.2f}, ST: Rs. {st_price:.2f}")
-                notification_manager.emit_supertrend_signal(
-                    alert=None,
-                    symbol=clean_sym,
-                    signal=curr_dir,
-                    current_price=curr_price,
-                    supertrend_price=st_price,
-                    prev_direction=prev_dir,
-                    db=db,
-                    user_id=user_id
-                )
-                state["last_direction"] = curr_dir
-                state["approaching_sent"] = False
-                results.append({"symbol": clean_sym, "type": "HIT", "signal": curr_dir})
+                now_ts = datetime.utcnow().timestamp()
+                last_ts = state.get("last_signal_time") or 0.0
+
+                # Anti-whipsaw cooldown guard (minimum 3 minutes)
+                if (now_ts - last_ts) < SUPERTREND_FLIP_COOLDOWN_SECONDS:
+                    print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} candidate flip to {curr_dir} suppressed by anti-whipsaw cooldown ({int(now_ts - last_ts)}s < {int(SUPERTREND_FLIP_COOLDOWN_SECONDS)}s).")
+                else:
+                    # Validate with the monitoring prediction model according to given points
+                    is_confirmed, prob = validate_supertrend_flip_with_model(
+                        symbol=clean_sym,
+                        target_points=prox_pts,
+                        current_price=curr_price,
+                        signal_direction=curr_dir,
+                        market_snapshot=snap
+                    )
+                    if not is_confirmed:
+                        print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} candidate flip to {curr_dir} rejected by monitoring model (probability {prob*100:.1f}% below conviction threshold).")
+                    else:
+                        print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} SuperTrend HIT & Confirmed {curr_dir} by monitoring model (Prob: {prob*100:.1f}%)! Price: Rs. {curr_price:.2f}, ST: Rs. {st_price:.2f}")
+                        notification_manager.emit_supertrend_signal(
+                            alert=None,
+                            symbol=clean_sym,
+                            signal=curr_dir,
+                            current_price=curr_price,
+                            supertrend_price=st_price,
+                            prev_direction=prev_dir,
+                            db=db,
+                            user_id=user_id,
+                            model_probability=prob,
+                            points_distance=dist_pts
+                        )
+                        state["last_signal_time"] = now_ts
+                        state["last_direction"] = curr_dir
+                        state["approaching_sent"] = False
+                        results.append({"symbol": clean_sym, "type": "HIT", "signal": curr_dir, "probability": prob})
 
             elif prev_dir is None:
                 state["last_direction"] = curr_dir

@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from sqlalchemy.orm import Session
 
 from app.database.models import Alert, AlertHistory
@@ -480,6 +480,8 @@ class NotificationManager:
             db=db
         )
 
+    _LAST_ST_SIGNAL: Dict[str, Tuple[str, float]] = {}
+
     @classmethod
     def emit_supertrend_signal(
         cls,
@@ -490,9 +492,22 @@ class NotificationManager:
         supertrend_price: float,
         prev_direction: Optional[str],
         db: Session,
-        user_id: Optional[int] = None
+        user_id: Optional[int] = None,
+        model_probability: Optional[float] = None,
+        points_distance: Optional[float] = None
     ) -> List[Dict[str, Any]]:
-        """Triggered when SuperTrend flips direction generating a confirmed BUY or SELL signal."""
+        """Triggered when SuperTrend flips direction and is confirmed by the monitoring model."""
+        now_ts = datetime.utcnow().timestamp()
+        dedup_key = f"{user_id or 'all'}_{symbol.upper()}"
+        last_sig, last_ts = cls._LAST_ST_SIGNAL.get(dedup_key, (None, 0.0))
+
+        # Anti-whipsaw guard: suppress identical signals or rapid flips within 120 seconds
+        if (now_ts - last_ts) < 120.0:
+            print(f"[NotificationManager] Suppressed rapid SuperTrend signal for {symbol} ({signal} within 120s of previous {last_sig}). Anti-whipsaw active.")
+            return []
+
+        cls._LAST_ST_SIGNAL[dedup_key] = (signal.upper(), now_ts)
+
         channels = cls._resolve_channels(alert)
         is_buy = signal.upper() == "BUY"
         ev_type = NotificationEventType.SUPERTREND_BUY.value if is_buy else NotificationEventType.SUPERTREND_SELL.value
@@ -512,6 +527,8 @@ class NotificationManager:
             "signal": "BUY" if is_buy else "SELL",
             "direction": "BUY" if is_buy else "SELL",
             "prev_direction": prev_direction,
+            "model_probability": model_probability,
+            "points_distance": points_distance,
             "timestamp": _ist_str(),
             "extra_data": json.dumps({
                 "symbol": symbol.upper(),
@@ -520,6 +537,8 @@ class NotificationManager:
                 "signal": "BUY" if is_buy else "SELL",
                 "direction": "BUY" if is_buy else "SELL",
                 "prev_direction": prev_direction,
+                "model_probability": model_probability,
+                "points_distance": points_distance,
                 "event": ev_type
             })
         }

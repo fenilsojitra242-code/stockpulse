@@ -191,13 +191,13 @@ def analyze_supertrend_hit(
     resolved_prev_dir = previous_direction or candle_prev_dir
     is_flipped = bool(resolved_prev_dir and curr_dir != resolved_prev_dir)
 
-    # Anti-whipsaw filter: Require a minimum penetration buffer beyond the SuperTrend level
-    # to confirm a genuine trend flip rather than oscillating on sub-point tick noise
-    min_breakout = max(0.5, round(cp * 0.0005, 2))  # At least 0.5 points or 0.05% of price
+    # Anti-whipsaw filter: Require a clear penetration buffer beyond the SuperTrend level
+    # of at least the user's given points (proximity_points) to confirm a genuine trend flip
+    min_breakout = max(float(proximity_points or 1.0), 0.5)
     if is_flipped:
         penetration = (cp - st_p) if curr_dir == "BUY" else (st_p - cp)
         if penetration < min_breakout:
-            # Price has not broken out with conviction; treat as testing rather than a confirmed flip
+            # Price has not broken out with the required points buffer; treat as testing rather than a confirmed flip
             curr_dir = resolved_prev_dir
             is_flipped = False
 
