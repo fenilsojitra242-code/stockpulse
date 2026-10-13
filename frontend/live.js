@@ -116,15 +116,16 @@
       console.warn('[LiveMarket] Fetch error:', err);
       if (!cachedEntry) {
         const unavail = getEl('unavailable-state');
-        const cContainer = getEl('canvas-container');
-        if (unavail && cContainer) {
-          unavail.style.display = 'block';
-          cContainer.style.display = 'none';
-        }
+        const cContainer = getEl('live-candle-wrapper') || getEl('canvas-container');
+        if (unavail) unavail.style.display = 'block';
+        if (cContainer) cContainer.style.display = 'none';
       }
     } finally {
       isFetching = false;
-      if (overlay) overlay.style.display = 'none';
+      if (overlay) {
+        overlay.style.display = 'none';
+        overlay.classList.remove('show');
+      }
     }
   }
 
@@ -205,8 +206,8 @@
 
         if (currentChartMode === 'candles') {
           renderCandleChart();
-        } else if (chartInstance) {
-          updateChartSuperTrendDataset();
+        } else if (typeof chartInstance !== 'undefined' && chartInstance) {
+          if (typeof updateChartSuperTrendDataset === 'function') updateChartSuperTrendDataset();
           chartInstance.update('none');
         }
       });
@@ -251,8 +252,8 @@
     const unavail = getEl('unavailable-state');
     if (unavail) unavail.style.display = 'none';
 
-    // FIX: Respect selected chart mode! Never force line container to block on background updates
-    applyChartMode(currentChartMode, false);
+    // Ensure candlestick canvas and HUD are active
+    ensureCandleElementsActive();
 
     // Header info
     const symEl = getEl('stock-symbol');
@@ -854,12 +855,12 @@
     const nCandles = visibleCandles.length;
     if (nCandles === 0) return;
 
-    const livePrice = currentPriceVal || (cachedCandles[cachedCandles.length - 1].price || 0);
+    const livePrice = currentPriceVal || (cachedCandles[cachedCandles.length - 1].close != null ? cachedCandles[cachedCandles.length - 1].close : (cachedCandles[cachedCandles.length - 1].price || 0));
 
     const padTop = 20;
     const padBottom = 28;
     const padLeft = 16;
-    const padRight = 86;
+    const padRight = 102;
 
     const chartW = width - padLeft - padRight;
     const chartTotalH = height - padTop - padBottom;
@@ -919,8 +920,9 @@
 
     for (let i = 0; i < nCandles; i++) {
       const c = visibleCandles[i];
-      const low = c.low != null ? c.low : c.price;
-      const high = c.high != null ? c.high : c.price;
+      const cClose = c.close != null ? c.close : (c.price != null ? c.price : 0);
+      const low = c.low != null ? c.low : cClose;
+      const high = c.high != null ? c.high : cClose;
       if (low < minP) minP = low;
       if (high > maxP) maxP = high;
       if (c.volume && c.volume > maxV) maxV = c.volume;
@@ -1009,10 +1011,11 @@
     for (let i = 0; i < nCandles; i++) {
       const c = visibleCandles[i];
       const cx = padLeft + (i + 0.5) * candleSlotW;
-      const open = c.open != null ? c.open : c.price;
+      const cClose = c.close != null ? c.close : (c.price != null ? c.price : (c.open || 0));
+      const open = c.open != null ? c.open : cClose;
       const vH = c.volume ? Math.max(2, (c.volume / maxV) * volAreaH) : 0;
       const vy = volAreaTop + volAreaH - vH;
-      const isBull = c.price >= open;
+      const isBull = cClose >= open;
 
       ctx.fillStyle = isBull ? 'rgba(8, 153, 129, 0.40)' : 'rgba(242, 54, 69, 0.40)';
       ctx.fillRect(Math.round(cx - candleW / 2), Math.round(vy), Math.round(candleW), Math.round(vH));
@@ -1026,8 +1029,9 @@
       const stItem = visibleStValues[i];
       if (stItem && stItem.price > 0) {
         const cy = priceToY(stItem.price);
-        const cHigh = c.high != null ? c.high : c.price;
-        const cLow = c.low != null ? c.low : c.price;
+        const cClose = c.close != null ? c.close : (c.price != null ? c.price : 0);
+        const cHigh = c.high != null ? c.high : cClose;
+        const cLow = c.low != null ? c.low : cClose;
         stPoints.push({
           x: cx,
           y: cy,
@@ -1084,8 +1088,8 @@
     for (let i = 0; i < nCandles; i++) {
       const c = visibleCandles[i];
       const cx = px(padLeft + (i + 0.5) * candleSlotW);
-      const open = c.open != null ? c.open : c.price;
-      const close = c.price;
+      const close = c.close != null ? c.close : (c.price != null ? c.price : (c.open || 0));
+      const open = c.open != null ? c.open : close;
       const high = c.high != null ? c.high : Math.max(open, close);
       const low = c.low != null ? c.low : Math.min(open, close);
 
@@ -1237,7 +1241,8 @@
 
     if (hoveredCandleIdx >= 0 && hoveredCandleIdx < nCandles && mouseX != null && mouseY != null && !isPanning) {
       const cx = px(padLeft + (hoveredCandleIdx + 0.5) * candleSlotW);
-      const cy = px(priceToY(activeCandle.price));
+      const activeClose = activeCandle.close != null ? activeCandle.close : (activeCandle.price || 0);
+      const cy = px(priceToY(activeClose));
 
       ctx.save();
       ctx.setLineDash([3, 3]);
@@ -1258,8 +1263,8 @@
       ctx.stroke();
 
       // Point circle on active candle close
-      const activeOpen = activeCandle.open != null ? activeCandle.open : activeCandle.price;
-      ctx.fillStyle = activeCandle.price >= activeOpen ? greenBull : redBear;
+      const activeOpen = activeCandle.open != null ? activeCandle.open : activeClose;
+      ctx.fillStyle = activeClose >= activeOpen ? greenBull : redBear;
       ctx.beginPath();
       ctx.arc(cx, cy, 4.5, 0, Math.PI * 2);
       ctx.fill();
@@ -1290,10 +1295,10 @@
       const hChange = getEl('live-hud-change');
       const hVol = getEl('live-hud-vol');
 
-      const openVal = activeCandle.open != null ? activeCandle.open : activeCandle.price;
-      const highVal = activeCandle.high != null ? activeCandle.high : Math.max(openVal, activeCandle.price);
-      const lowVal = activeCandle.low != null ? activeCandle.low : Math.min(openVal, activeCandle.price);
-      const closeVal = activeCandle.price;
+      const closeVal = Number(activeCandle.close != null ? activeCandle.close : (activeCandle.price != null ? activeCandle.price : (currentPriceVal || 0)));
+      const openVal = Number(activeCandle.open != null ? activeCandle.open : closeVal);
+      const highVal = Number(activeCandle.high != null ? activeCandle.high : Math.max(openVal, closeVal));
+      const lowVal = Number(activeCandle.low != null ? activeCandle.low : Math.min(openVal, closeVal));
 
       const diffVal = closeVal - openVal;
       const pctVal = openVal > 0 ? (diffVal / openVal) * 100 : 0;
@@ -1363,33 +1368,95 @@
   // --- AXIS PILL BADGE HELPERS ---
   function drawAxisPill(ctx, x, y, tagText, priceText, bgColor, textColor) {
     ctx.save();
-    ctx.font = '700 9px "JetBrains Mono", monospace';
-    const tagW = tagText ? ctx.measureText(tagText).width + 6 : 0;
-    ctx.font = '800 10.5px "JetBrains Mono", monospace';
-    const priceW = ctx.measureText(priceText).width;
 
-    const boxW = Math.max(68, tagW + priceW + 12);
-    const boxH = 19;
-    const boxY = y - boxH / 2;
+    // 1. Explicitly reset canvas text alignment & smoothing state
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.setLineDash([]);
 
+    const hasTag = Boolean(tagText && tagText.trim().length > 0);
+    const cleanTag = hasTag ? tagText.trim() : '';
+
+    // 2. Measure tag badge and price text with dedicated fonts
+    ctx.font = '800 8.5px "JetBrains Mono", monospace';
+    const tagTextW = hasTag ? ctx.measureText(cleanTag).width : 0;
+    const tagBadgeW = hasTag ? Math.round(tagTextW + 8) : 0;
+
+    ctx.font = '800 11px "JetBrains Mono", monospace';
+    const priceTextW = ctx.measureText(priceText).width;
+
+    // 3. Compute clean pill geometry
+    const padX = 7;
+    const tagGap = hasTag ? 6 : 0;
+    const totalContentW = (hasTag ? tagBadgeW + tagGap : 0) + priceTextW;
+    const pillW = Math.max(72, Math.round(totalContentW + padX * 2));
+    const pillH = 22; // Comfortable height for 11px font
+    const pillY = Math.round(y - pillH / 2);
+
+    // 4. Ensure pill never bleeds off canvas edges
+    const canvasLogicalW = ctx.canvas.width / (window.devicePixelRatio || 1);
+    const canvasLogicalH = ctx.canvas.height / (window.devicePixelRatio || 1);
+    const startX = Math.max(4, Math.min(x, canvasLogicalW - pillW - 2));
+    const startY = Math.max(2, Math.min(canvasLogicalH - pillH - 2, pillY));
+    const centerY = Math.round(startY + pillH / 2);
+
+    // 5. Draw subtle drop shadow for depth and contrast
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.22)';
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 1;
+
+    // 6. Draw outer rounded pill
     ctx.fillStyle = bgColor;
     ctx.beginPath();
     if (ctx.roundRect) {
-      ctx.roundRect(x, boxY, boxW, boxH, 4);
+      ctx.roundRect(startX, startY, pillW, pillH, 5);
     } else {
-      ctx.rect(x, boxY, boxW, boxH);
+      ctx.rect(startX, startY, pillW, pillH);
     }
     ctx.fill();
 
-    ctx.fillStyle = textColor;
-    ctx.textBaseline = 'middle';
-    if (tagText) {
-      ctx.font = '700 9px "JetBrains Mono", monospace';
-      ctx.fillText(tagText, x + 4, y);
+    // 7. Reset shadow before rendering text and inner elements
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
+    // Crisp high-contrast pill outline
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    let curX = startX + padX;
+
+    // 8. Draw inner Tag badge (e.g. "LIVE", "ST-BUY", "ST-SELL")
+    if (hasTag) {
+      const tagBadgeH = 14;
+      const tagBadgeY = Math.round(centerY - tagBadgeH / 2);
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(curX, tagBadgeY, tagBadgeW, tagBadgeH, 3);
+      } else {
+        ctx.rect(curX, tagBadgeY, tagBadgeW, tagBadgeH);
+      }
+      ctx.fill();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '800 8.5px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(cleanTag, Math.round(curX + tagBadgeW / 2), centerY + 0.5);
+
+      curX += tagBadgeW + tagGap;
     }
 
-    ctx.font = '800 10.5px "JetBrains Mono", monospace';
-    ctx.fillText(priceText, x + tagW + 4, y);
+    // 9. Draw Price text with perfect left alignment
+    ctx.textAlign = 'left';
+    ctx.fillStyle = textColor;
+    ctx.font = '800 11px "JetBrains Mono", monospace';
+    ctx.fillText(priceText, Math.round(curX), centerY + 0.5);
+
     ctx.restore();
   }
 

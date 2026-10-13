@@ -178,8 +178,8 @@ echo.
 :: Open default browser after 3 seconds in background
 start "" /B cmd /c "timeout /t 3 /nobreak >nul && start http://127.0.0.1:8000"
 
-:: Start Uvicorn server in foreground
-"%VENV_PYTHON%" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+:: Start Uvicorn server in foreground (with auto-reload)
+"%VENV_PYTHON%" -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
 if %errorlevel% neq 0 (
     echo.

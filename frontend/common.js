@@ -1350,16 +1350,12 @@ window.StockPulse = (function () {
 
     if (btnLogout) {
       btnLogout.addEventListener('click', async () => {
-        setUser(null);
+        localStorage.removeItem(STORAGE_KEY_TOKEN);
+        localStorage.removeItem(STORAGE_KEY_USER);
         try {
           await fetch('/api/auth/logout', { method: 'POST' });
         } catch (e) {}
-        renderUserUI();
-        if (feedbackMsg) {
-          feedbackMsg.className = 'login-feedback-msg success';
-          feedbackMsg.textContent = 'Settings reset successfully.';
-          feedbackMsg.style.display = 'block';
-        }
+        window.location.replace('/login?logout=true');
       });
     }
 

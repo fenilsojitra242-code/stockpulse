@@ -4,7 +4,7 @@ import jwt
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field, field_validator
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -325,7 +325,7 @@ def send_registration_otp(req: SendOTPRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/verify-registration-otp", status_code=status.HTTP_201_CREATED)
-def verify_registration_otp(req: VerifyOTPRegisterRequest, db: Session = Depends(get_db)):
+def verify_registration_otp(req: VerifyOTPRegisterRequest, response: Response, db: Session = Depends(get_db)):
     """
     Verifies the 6-digit code entered by user.
     Creates the account, sets is_verified=True, and issues a JWT token.
@@ -398,6 +398,15 @@ def verify_registration_otp(req: VerifyOTPRegisterRequest, db: Session = Depends
         "username": new_user.username,
         "name": new_user.name
     })
+
+    response.set_cookie(
+        key="stockpulse_jwt_token",
+        value=token,
+        max_age=30 * 86400,
+        path="/",
+        samesite="lax",
+        httponly=False
+    )
 
     return {
         "status": "SUCCESS",
@@ -489,7 +498,7 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/reset-password")
-def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)):
+def reset_password(req: ResetPasswordRequest, response: Response, db: Session = Depends(get_db)):
     """
     Verifies the 6-digit reset code and sets a new password for the account.
     """
@@ -535,6 +544,15 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)):
         "name": user.name
     })
 
+    response.set_cookie(
+        key="stockpulse_jwt_token",
+        value=token,
+        max_age=30 * 86400,
+        path="/",
+        samesite="lax",
+        httponly=False
+    )
+
     return {
         "status": "SUCCESS",
         "message": "Password successfully updated! Welcome back.",
@@ -552,7 +570,7 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
+def register_user(req: RegisterRequest, response: Response, db: Session = Depends(get_db)):
     """
     Registers a brand new user account with hashed password and generates a JWT session.
     """
@@ -613,6 +631,15 @@ def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
         "name": new_user.name
     })
 
+    response.set_cookie(
+        key="stockpulse_jwt_token",
+        value=token,
+        max_age=30 * 86400,
+        path="/",
+        samesite="lax",
+        httponly=False
+    )
+
     return {
         "status": "SUCCESS",
         "message": f"Account created successfully for {new_user.name}!",
@@ -630,28 +657,63 @@ def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", status_code=status.HTTP_200_OK)
-def login_user(req: LoginRequest, db: Session = Depends(get_db)):
+def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
     """
-    Signs in an existing user using either their email or username and password.
+    Signs in an existing user using either their email, username, or full name and password.
     """
     ident = req.identifier.strip().lower()
+    ident_compact = ident.replace(" ", "")
 
-    user = db.query(User).filter(
-        or_(func.lower(User.email) == ident, func.lower(User.username) == ident)
-    ).first()
+    # 1. Exact Email or Username match
+    matching_users = db.query(User).filter(
+        or_(
+            func.lower(User.email) == ident,
+            func.lower(User.username) == ident
+        )
+    ).all()
 
-    if not user:
+    # 2. Email prefix match (e.g. user entered "fenilsojitra242" instead of "fenilsojitra242@gmail.com")
+    if not matching_users and "@" not in ident:
+        matching_users = db.query(User).filter(func.lower(User.email).like(f"{ident}@%")).all()
+
+    # 3. Full Name match (e.g. "Fenil Sojitra" or "FenilSojitra")
+    if not matching_users:
+        matching_users = db.query(User).filter(
+            or_(
+                func.lower(User.name) == ident,
+                func.replace(func.lower(User.name), " ", "") == ident_compact
+            )
+        ).order_by(User.id.desc()).all()
+
+    if not matching_users:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email/username or password."
         )
 
-    # Verify password
-    if not user.password_hash or not verify_password(req.password, user.password_hash):
+    # Verify password with whitespace tolerance across matched candidates
+    plain_pw = req.password
+    authenticated_user = None
+
+    for candidate in matching_users:
+        if not candidate.password_hash:
+            continue
+        pw_ok = verify_password(plain_pw, candidate.password_hash)
+        if not pw_ok and (plain_pw.startswith(" ") or plain_pw.endswith(" ")):
+            pw_ok = verify_password(plain_pw.strip(), candidate.password_hash)
+        if not pw_ok and (" " in plain_pw):
+            pw_ok = verify_password(plain_pw.rstrip(), candidate.password_hash)
+        if pw_ok:
+            authenticated_user = candidate
+            break
+
+    if not authenticated_user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email/username or password."
         )
+
+    user = authenticated_user
 
     token = create_access_token({
         "sub": str(user.id),
@@ -659,6 +721,15 @@ def login_user(req: LoginRequest, db: Session = Depends(get_db)):
         "username": user.username or "",
         "name": user.name
     })
+
+    response.set_cookie(
+        key="stockpulse_jwt_token",
+        value=token,
+        max_age=30 * 86400,
+        path="/",
+        samesite="lax",
+        httponly=False
+    )
 
     active_count = db.query(Alert).filter(Alert.user_id == user.id, Alert.status == "MONITORING").count()
 
@@ -701,6 +772,7 @@ def get_current_user_profile(
 
 
 @router.post("/logout")
-def logout_user():
+def logout_user(response: Response):
     """Sign out endpoint."""
+    response.delete_cookie(key="stockpulse_jwt_token", path="/")
     return {"status": "SUCCESS", "message": "Signed out successfully"}

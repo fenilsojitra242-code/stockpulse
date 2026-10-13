@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  let currentStock = StockPulse.getSelectedStock() || 'TCS';
+  let currentStock = (window.StockPulse && window.StockPulse.getSelectedStock) ? window.StockPulse.getSelectedStock() : 'TCS';
   let targetPct = 1.20;
   let windowMin = 2;
   let direction = 'UP';

@@ -407,14 +407,14 @@
       <!-- 1. SIGN IN FORM -->
       <form id="form-login" onsubmit="handleLoginSubmit(event)" autocomplete="on">
         <div class="form-group">
-          <label for="login-identifier">Email or Username</label>
+          <label for="login-identifier">Email, Username, or Full Name</label>
           <div class="input-wrapper">
             <i class="fa-solid fa-user field-icon"></i>
             <input
               type="text"
               id="login-identifier"
               class="auth-input"
-              placeholder="Enter your email or username"
+              placeholder="Enter your email, username, or name"
               required
               autocomplete="username"
             >
@@ -707,8 +707,14 @@
   </div>
 
   <script>
-    // If user already has a valid token, redirect directly to /live
+    // If user already has a valid token, redirect directly to /live (unless explicitly logging out)
     (function checkExistingSession() {
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('logout') === 'true') {
+        localStorage.removeItem('stockpulse_jwt_token');
+        localStorage.removeItem('stockpulse_user_profile');
+        return;
+      }
       const token = localStorage.getItem('stockpulse_jwt_token');
       if (token) {
         fetch('/api/auth/me', {
@@ -1015,11 +1021,12 @@
         clearInterval(otpCountdownInterval);
         localStorage.setItem('stockpulse_jwt_token', data.access_token);
         localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
-        showFeedback(`Email verified! Welcome, ${data.user.name}! Entering dashboard...`, false);
+        const usernameMsg = data.user && data.user.username ? ` Your username is "${data.user.username}".` : '';
+        showFeedback(`Email verified! Welcome, ${data.user.name}!${usernameMsg} Entering dashboard...`, false);
 
         setTimeout(() => {
           window.location.href = '/live';
-        }, 500);
+        }, 900);
 
       } catch (err) {
         console.error('OTP Verification error:', err);

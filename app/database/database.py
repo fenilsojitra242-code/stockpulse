@@ -66,6 +66,11 @@ def run_db_migrations(db_engine):
                             conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN {col_name} {col_type}"))
                             conn.commit()
                             print(f"[DB Migration] Added missing column {tbl}.{col_name}")
+
+            # Backfill any missing usernames from email prefix
+            if "users" in table_names:
+                conn.execute(text("UPDATE users SET username = lower(substr(email, 1, instr(email, '@') - 1)) WHERE username IS NULL OR username = ''"))
+                conn.commit()
     except Exception as e:
         print(f"[DB Migration] Schema migration note: {e}")
 

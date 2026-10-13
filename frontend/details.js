@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  let currentStock = StockPulse.getSelectedStock() || 'TCS';
+  let currentStock = (window.StockPulse && window.StockPulse.getSelectedStock) ? window.StockPulse.getSelectedStock() : 'TCS';
 
   const el = {
     stockSelect: document.getElementById('details-stock-select'),
@@ -164,9 +164,11 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
-    StockPulse.populateStockDropdown(el.stockSelect, (newSym) => {
-      loadStockDetails(newSym, true);
-    });
+    if (window.StockPulse && window.StockPulse.populateStockDropdown) {
+      StockPulse.populateStockDropdown(el.stockSelect, (newSym) => {
+        loadStockDetails(newSym, true);
+      });
+    }
 
     loadStockDetails(currentStock, true);
     setInterval(() => loadStockDetails(currentStock, false), 6000);
