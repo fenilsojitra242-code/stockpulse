@@ -300,14 +300,14 @@ def get_stock_supertrend(
         "symbol": vis.get("symbol", symbol),
         "name": vis.get("name", symbol),
         "price": curr_price,
-        "supertrend_price": st_analysis["supertrend_price"],
-        "direction": st_analysis["direction"],
-        "distance_points": st_analysis["distance_points"],
-        "proximity_threshold": st_analysis["proximity_threshold"],
-        "is_approaching": st_analysis["is_approaching"],
-        "is_flipped": st_analysis["is_flipped"],
-        "flip_signal": st_analysis["flip_signal"],
-        "series": st_analysis["series"]
+        "supertrend_price": st_analysis.get("supertrend_price", curr_price),
+        "direction": st_analysis.get("direction", "BUY"),
+        "distance_points": st_analysis.get("distance_points", 0.0),
+        "proximity_threshold": st_analysis.get("proximity_threshold", proximity),
+        "is_approaching": st_analysis.get("is_approaching", False),
+        "is_flipped": st_analysis.get("is_flipped", False),
+        "flip_signal": st_analysis.get("flip_signal"),
+        "series": st_analysis.get("series", [])
     }
 
 

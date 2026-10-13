@@ -165,6 +165,7 @@ def analyze_supertrend_hit(
             "direction": "BUY",
             "previous_direction": previous_direction or "BUY",
             "distance_points": 0.0,
+            "proximity_threshold": float(proximity_points),
             "is_approaching": False,
             "is_flipped": False,
             "flip_signal": None,

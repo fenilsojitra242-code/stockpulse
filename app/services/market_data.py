@@ -405,6 +405,13 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
             except Exception:
                 pass
 
+        # Market trading hours (09:15 to 15:30 IST on weekdays)
+        market_status_val, ist_time_str = get_market_status()
+        is_weekday = server_time.weekday() < 5
+        market_open_today = server_time.replace(hour=9, minute=15, second=0, microsecond=0)
+        market_close_today = server_time.replace(hour=15, minute=30, second=0, microsecond=0)
+        is_market_currently_open = is_weekday and (market_open_today <= server_time <= market_close_today)
+
         # Apply continuous real-time micro-ticks during active market hours
         if is_market_currently_open and range_key == "1D":
             tick_window = int(now_ts // 3)
@@ -419,13 +426,6 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         # Localize latest candle timestamp to IST (Section 4 & 5)
         latest_idx = df.index[-1]
         latest_market_dt = latest_idx.astimezone(IST) if hasattr(latest_idx, 'astimezone') else pd.Timestamp(latest_idx, tz=IST)
-
-        # Market trading hours (09:15 to 15:30 IST on weekdays)
-        market_status_val, ist_time_str = get_market_status()
-        is_weekday = server_time.weekday() < 5
-        market_open_today = server_time.replace(hour=9, minute=15, second=0, microsecond=0)
-        market_close_today = server_time.replace(hour=15, minute=30, second=0, microsecond=0)
-        is_market_currently_open = is_weekday and (market_open_today <= server_time <= market_close_today)
 
         # Bridge intraday 1m gap between delayed provider feed and actual current minute / market close
         synthesized_candles = []
