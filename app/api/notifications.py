@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 
 from app.database.database import get_db
 from app.database.models import Notification, Alert, User
@@ -25,27 +25,35 @@ def list_notifications(
     db: Session = Depends(get_db)
 ):
     """
-    List historical and real-time notifications for the authenticated user only.
+    List historical and real-time notifications for the authenticated user as well as system notifications.
     """
-    # Strict isolation: Only return notifications belonging to this specific user
-    query = db.query(Notification).filter(Notification.user_id == current_user.id)
+    # Include user's own notifications plus system notifications (user_id IS NULL)
+    query = db.query(Notification).filter(
+        or_(
+            Notification.user_id == current_user.id,
+            Notification.user_id.is_(None)
+        )
+    )
 
-    if alert_id is not None:
+    if alert_id is not None and isinstance(alert_id, int):
         query = query.filter(Notification.alert_id == alert_id)
-    if symbol:
+    if symbol and isinstance(symbol, str):
         query = query.filter(Notification.symbol == symbol.strip().upper())
-    if event_type:
+    if event_type and isinstance(event_type, str):
         query = query.filter(Notification.event_type == event_type.strip().upper())
-    if priority:
+    if priority and isinstance(priority, str):
         query = query.filter(Notification.priority == priority.strip().upper())
-    if channel:
+    if channel and isinstance(channel, str):
         query = query.filter(Notification.channel == channel.strip().lower())
-    if unread_only:
+    if unread_only is True:
         query = query.filter(Notification.is_read == False)
 
     total = query.count()
     unread_count = db.query(Notification).filter(
-        Notification.user_id == current_user.id,
+        or_(
+            Notification.user_id == current_user.id,
+            Notification.user_id.is_(None)
+        ),
         Notification.is_read == False
     ).count()
     items = query.order_by(desc(Notification.created_at)).limit(limit).all()
@@ -96,11 +104,14 @@ def mark_all_notifications_read(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Mark all notifications as read for current user."""
+    """Mark all notifications as read for current user and system notifications."""
     count = db.query(Notification).filter(
-        Notification.user_id == current_user.id,
+        or_(
+            Notification.user_id == current_user.id,
+            Notification.user_id.is_(None)
+        ),
         Notification.is_read == False
-    ).update({"is_read": True})
+    ).update({"is_read": True}, synchronize_session=False)
     db.commit()
     return {"message": "All notifications marked as read", "updated": count}
 
@@ -112,12 +123,48 @@ def clear_all_notifications(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Clear all notifications belonging to current user from the feed."""
+    """Clear all notifications belonging to current user and system notifications from the feed."""
     count = db.query(Notification).filter(
-        Notification.user_id == current_user.id
+        or_(
+            Notification.user_id == current_user.id,
+            Notification.user_id.is_(None)
+        )
     ).delete(synchronize_session=False)
     db.commit()
     return {"message": "All notifications cleared successfully", "deleted": count}
+
+
+@router.post("/test-system")
+def test_system_notification(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Dispatches a real-time system notification so the user can verify reception
+    in the Notifications feed, In-App Popup HUD, Audio chime, and OS desktop notification.
+    """
+    from app.services.messaging import notification_service
+    now = datetime.utcnow()
+    res = notification_service.dispatch(
+        event_type="SYSTEM_STATUS",
+        data={
+            "user_id": current_user.id,
+            "symbol": "SYSTEM",
+            "priority": "INFO",
+            "direction": "ACTIVE",
+            "current_price": 100.0,
+            "target_percent": 0.0,
+            "warning_minutes": 0,
+            "probability": 1.0,
+            "message": "StockPulse system monitoring engine is fully operational. Real-time telemetry, predictive barrier evaluation, and multi-channel notifications are running.",
+            "title": "System Active: StockPulse Health Check",
+            "short_summary": "StockPulse system monitoring and notification engine is active and operational.",
+            "timestamp": now.strftime("%H:%M:%S")
+        },
+        channels=["dashboard", "popup"],
+        db=db
+    )
+    return {"success": True, "message": "System notification dispatched successfully", "result": res}
 
 
 @router.delete("/{notification_id}")

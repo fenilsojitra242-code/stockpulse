@@ -44,7 +44,7 @@
           Details</a>
         <a href="/history" class="nav-link" id="nav-history"><i class="fa-solid fa-clock-rotate-left"></i> History</a>
         <a href="/notifications" class="nav-link" id="nav-notifications"><i class="fa-solid fa-bell"></i>
-          Notifications</a>
+          Notifications <span class="nav-unread-badge" id="notif-unread-badge" style="display: none; background: #2563eb; color: #fff; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 10px; margin-left: 4px;">0</span></a>
 
         <!-- Live Market Status Pill -->
         <div class="nav-market-status" id="nav-market-status">
@@ -182,8 +182,94 @@
 
           </div> <!-- /controls-row -->
 
+          <!-- Real-Time Prediction & Adaptive Threshold HUD Strip -->
+          <div class="threshold-hud-strip" id="threshold-hud-strip" style="margin-top: 14px;">
+            <div class="hud-left-group">
+              <span class="hud-badge-pill green" id="target-hint-badge">+1.20% UP</span>
+              <div class="hud-market-info" id="target-live-hint">
+                <span id="target-hint-text">Live: <strong class="text-green">+1.82%</strong> ➔ Target:
+                  <strong class="text-green">+1.20%</strong> (Need <strong>-0.62%</strong> to Hit in 2m)</span>
+              </div>
+            </div>
+            <div class="hud-right-group">
+              <div class="hud-threshold-item" id="hud-model-confidence-item" title="Predictive early warning horizon">
+                <span class="hud-metric-label"><i class="fa-solid fa-brain"></i> Horizon:</span>
+                <span class="hud-metric-val text-brand" id="hud-model-horizon-val">2 min Early-Warning</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Live Rupee Profit Preview Strip -->
+          <div class="rupee-preview-strip" id="rupee-preview-strip">
+            <div class="rupee-preview-col">
+              <span class="rupee-preview-label">Live Price</span>
+              <span class="rupee-preview-val" id="prev-live-price">₹1038.55</span>
+            </div>
+            <div class="rupee-preview-col">
+              <span class="rupee-preview-label">Target Level</span>
+              <span class="rupee-preview-val" id="prev-target-price" style="color: #16a34a;">₹1032.24 (-₹6.31)</span>
+            </div>
+            <div class="rupee-preview-col">
+              <span class="rupee-preview-label">Est Profit (100 Qty)</span>
+              <span class="rupee-preview-val" id="prev-profit-100" style="color: #16a34a; font-weight: 700;">+₹631.00</span>
+            </div>
+          </div>
+
+          <!-- Target Feasibility & Historical Achievability Card -->
+          <div class="target-feasibility-card" id="target-feasibility-card">
+            <div class="feasibility-header">
+              <div class="feasibility-title-group">
+                <span class="feasibility-badge status-green" id="feasibility-status-badge">
+                  <i class="fa-solid fa-gauge-high"></i> <span id="feasibility-status-text">51% Achievable • Ambitious</span>
+                </span>
+                <span class="feasibility-subtext" id="feasibility-subtext">Evaluating historical stock volatility & ADR</span>
+              </div>
+              <div class="feasibility-score-group">
+                <div class="score-circle-wrapper">
+                  <span class="score-number" id="feasibility-score-number">51%</span>
+                  <span class="score-label">Achievability</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Dynamic Progress Track -->
+            <div class="feasibility-progress-bar-bg">
+              <div class="feasibility-progress-bar-fill" id="feasibility-progress-fill" style="width: 51%; background: #10b981;"></div>
+            </div>
+
+            <!-- 4-Column Historical Stats Grid -->
+            <div class="feasibility-stats-grid">
+              <div class="f-stat-item">
+                <span class="f-stat-label"><i class="fa-solid fa-chart-line"></i> 90-Day Avg Range (ADR)</span>
+                <span class="f-stat-val" id="f-stat-adr">2.40%</span>
+              </div>
+              <div class="f-stat-item">
+                <span class="f-stat-label"><i class="fa-solid fa-mountain"></i> 90-Day Max Move</span>
+                <span class="f-stat-val" id="f-stat-max">5.20%</span>
+              </div>
+              <div class="f-stat-item">
+                <span class="f-stat-label"><i class="fa-solid fa-arrows-left-right"></i> Required Distance</span>
+                <span class="f-stat-val" id="f-stat-distance">+0.61%</span>
+              </div>
+              <div class="f-stat-item">
+                <span class="f-stat-label"><i class="fa-solid fa-clock-rotate-left"></i> Historical Frequency</span>
+                <span class="f-stat-val" id="f-stat-freq">92.0% of days</span>
+              </div>
+            </div>
+
+            <!-- Explanation & Auto-Adjust Quick Action -->
+            <div class="feasibility-footer" id="feasibility-footer">
+              <div class="feasibility-explanation" id="feasibility-explanation">
+                Target +1.20% requires a 0.61% move from live +1.82%. INFY's 90-day Average Daily Range is 2.40% (Max: 5.20%). Completion probability is 51% (Requires above-average momentum in 2m).
+              </div>
+              <button type="button" class="btn-use-recommended-target" id="btn-use-recommended-target" style="display: none;">
+                <i class="fa-solid fa-wand-magic-sparkles"></i> <span id="btn-recommended-label">Set Realistic Target (+2.20%)</span>
+              </button>
+            </div>
+          </div>
+
           <!-- SuperTrend Dynamic Early-Point Hit Notifier Section -->
-          <div class="supertrend-monitoring-section" id="supertrend-monitoring-section">
+          <div class="supertrend-monitoring-section" id="supertrend-monitoring-section" style="margin-top: 18px;">
             <div class="st-section-header">
               <div class="st-header-left">
                 <div class="supertrend-icon-box">
@@ -299,93 +385,6 @@
                   </div>
                 </div>
               </div>
-            </div>
-          </div>
-
-          <!-- Real-Time Prediction & Adaptive Threshold HUD Strip -->
-          <div class="threshold-hud-strip" id="threshold-hud-strip">
-            <div class="hud-left-group">
-              <span class="hud-badge-pill green" id="target-hint-badge">+5.0% UP</span>
-              <div class="hud-market-info" id="target-live-hint">
-                <span id="target-hint-text">Live: <strong class="text-green">+4.00%</strong> ➔ Target:
-                  <strong class="text-green">+5.00%</strong> (Need <strong>+1.00%</strong>)</span>
-              </div>
-            </div>
-            <div class="hud-right-group">
-
-              <div class="hud-threshold-item" id="hud-model-confidence-item" title="Predictive early warning horizon">
-                <span class="hud-metric-label"><i class="fa-solid fa-brain"></i> Horizon:</span>
-                <span class="hud-metric-val text-brand" id="hud-model-horizon-val">5 min Early-Warning</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Live Rupee Profit Preview Strip -->
-          <div class="rupee-preview-strip" id="rupee-preview-strip">
-            <div class="rupee-preview-col">
-              <span class="rupee-preview-label">Live Price</span>
-              <span class="rupee-preview-val" id="prev-live-price">₹--.--</span>
-            </div>
-            <div class="rupee-preview-col">
-              <span class="rupee-preview-label">Target Level</span>
-              <span class="rupee-preview-val" id="prev-target-price" style="color: #16a34a;">₹--.-- (+₹0.00)</span>
-            </div>
-            <div class="rupee-preview-col">
-              <span class="rupee-preview-label">Est Profit (100 Qty)</span>
-              <span class="rupee-preview-val" id="prev-profit-100" style="color: #16a34a; font-weight: 700;">+₹0.00</span>
-            </div>
-          </div>
-
-          <!-- Target Feasibility & Historical Achievability Card -->
-          <div class="target-feasibility-card" id="target-feasibility-card">
-            <div class="feasibility-header">
-              <div class="feasibility-title-group">
-                <span class="feasibility-badge status-green" id="feasibility-status-badge">
-                  <i class="fa-solid fa-gauge-high"></i> <span id="feasibility-status-text">ANALYZING TARGET...</span>
-                </span>
-                <span class="feasibility-subtext" id="feasibility-subtext">Evaluating historical stock volatility & ADR</span>
-              </div>
-              <div class="feasibility-score-group">
-                <div class="score-circle-wrapper">
-                  <span class="score-number" id="feasibility-score-number">--%</span>
-                  <span class="score-label">Achievability</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Dynamic Progress Track -->
-            <div class="feasibility-progress-bar-bg">
-              <div class="feasibility-progress-bar-fill" id="feasibility-progress-fill" style="width: 50%; background: #10b981;"></div>
-            </div>
-
-            <!-- 4-Column Historical Stats Grid -->
-            <div class="feasibility-stats-grid">
-              <div class="f-stat-item">
-                <span class="f-stat-label"><i class="fa-solid fa-chart-line"></i> 90-Day Avg Range (ADR)</span>
-                <span class="f-stat-val" id="f-stat-adr">--%</span>
-              </div>
-              <div class="f-stat-item">
-                <span class="f-stat-label"><i class="fa-solid fa-mountain"></i> 90-Day Max Move</span>
-                <span class="f-stat-val" id="f-stat-max">--%</span>
-              </div>
-              <div class="f-stat-item">
-                <span class="f-stat-label"><i class="fa-solid fa-arrows-left-right"></i> Required Distance</span>
-                <span class="f-stat-val" id="f-stat-distance">--%</span>
-              </div>
-              <div class="f-stat-item">
-                <span class="f-stat-label"><i class="fa-solid fa-clock-rotate-left"></i> Historical Frequency</span>
-                <span class="f-stat-val" id="f-stat-freq">--% of days</span>
-              </div>
-            </div>
-
-            <!-- Explanation & Auto-Adjust Quick Action -->
-            <div class="feasibility-footer" id="feasibility-footer">
-              <div class="feasibility-explanation" id="feasibility-explanation">
-                Analyzing historical daily range and price barrier for selected stock...
-              </div>
-              <button type="button" class="btn-use-recommended-target" id="btn-use-recommended-target" style="display: none;">
-                <i class="fa-solid fa-wand-magic-sparkles"></i> <span id="btn-recommended-label">Set Realistic Target (+2.20%)</span>
-              </button>
             </div>
           </div>
         </form>

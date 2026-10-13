@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 
@@ -18,14 +18,17 @@ router = APIRouter(prefix="/stocks", tags=["Stocks"])
 
 
 @router.get("")
-def list_available_stocks():
+def list_available_stocks(response: Response):
     """List supported stocks for quick selection and search."""
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return get_available_stocks_list()
 
 
 @router.get("/search")
-def search_stocks(q: str = Query("", description="Stock search query"), db: Session = Depends(get_db)):
+def search_stocks(q: str = Query("", description="Stock search query"), response: Response = None, db: Session = Depends(get_db)):
     """Search stocks by symbol or company name with universal candidate fallback."""
+    if response:
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     stocks = get_available_stocks_list()
     query = q.strip().upper()
     if not query:
@@ -68,6 +71,7 @@ def search_stocks(q: str = Query("", description="Stock search query"), db: Sess
 @router.get("/{symbol}")
 def get_stock_data(
     symbol: str,
+    response: Response,
     range: str = Query("1D", pattern="^(1D|5D|1M|6M|1Y)$", description="Selectable time range: 1D, 5D, 1M, 6M, 1Y")
 ):
     """
@@ -75,13 +79,19 @@ def get_stock_data(
     and key market statistics.
     Returns status 'UNAVAILABLE' if data cannot be retrieved from provider.
     """
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
     data = get_stock_visualization_data(symbol, time_range=range)
     return data
 
 
 @router.get("/{symbol}/live")
-def get_stock_fast_live(symbol: str):
+def get_stock_fast_live(symbol: str, response: Response):
     """Lightweight live quote with separated market data timestamp and freshness status."""
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
     data = get_stock_visualization_data(symbol, time_range="1D")
     return {
         "symbol": data.get("symbol", symbol),

@@ -66,8 +66,8 @@
     const cacheKey = `${currentSymbol}_${currentTimeRange}`;
     const cachedEntry = clientStockCache.get(cacheKey);
 
-    // Instantaneous 0ms render if cached in client memory (Stale-While-Revalidate)
-    if (cachedEntry) {
+    // Instantaneous 0ms render ONLY on explicit stock/range switch, not background poll
+    if (showLoading && cachedEntry) {
       renderDashboard(cachedEntry);
       if (cachedEntry.supertrend) {
         cachedSuperTrendData = cachedEntry.supertrend;
@@ -85,8 +85,10 @@
     }
 
     try {
-      // Single fast fetch — SuperTrend is pre-bundled in stock visualization payload
-      const resStock = await fetch(`/api/stocks/${encodeURIComponent(currentSymbol)}?range=${encodeURIComponent(currentTimeRange)}`);
+      // Fast fetch with explicit cache-busting timestamp to prevent browser HTTP caching
+      const resStock = await fetch(`/api/stocks/${encodeURIComponent(currentSymbol)}?range=${encodeURIComponent(currentTimeRange)}&_t=${Date.now()}`, {
+        cache: 'no-store'
+      });
       if (!resStock.ok) throw new Error(`HTTP ${resStock.status}`);
       const data = await resStock.json();
 
@@ -313,6 +315,7 @@
 
     // Price
     const priceVal = data.price || 0;
+    const prevPrice = currentPriceVal;
     currentPriceVal = priceVal;
     const changeVal = data.price_change || 0;
     const changePct = data.change_pct || 0;
@@ -330,6 +333,12 @@
 
     if (priceEl) {
       priceEl.textContent = `₹${priceVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      // Visual tick pulse animation when live price moves
+      if (prevPrice > 0 && Math.abs(priceVal - prevPrice) >= 0.01) {
+        priceEl.classList.remove('price-pulse-up', 'price-pulse-down');
+        void priceEl.offsetWidth; // Force CSS reflow
+        priceEl.classList.add(priceVal >= prevPrice ? 'price-pulse-up' : 'price-pulse-down');
+      }
     }
     if (prevRefEl) {
       prevRefEl.textContent = `vs prev close ₹${prevClose.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -1516,7 +1525,7 @@
     if (pollingTimer) clearInterval(pollingTimer);
     pollingTimer = setInterval(() => {
       fetchStockData(false);
-    }, 5000);
+    }, 3000);
   }
 
   if (document.readyState === 'loading') {

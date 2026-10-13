@@ -13,6 +13,7 @@
     notifList: document.getElementById('notifications-full-list'),
     emptyState: document.getElementById('notif-empty-state'),
     unreadTotalBadge: document.getElementById('unread-total-badge'),
+    btnTestSystem: document.getElementById('btn-test-system-notif'),
     btnRefresh: document.getElementById('btn-refresh-feed'),
     btnMarkAllRead: document.getElementById('btn-mark-all-feed-read'),
     btnClearAll: document.getElementById('btn-clear-all-feed'),
@@ -56,6 +57,8 @@
     if (filterChannel !== 'ALL') {
       if (filterChannel === 'POPUP') {
         filtered = filtered.filter(n => ['POPUP', 'BROWSER', 'DASHBOARD'].includes((n.channel || '').toUpperCase()));
+      } else if (filterChannel === 'SYSTEM') {
+        filtered = filtered.filter(n => (n.channel || '').toUpperCase() === 'SYSTEM' || !n.user_id || (n.symbol === 'SYSTEM') || (n.event_type || '').toUpperCase().includes('SYSTEM') || (n.event_type || '').toUpperCase().includes('UNAVAILABLE'));
       } else {
         filtered = filtered.filter(n => (n.channel || '').toUpperCase() === filterChannel);
       }
@@ -102,13 +105,17 @@
       else if (priority === 'IMPORTANT') { prioBg = '#ede9fe'; prioColor = '#6d28d9'; }
 
       const evType = (notif.event_type || '').toUpperCase();
+      const isSystemAlert = !notif.user_id || (notif.symbol === 'SYSTEM') || evType.includes('SYSTEM') || evType.includes('UNAVAILABLE');
       let eventBadgeHtml = '';
+      if (isSystemAlert) {
+        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #e0e7ff; color: #4338ca; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-server"></i> System Alert</span>';
+      }
       if (evType === 'SUPERTREND_APPROACHING') {
-        eventBadgeHtml = '<span style="font-size: 11px; font-weight: 700; background: #fef3c7; color: #b45309; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-bolt"></i> SuperTrend Near Hit (≤1 pt)</span>';
+        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #fef3c7; color: #b45309; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-bolt"></i> SuperTrend Near Hit (≤1 pt)</span>';
       } else if (evType === 'SUPERTREND_BUY') {
-        eventBadgeHtml = '<span style="font-size: 11px; font-weight: 700; background: #dcfce7; color: #15803d; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-arrow-trend-up"></i> SuperTrend BUY Hit</span>';
+        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #dcfce7; color: #15803d; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-arrow-trend-up"></i> SuperTrend BUY Hit</span>';
       } else if (evType === 'SUPERTREND_SELL') {
-        eventBadgeHtml = '<span style="font-size: 11px; font-weight: 700; background: #fee2e2; color: #b91c1c; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-arrow-trend-down"></i> SuperTrend SELL Hit</span>';
+        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #fee2e2; color: #b91c1c; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-arrow-trend-down"></i> SuperTrend SELL Hit</span>';
       }
 
       item.innerHTML = `
@@ -208,6 +215,30 @@
     }
   }
 
+  async function testSystemNotification() {
+    try {
+      if (el.btnTestSystem) {
+        el.btnTestSystem.disabled = true;
+        el.btnTestSystem.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Dispatching...';
+      }
+      const res = await fetch('/api/notifications/test-system', { method: 'POST' });
+      if (res.ok) {
+        // Play local test chime & popups
+        if (window.StockPulse && StockPulse.testNotificationSound) {
+          StockPulse.testNotificationSound();
+        }
+        await loadNotifications();
+      }
+    } catch (e) {
+      console.warn('[Notifications] Error triggering test system notification:', e);
+    } finally {
+      if (el.btnTestSystem) {
+        el.btnTestSystem.disabled = false;
+        el.btnTestSystem.innerHTML = '<i class="fa-solid fa-bolt"></i> Test System Notification';
+      }
+    }
+  }
+
   // --- FILTERS ---
   if (el.channelChips) {
     el.channelChips.forEach(chip => {
@@ -231,6 +262,7 @@
     });
   }
 
+  if (el.btnTestSystem) el.btnTestSystem.addEventListener('click', testSystemNotification);
   if (el.btnRefresh) el.btnRefresh.addEventListener('click', loadNotifications);
   if (el.btnMarkAllRead) el.btnMarkAllRead.addEventListener('click', markAllRead);
   if (el.btnClearAll) el.btnClearAll.addEventListener('click', clearAllNotifications);

@@ -453,6 +453,8 @@ window.StockPulse = (function () {
         textToSay = `Warning window elapsed for ${sym}. Continuous monitoring restarted.`;
       } else if (ev === 'MONITORING_STARTED') {
         textToSay = `Continuous monitoring started for ${sym}.`;
+      } else if (ev.includes('SYSTEM')) {
+        textToSay = `System notification: ${notifData.title || notifData.short_summary || 'StockPulse system update'}.`;
       } else {
         textToSay = `${notifData.title || 'StockPulse alert'} for ${sym}.`;
       }

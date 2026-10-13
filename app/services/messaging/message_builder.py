@@ -361,11 +361,11 @@ class MessageBuilder:
             short_summary = f"{symbol} SuperTrend HIT & Flipped to SELL at {curr_price_str}! (ST: {st_str})"
 
         else:
-            # Fallback / Generic
-            title = f"StockPulse Notification: {symbol}"
-            plain_text = f"StockPulse Notification for {symbol}: {ev}\n\nStatus: {ev}"
-            html_text = f"🔔 <b>StockPulse Notification:</b> {symbol}\nEvent: <code>{ev}</code>"
-            short_summary = f"{symbol}: {ev}"
+            # Fallback / Generic / Custom System Notifications
+            title = data.get("title") or f"StockPulse Notification: {symbol}"
+            plain_text = data.get("message") or data.get("plain_text") or f"StockPulse Notification for {symbol}: {ev}\n\nStatus: {ev}"
+            html_text = data.get("html") or f"🔔 <b>{title}</b>\n\n{plain_text}"
+            short_summary = data.get("short_summary") or f"{symbol}: {title}"
 
         return {
             "title": title,
