@@ -589,6 +589,16 @@
       supertrend_proximity_points: stProx
     };
 
+    // Automatically prompt for multi-window notification permission so alerts arrive in other windows
+    if ('Notification' in window && Notification.permission === 'default') {
+      try {
+        await Notification.requestPermission();
+        if (window.StockPulse && StockPulse.updateDesktopAlertButtonUI) {
+          StockPulse.updateDesktopAlertButtonUI();
+        }
+      } catch (err) {}
+    }
+
     let res;
     try {
       if (el.btnStartMonitoring) {

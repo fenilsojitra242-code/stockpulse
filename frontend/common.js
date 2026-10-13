@@ -506,6 +506,17 @@ window.StockPulse = (function () {
     }
   });
 
+  // Register Service Worker for reliable multi-window desktop notifications
+  let swRegistration = null;
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').then((reg) => {
+      swRegistration = reg;
+      console.log('[StockPulse] Multi-window notification Service Worker ready.');
+    }).catch((err) => {
+      console.warn('[StockPulse] Service Worker registration note:', err);
+    });
+  }
+
   async function requestDesktopNotificationPermission(userTriggered = false) {
     if (!('Notification' in window)) {
       if (userTriggered) {
@@ -519,28 +530,24 @@ window.StockPulse = (function () {
       return 'granted';
     }
 
-    if (userTriggered) {
-      try {
-        const perm = await Notification.requestPermission();
-        updateDesktopAlertButtonUI();
-        dismissDesktopAlertBanner(false);
-        if (perm === 'granted') {
-          playNotificationSound('SUCCESS');
-          sendTestDesktopNotification(true);
-        } else if (perm === 'denied') {
-          showDesktopPermissionBlockedModal();
-        }
-        return perm;
-      } catch (err) {
-        console.warn('[StockPulse] Notification.requestPermission error:', err);
-      }
-    } else {
+    try {
+      const perm = await Notification.requestPermission();
       updateDesktopAlertButtonUI();
-      return Notification.permission;
+      dismissDesktopAlertBanner(false);
+      if (perm === 'granted') {
+        playNotificationSound('SUCCESS');
+        sendTestDesktopNotification(true);
+      } else if (perm === 'denied' && userTriggered) {
+        showDesktopPermissionBlockedModal();
+      }
+      return perm;
+    } catch (err) {
+      console.warn('[StockPulse] Notification.requestPermission error:', err);
     }
+    return Notification.permission;
   }
 
-  function showDesktopNotification(title, message, tag, notifData) {
+  async function showDesktopNotification(title, message, tag, notifData) {
     const alertSummary = (title || 'StockPulse Alert').replace(/<[^>]*>/g, '').trim();
     flashTabTitle(alertSummary);
 
@@ -565,16 +572,31 @@ window.StockPulse = (function () {
       }
 
       const notifTag = tag || ('stockpulse-alert-' + Date.now());
-      const notif = new Notification(alertSummary, {
+      const notifOptions = {
         body: cleanBody || 'Real-time market movement or prediction signal triggered.',
-        icon: '/static/favicon.ico',
-        badge: '/static/favicon.ico',
+        icon: '/static/favicon.png',
+        badge: '/static/favicon.png',
         tag: notifTag,
         renotify: true,
         requireInteraction: true, // Keep notification pinned on Windows until user clicks or dismisses
         silent: false
-      });
+      };
 
+      // 1. Try Service Worker registration (native Windows Action Center toast over all windows)
+      if (swRegistration && 'showNotification' in swRegistration) {
+        await swRegistration.showNotification(alertSummary, notifOptions);
+        return;
+      }
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg && 'showNotification' in reg) {
+          await reg.showNotification(alertSummary, notifOptions);
+          return;
+        }
+      }
+
+      // 2. Direct Window Notification fallback
+      const notif = new Notification(alertSummary, notifOptions);
       notif.onclick = () => {
         try {
           window.focus();
@@ -708,16 +730,16 @@ window.StockPulse = (function () {
 
     if (perm === 'granted') {
       btn.classList.add('granted');
-      btn.innerHTML = '<i class="fa-solid fa-bell"></i> <span>Alerts: ON</span>';
-      btn.title = 'Desktop alerts active in other windows! Click to test alert.';
+      btn.innerHTML = '<i class="fa-solid fa-bell" style="color: #10b981;"></i> <span>Multi-Window Alerts: ON</span>';
+      btn.title = 'Desktop alerts active in other windows! Click to test 3s multi-window countdown.';
     } else if (perm === 'denied') {
       btn.classList.add('denied');
-      btn.innerHTML = '<i class="fa-solid fa-bell-slash"></i> <span>Alerts: Blocked</span>';
-      btn.title = 'Desktop alerts blocked in browser. Click for fix instructions.';
+      btn.innerHTML = '<i class="fa-solid fa-bell-slash" style="color: #ef4444;"></i> <span>Alerts: Blocked</span>';
+      btn.title = 'Desktop alerts blocked in browser. Click for instructions to unblock.';
     } else {
       btn.classList.add('default');
-      btn.innerHTML = '<i class="fa-solid fa-bell"></i> <span>Alerts</span>';
-      btn.title = 'Click to enable desktop alerts across other windows & apps';
+      btn.innerHTML = '<i class="fa-solid fa-bell" style="color: #f59e0b;"></i> <span style="font-weight: 700;">Enable Multi-Window Alerts</span>';
+      btn.title = 'Click to enable instant notifications on top of your other desktop windows';
     }
   }
 
@@ -1523,10 +1545,40 @@ window.StockPulse = (function () {
       btn.addEventListener('click', toggleVoiceEnabled);
     });
     setInterval(updateSystemStatus, 5000);
-    // Dedicated fast notification poller (every 1.2 seconds, independent of stock quote fetching)
+    // Dedicated fast notification poller backed by Web Worker
+    // (immune to browser background tab throttling when working in another window)
     checkRealtimeNotifications();
-    setInterval(checkRealtimeNotifications, 1200);
+    startBackgroundPoller();
   });
+
+  // Web Worker timer to evade browser background-tab timer throttling when in different windows
+  let bgPollWorker = null;
+  function startBackgroundPoller() {
+    try {
+      if (typeof Worker !== 'undefined') {
+        const workerBlob = new Blob([
+          `let timer = null;
+           self.onmessage = function(e) {
+             if (e.data === 'start') {
+               if (timer) clearInterval(timer);
+               timer = setInterval(() => { self.postMessage('tick'); }, 1200);
+             } else if (e.data === 'stop') {
+               if (timer) clearInterval(timer);
+             }
+           };`
+        ], { type: 'application/javascript' });
+        bgPollWorker = new Worker(URL.createObjectURL(workerBlob));
+        bgPollWorker.onmessage = () => {
+          checkRealtimeNotifications();
+        };
+        bgPollWorker.postMessage('start');
+        return;
+      }
+    } catch (e) {
+      console.warn('[StockPulse] Web Worker timer fallback note:', e);
+    }
+    setInterval(checkRealtimeNotifications, 1200);
+  }
 
   return {
     getSelectedStock,
@@ -1548,6 +1600,7 @@ window.StockPulse = (function () {
     testNotificationSound,
     flashTabTitle,
     clearTabTitleFlash,
+    updateDesktopAlertButtonUI,
     isSoundEnabled,
     setSoundEnabled,
     getChartMode,

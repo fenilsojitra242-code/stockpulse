@@ -217,6 +217,15 @@
 
   async function testSystemNotification() {
     try {
+      if ('Notification' in window && Notification.permission === 'default') {
+        try {
+          await Notification.requestPermission();
+          if (window.StockPulse && StockPulse.updateDesktopAlertButtonUI) {
+            StockPulse.updateDesktopAlertButtonUI();
+          }
+        } catch (e) {}
+      }
+
       if (el.btnTestSystem) {
         el.btnTestSystem.disabled = true;
         el.btnTestSystem.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Dispatching...';

@@ -94,6 +94,18 @@ os.makedirs("frontend", exist_ok=True)
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
 
 
+@app.get("/sw.js")
+def serve_service_worker():
+    """Serve the root-scoped service worker for desktop notifications."""
+    return FileResponse(os.path.join("frontend", "sw.js"), media_type="application/javascript")
+
+
+@app.get("/favicon.ico")
+def serve_favicon():
+    """Serve the application favicon."""
+    return FileResponse(os.path.join("frontend", "favicon.ico"), media_type="image/x-icon")
+
+
 @app.get("/")
 def serve_dashboard():
     """Serve the main StockPulse web dashboard (Live Market & Charts)."""
