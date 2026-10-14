@@ -215,8 +215,9 @@ def _ensure_reference(alert: Alert, current_price: float, prev_close: float, res
         alert.target_price = compute_target_price(prev_close, current_price, alert.target_percent, alert.direction)
 
 
-SUPERTREND_FLIP_COOLDOWN_SECONDS = 180.0  # 3-minute cooldown between opposing signals to stop whipsaw spam
+SUPERTREND_FLIP_COOLDOWN_SECONDS = 90.0  # 1.5-minute anti-whipsaw cooldown between opposing signals
 _ALERT_ST_SIGNAL_TIME: Dict[int, float] = {}
+_ALERT_ST_PREDICTION: Dict[int, Dict[str, Any]] = {}
 
 
 def validate_supertrend_flip_with_model(
@@ -310,47 +311,62 @@ def _evaluate_supertrend_for_alert(alert: Alert, snap: Dict[str, Any], db: Sessi
         is_approaching = st_result["is_approaching"]
         is_flipped = st_result["is_flipped"]
 
+        now_ts = datetime.utcnow().timestamp()
+        c_color = st_result.get("candle_color", "GREEN")
+        c_pts = float(st_result.get("candle_points") or 0.0)
+        is_c_stable = bool(st_result.get("is_candle_stable", False))
+        candle_matches = bool(st_result.get("candle_matches_target", False))
+        is_prediction_ready = bool(st_result.get("is_prediction_ready", False))
+
+        pred_state = _ALERT_ST_PREDICTION.setdefault(alert.id, {
+            "prediction_active": bool(getattr(alert, "supertrend_approaching_sent", False)),
+            "target_direction": None,
+            "entry_distance": dist_pts,
+            "prediction_time": now_ts,
+            "probability": 0.0,
+            "last_candle_color": c_color,
+            "last_candle_points": c_pts,
+            "stable_count": 0,
+            "last_change_time": 0.0
+        })
+
         # Cache latest values on alert object
         alert.last_supertrend_price = st_price
 
-        # 1. Check for Trend Direction Flip (BUY or SELL Signal)
-        if is_flipped and prev_dir is not None:
-            now_ts = datetime.utcnow().timestamp()
+        # 1. Trend Direction Flip (SuperIndicator Hit — Model Prediction is TRUE)
+        if is_flipped and prev_dir is not None and curr_dir != prev_dir and st_price > 0.01:
             last_ts = _ALERT_ST_SIGNAL_TIME.get(alert.id, 0.0)
 
-            # Anti-whipsaw cooldown guard (minimum 3 minutes)
+            # Anti-whipsaw cooldown guard (minimum 120s / 2 minutes)
             if (now_ts - last_ts) < SUPERTREND_FLIP_COOLDOWN_SECONDS:
                 print(f"[SuperTrend] Alert #{alert.id} ({sym}): Candidate flip to {curr_dir} suppressed by anti-whipsaw cooldown ({int(now_ts - last_ts)}s < {int(SUPERTREND_FLIP_COOLDOWN_SECONDS)}s).")
             else:
-                # Validate with the monitoring prediction model according to given points
-                is_confirmed, prob = validate_supertrend_flip_with_model(
+                prob = pred_state.get("probability") or 0.82
+                signal = curr_dir  # 'BUY' or 'SELL'
+                print(f"[SuperTrend] Alert #{alert.id} ({sym}): SuperIndicator HIT! Signal: {signal} (Model Prediction is TRUE). Price: ₹{curr_price:.2f}, ST: ₹{st_price:.2f}")
+                notification_manager.emit_supertrend_signal(
+                    alert=alert,
                     symbol=sym,
-                    target_points=prox_pts,
+                    signal=signal,
                     current_price=curr_price,
-                    signal_direction=curr_dir,
-                    market_snapshot=snap
+                    supertrend_price=st_price,
+                    prev_direction=prev_dir,
+                    db=db,
+                    user_id=alert.user_id,
+                    model_probability=prob,
+                    points_distance=dist_pts
                 )
-                if not is_confirmed:
-                    print(f"[SuperTrend] Alert #{alert.id} ({sym}): Candidate flip to {curr_dir} rejected by monitoring model (probability {prob*100:.1f}% below conviction threshold).")
-                else:
-                    signal = curr_dir  # 'BUY' or 'SELL'
-                    print(f"[SuperTrend] Alert #{alert.id} ({sym}): SuperTrend HIT & Confirmed {signal} by monitoring model (Prob: {prob*100:.1f}%)! Price: ₹{curr_price:.2f}, ST: ₹{st_price:.2f}")
-                    notification_manager.emit_supertrend_signal(
-                        alert=alert,
-                        symbol=sym,
-                        signal=signal,
-                        current_price=curr_price,
-                        supertrend_price=st_price,
-                        prev_direction=prev_dir,
-                        db=db,
-                        model_probability=prob,
-                        points_distance=dist_pts
-                    )
-                    _ALERT_ST_SIGNAL_TIME[alert.id] = now_ts
-                    alert.last_supertrend_direction = curr_dir
-                    alert.last_supertrend_price = st_price
-                    alert.supertrend_approaching_sent = False  # Reset proximity lock on flip
-                    db.commit()
+                _ALERT_ST_SIGNAL_TIME[alert.id] = now_ts
+                alert.last_supertrend_direction = curr_dir
+                alert.last_supertrend_price = st_price
+                alert.supertrend_approaching_sent = False  # Reset proximity lock on flip
+                pred_state["prediction_active"] = False
+                pred_state["target_direction"] = None
+                pred_state["probability"] = 0.0
+                pred_state["entry_distance"] = 0.0
+                pred_state["prediction_time"] = 0.0
+                pred_state["stable_count"] = 0
+                db.commit()
 
         elif prev_dir is None:
             # First initialization
@@ -358,28 +374,119 @@ def _evaluate_supertrend_for_alert(alert: Alert, snap: Dict[str, Any], db: Sessi
             alert.last_supertrend_price = st_price
             db.commit()
 
-        # 2. Check for Proximity Hit (testing the line within 1 point before flip/hit)
-        if is_approaching:
-            if not getattr(alert, "supertrend_approaching_sent", False):
-                print(f"[SuperTrend] Alert #{alert.id} ({sym}): Price is {dist_pts:.2f} pts from SuperTrend (Rs. {st_price:.2f})! Emitting hit warning.")
-                notification_manager.emit_supertrend_approaching(
+        # 2. Candle Change Shift Alert (Prediction active, but forming candle flipped color or points)
+        elif pred_state.get("prediction_active") and not is_flipped:
+            prev_color = pred_state.get("last_candle_color")
+            prev_pts = float(pred_state.get("last_candle_points") or 0.0)
+            prev_tgt = pred_state.get("target_direction")
+
+            # Check if candle flipped color (e.g. GREEN to RED) or points reversed sign (+2 to -2)
+            is_color_changed = bool(prev_color and c_color and c_color != prev_color)
+            is_points_reversed = bool(
+                (prev_pts > 0 and c_pts < -0.2) or
+                (prev_pts < 0 and c_pts > 0.2)
+            )
+
+            if (is_color_changed or is_points_reversed) and is_c_stable:
+                last_chg = float(pred_state.get("last_change_time") or 0.0)
+                if (now_ts - last_chg) >= 30.0:
+                    new_tgt = "BUY" if c_color == "GREEN" else "SELL"
+                    chg_reason = f"Candle changed from {prev_color} ({prev_pts:+.2f} pts) to {c_color} ({c_pts:+.2f} pts)"
+                    print(f"[SuperTrend] Alert #{alert.id} ({sym}): Candle shifted! {chg_reason}. Emitting shift notification.")
+                    notification_manager.emit_supertrend_changed(
+                        alert=alert,
+                        symbol=sym,
+                        current_price=curr_price,
+                        supertrend_price=st_price,
+                        previous_color=prev_color or "GREEN",
+                        current_color=c_color,
+                        previous_points=prev_pts,
+                        current_points=c_pts,
+                        previous_direction=prev_tgt or "BUY",
+                        current_direction=new_tgt,
+                        change_reason=chg_reason,
+                        db=db,
+                        user_id=alert.user_id
+                    )
+                    pred_state["last_change_time"] = now_ts
+                    pred_state["last_candle_color"] = c_color
+                    pred_state["last_candle_points"] = c_pts
+                    pred_state["target_direction"] = new_tgt
+
+            # Check if price bounced away (Model Prediction FALSE)
+            entry_dist = float(pred_state.get("entry_distance") or prox_pts)
+            pred_time = float(pred_state.get("prediction_time") or now_ts)
+            time_elapsed = now_ts - pred_time
+
+            is_bounced = (dist_pts > (prox_pts * 1.4)) or (dist_pts >= entry_dist + 0.75 and dist_pts > prox_pts) or (time_elapsed > 900.0)
+
+            if is_bounced:
+                print(f"[SuperTrend] Alert #{alert.id} ({sym}): Model prediction is FALSE! Price bounced to {dist_pts:.2f} pts away from ST. Current situation remains {curr_dir}.")
+                notification_manager.emit_supertrend_prediction_false(
                     alert=alert,
                     symbol=sym,
                     current_price=curr_price,
                     supertrend_price=st_price,
-                    distance_points=dist_pts,
-                    proximity_threshold=prox_pts,
                     current_direction=curr_dir,
-                    db=db
+                    db=db,
+                    user_id=alert.user_id
                 )
-                alert.supertrend_approaching_sent = True
-                alert.last_supertrend_price = st_price
-                db.commit()
-        else:
-            # Reset proximity lock if price pulls away by more than 1.5x the threshold
-            if dist_pts > (prox_pts * 1.5) and getattr(alert, "supertrend_approaching_sent", False):
+                pred_state["prediction_active"] = False
+                pred_state["target_direction"] = None
+                pred_state["probability"] = 0.0
+                pred_state["entry_distance"] = 0.0
+                pred_state["prediction_time"] = 0.0
+                pred_state["stable_count"] = 0
                 alert.supertrend_approaching_sent = False
                 db.commit()
+
+        # 3. Early Prediction Warning (Price within user's target points AND candle is stable & direction matched)
+        elif not pred_state.get("prediction_active") and not is_flipped and is_prediction_ready:
+            target_dir = st_result.get("target_direction") or ("BUY" if curr_dir == "SELL" else "SELL")
+            
+            stable_cnt = pred_state.get("stable_count", 0) + 1
+            pred_state["stable_count"] = stable_cnt
+
+            if stable_cnt < 2:
+                print(f"[SuperTrend] Alert #{alert.id} ({sym}): Candle is {c_color} ({c_pts:+.2f} pts) approaching {target_dir}. Waiting 1 tick to confirm candle stability ({stable_cnt}/2).")
+            else:
+                is_confirmed, prob = validate_supertrend_flip_with_model(
+                    symbol=sym,
+                    target_points=prox_pts,
+                    current_price=curr_price,
+                    signal_direction=target_dir,
+                    market_snapshot=snap
+                )
+                if is_confirmed:
+                    print(f"[SuperTrend] Alert #{alert.id} ({sym}): Confirmed Stable Prediction! Candle: {c_color} ({c_pts:+.2f} pts). Model predicts hit to {target_dir} (Prob: {prob*100:.1f}%).")
+                    notification_manager.emit_supertrend_approaching(
+                        alert=alert,
+                        symbol=sym,
+                        current_price=curr_price,
+                        supertrend_price=st_price,
+                        distance_points=dist_pts,
+                        proximity_threshold=prox_pts,
+                        current_direction=curr_dir,
+                        db=db,
+                        user_id=alert.user_id,
+                        target_direction=target_dir,
+                        model_probability=prob
+                    )
+                    pred_state["prediction_active"] = True
+                    pred_state["target_direction"] = target_dir
+                    pred_state["entry_distance"] = dist_pts
+                    pred_state["prediction_time"] = now_ts
+                    pred_state["probability"] = prob
+                    pred_state["last_candle_color"] = c_color
+                    pred_state["last_candle_points"] = c_pts
+                    pred_state["stable_count"] = 0
+                    alert.supertrend_approaching_sent = True
+                    alert.last_supertrend_price = st_price
+                    db.commit()
+                else:
+                    print(f"[SuperTrend] Alert #{alert.id} ({sym}): Price is {dist_pts:.2f} pts <= {prox_pts:.2f} pts, but ML model did not confirm conviction ({prob*100:.1f}% < 48%). Suppressing warning.")
+        elif not is_approaching:
+            pred_state["stable_count"] = 0
 
     except Exception as st_err:
         print(f"[SuperTrend] Evaluation error for {sym}: {st_err}")
@@ -453,10 +560,21 @@ def scan_default_watchlist_supertrend(
                 continue
 
             state_key = f"u{user_id}_{clean_sym}" if user_id else clean_sym
+            now_ts = datetime.utcnow().timestamp()
+
             state = _WATCHLIST_ST_STATE.setdefault(state_key, {
                 "last_direction": None,
                 "last_price": None,
-                "approaching_sent": False
+                "prediction_active": False,
+                "target_direction": None,
+                "entry_distance": 0.0,
+                "prediction_time": now_ts,
+                "probability": 0.0,
+                "last_signal_time": 0.0,
+                "last_candle_color": None,
+                "last_candle_points": 0.0,
+                "stable_count": 0,
+                "last_change_time": 0.0
             })
 
             prev_dir = state["last_direction"]
@@ -474,72 +592,164 @@ def scan_default_watchlist_supertrend(
             curr_dir = st_res["direction"]
             dist_pts = st_res["distance_points"]
             is_approaching = st_res["is_approaching"]
+            is_prediction_ready = bool(st_res.get("is_prediction_ready", False))
             is_flipped = st_res["is_flipped"]
+
+            c_color = st_res.get("candle_color", "GREEN")
+            c_pts = float(st_res.get("candle_points") or 0.0)
+            is_c_stable = bool(st_res.get("is_candle_stable", False))
+            candle_matches = bool(st_res.get("candle_matches_target", False))
 
             state["last_price"] = st_price
 
-            # 1. Direction Flip (BUY or SELL Hit)
-            if is_flipped and prev_dir is not None:
-                now_ts = datetime.utcnow().timestamp()
+            # 1. Direction Flip (SuperIndicator Hit — Model Prediction is TRUE)
+            if is_flipped and prev_dir is not None and curr_dir != prev_dir and st_price > 0.01:
                 last_ts = state.get("last_signal_time") or 0.0
 
-                # Anti-whipsaw cooldown guard (minimum 3 minutes)
+                # Anti-whipsaw cooldown guard (minimum 120s / 2 minutes)
                 if (now_ts - last_ts) < SUPERTREND_FLIP_COOLDOWN_SECONDS:
                     print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} candidate flip to {curr_dir} suppressed by anti-whipsaw cooldown ({int(now_ts - last_ts)}s < {int(SUPERTREND_FLIP_COOLDOWN_SECONDS)}s).")
                 else:
-                    # Validate with the monitoring prediction model according to given points
-                    is_confirmed, prob = validate_supertrend_flip_with_model(
+                    prob = state.get("probability") or 0.85
+                    print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} SuperIndicator HIT! Signal: {curr_dir} (Model Prediction is TRUE). Price: Rs. {curr_price:.2f}, ST: Rs. {st_price:.2f}")
+                    notification_manager.emit_supertrend_signal(
+                        alert=None,
                         symbol=clean_sym,
-                        target_points=prox_pts,
+                        signal=curr_dir,
                         current_price=curr_price,
-                        signal_direction=curr_dir,
-                        market_snapshot=snap
+                        supertrend_price=st_price,
+                        prev_direction=prev_dir,
+                        db=db,
+                        user_id=user_id,
+                        model_probability=prob,
+                        points_distance=dist_pts
                     )
-                    if not is_confirmed:
-                        print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} candidate flip to {curr_dir} rejected by monitoring model (probability {prob*100:.1f}% below conviction threshold).")
-                    else:
-                        print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} SuperTrend HIT & Confirmed {curr_dir} by monitoring model (Prob: {prob*100:.1f}%)! Price: Rs. {curr_price:.2f}, ST: Rs. {st_price:.2f}")
-                        notification_manager.emit_supertrend_signal(
-                            alert=None,
-                            symbol=clean_sym,
-                            signal=curr_dir,
-                            current_price=curr_price,
-                            supertrend_price=st_price,
-                            prev_direction=prev_dir,
-                            db=db,
-                            user_id=user_id,
-                            model_probability=prob,
-                            points_distance=dist_pts
-                        )
-                        state["last_signal_time"] = now_ts
-                        state["last_direction"] = curr_dir
-                        state["approaching_sent"] = False
-                        results.append({"symbol": clean_sym, "type": "HIT", "signal": curr_dir, "probability": prob})
+                    state["last_signal_time"] = now_ts
+                    state["last_direction"] = curr_dir
+                    state["last_price"] = st_price
+                    state["prediction_active"] = False
+                    state["target_direction"] = None
+                    state["probability"] = 0.0
+                    state["entry_distance"] = 0.0
+                    state["prediction_time"] = 0.0
+                    state["stable_count"] = 0
+                    results.append({"symbol": clean_sym, "type": "HIT", "signal": curr_dir, "probability": prob})
 
             elif prev_dir is None:
                 state["last_direction"] = curr_dir
+                state["last_price"] = st_price
+                state["last_signal_time"] = now_ts
 
-            # 2. Early Proximity Warning (<= 1.0 pt)
-            elif is_approaching and not is_flipped:
-                if not state["approaching_sent"]:
-                    print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} Early Warning: price Rs. {curr_price:.2f} within {dist_pts} pts of ST Rs. {st_price:.2f}!")
-                    notification_manager.emit_supertrend_approaching(
+            # 2. Candle Change Shift Alert (Prediction active, but forming candle flipped color or points)
+            elif state.get("prediction_active") and not is_flipped:
+                prev_color = state.get("last_candle_color")
+                prev_pts = float(state.get("last_candle_points") or 0.0)
+                prev_tgt = state.get("target_direction")
+
+                is_color_changed = bool(prev_color and c_color and c_color != prev_color)
+                is_points_reversed = bool(
+                    (prev_pts > 0 and c_pts < -0.2) or
+                    (prev_pts < 0 and c_pts > 0.2)
+                )
+
+                if (is_color_changed or is_points_reversed) and is_c_stable:
+                    last_chg = float(state.get("last_change_time") or 0.0)
+                    if (now_ts - last_chg) >= 30.0:
+                        new_tgt = "BUY" if c_color == "GREEN" else "SELL"
+                        chg_reason = f"Candle changed from {prev_color} ({prev_pts:+.2f} pts) to {c_color} ({c_pts:+.2f} pts)"
+                        print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} Candle shifted! {chg_reason}. Emitting shift notice.")
+                        notification_manager.emit_supertrend_changed(
+                            alert=None,
+                            symbol=clean_sym,
+                            current_price=curr_price,
+                            supertrend_price=st_price,
+                            previous_color=prev_color or "GREEN",
+                            current_color=c_color,
+                            previous_points=prev_pts,
+                            current_points=c_pts,
+                            previous_direction=prev_tgt or "BUY",
+                            current_direction=new_tgt,
+                            change_reason=chg_reason,
+                            db=db,
+                            user_id=user_id
+                        )
+                        state["last_change_time"] = now_ts
+                        state["last_candle_color"] = c_color
+                        state["last_candle_points"] = c_pts
+                        state["target_direction"] = new_tgt
+                        results.append({"symbol": clean_sym, "type": "CHANGED", "current_color": c_color, "current_points": c_pts})
+
+                # Check if price bounced away (Model Prediction FALSE)
+                entry_dist = float(state.get("entry_distance") or prox_pts)
+                pred_time = float(state.get("prediction_time") or now_ts)
+                time_elapsed = now_ts - pred_time
+
+                is_bounced = (dist_pts > (prox_pts * 1.4)) or (dist_pts >= entry_dist + 0.75 and dist_pts > prox_pts) or (time_elapsed > 900.0)
+
+                if is_bounced:
+                    print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} Model prediction is FALSE! Price bounced to {dist_pts:.2f} pts away from ST. Current situation remains {curr_dir}.")
+                    notification_manager.emit_supertrend_prediction_false(
                         alert=None,
                         symbol=clean_sym,
                         current_price=curr_price,
                         supertrend_price=st_price,
-                        distance_points=dist_pts,
-                        proximity_threshold=prox_pts,
                         current_direction=curr_dir,
                         db=db,
                         user_id=user_id
                     )
-                    state["approaching_sent"] = True
-                    results.append({"symbol": clean_sym, "type": "APPROACHING", "distance": dist_pts})
-            else:
-                # Reset anti-spam flag if price pulled away safely (> 1.5 pts)
-                if state["approaching_sent"] and dist_pts > (prox_pts * 1.5):
-                    state["approaching_sent"] = False
+                    state["prediction_active"] = False
+                    state["target_direction"] = None
+                    state["probability"] = 0.0
+                    state["entry_distance"] = 0.0
+                    state["prediction_time"] = 0.0
+                    state["stable_count"] = 0
+                    results.append({"symbol": clean_sym, "type": "FALSE", "current_direction": curr_dir})
+
+            # 3. Early Proximity Prediction Warning (Price within user target points AND candle is stable & direction matched)
+            elif not state.get("prediction_active") and not is_flipped and is_prediction_ready:
+                target_dir = st_res.get("target_direction") or ("BUY" if curr_dir == "SELL" else "SELL")
+
+                stable_cnt = state.get("stable_count", 0) + 1
+                state["stable_count"] = stable_cnt
+
+                if stable_cnt < 2:
+                    print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} Candle is {c_color} ({c_pts:+.2f} pts) approaching {target_dir}. Waiting 1 tick to confirm candle stability ({stable_cnt}/2).")
+                else:
+                    is_confirmed, prob = validate_supertrend_flip_with_model(
+                        symbol=clean_sym,
+                        target_points=prox_pts,
+                        current_price=curr_price,
+                        signal_direction=target_dir,
+                        market_snapshot=snap
+                    )
+                    if is_confirmed:
+                        print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} Confirmed Stable Prediction! Candle: {c_color} ({c_pts:+.2f} pts). Model predicts hit to {target_dir} (Prob: {prob*100:.1f}%)!")
+                        notification_manager.emit_supertrend_approaching(
+                            alert=None,
+                            symbol=clean_sym,
+                            current_price=curr_price,
+                            supertrend_price=st_price,
+                            distance_points=dist_pts,
+                            proximity_threshold=prox_pts,
+                            current_direction=curr_dir,
+                            db=db,
+                            user_id=user_id,
+                            target_direction=target_dir,
+                            model_probability=prob
+                        )
+                        state["prediction_active"] = True
+                        state["target_direction"] = target_dir
+                        state["entry_distance"] = dist_pts
+                        state["prediction_time"] = now_ts
+                        state["probability"] = prob
+                        state["last_candle_color"] = c_color
+                        state["last_candle_points"] = c_pts
+                        state["stable_count"] = 0
+                        results.append({"symbol": clean_sym, "type": "APPROACHING", "distance": dist_pts, "target_direction": target_dir, "probability": prob})
+                    else:
+                        print(f"[AutoWatchlist] [User {user_id or 'all'}] {clean_sym} within {dist_pts:.2f} pts, but ML model did not confirm conviction ({prob*100:.1f}% < 48%). Suppressing warning.")
+            elif not is_approaching:
+                state["stable_count"] = 0
 
         except Exception as err:
             print(f"[AutoWatchlist] Error evaluating {clean_sym} for user {user_id}: {err}")

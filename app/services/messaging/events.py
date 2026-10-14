@@ -17,6 +17,8 @@ class NotificationEventType(str, Enum):
     SUPERTREND_APPROACHING = "SUPERTREND_APPROACHING"
     SUPERTREND_BUY = "SUPERTREND_BUY"
     SUPERTREND_SELL = "SUPERTREND_SELL"
+    SUPERTREND_FALSE = "SUPERTREND_FALSE"
+    SUPERTREND_CHANGED = "SUPERTREND_CHANGED"
     SYSTEM_NOTIFICATION = "SYSTEM_NOTIFICATION"
     SYSTEM_STATUS = "SYSTEM_STATUS"
 
@@ -43,6 +45,8 @@ EVENT_PRIORITY_MAP: Dict[NotificationEventType, NotificationPriority] = {
     NotificationEventType.SUPERTREND_APPROACHING: NotificationPriority.WARNING,
     NotificationEventType.SUPERTREND_BUY: NotificationPriority.IMPORTANT,
     NotificationEventType.SUPERTREND_SELL: NotificationPriority.IMPORTANT,
+    NotificationEventType.SUPERTREND_FALSE: NotificationPriority.WARNING,
+    NotificationEventType.SUPERTREND_CHANGED: NotificationPriority.IMPORTANT,
     NotificationEventType.SYSTEM_NOTIFICATION: NotificationPriority.INFO,
     NotificationEventType.SYSTEM_STATUS: NotificationPriority.INFO,
 }

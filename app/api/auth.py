@@ -19,7 +19,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "stockpulse-jwt-super-secret-key-2025")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_DAYS = 30
+ACCESS_TOKEN_EXPIRE_DAYS = 365
 
 security = HTTPBearer(auto_error=False)
 
@@ -402,7 +402,7 @@ def verify_registration_otp(req: VerifyOTPRegisterRequest, response: Response, d
     response.set_cookie(
         key="stockpulse_jwt_token",
         value=token,
-        max_age=30 * 86400,
+        max_age=365 * 86400,
         path="/",
         samesite="lax",
         httponly=False
@@ -547,7 +547,7 @@ def reset_password(req: ResetPasswordRequest, response: Response, db: Session = 
     response.set_cookie(
         key="stockpulse_jwt_token",
         value=token,
-        max_age=30 * 86400,
+        max_age=365 * 86400,
         path="/",
         samesite="lax",
         httponly=False
@@ -572,13 +572,14 @@ def reset_password(req: ResetPasswordRequest, response: Response, db: Session = 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register_user(req: RegisterRequest, response: Response, db: Session = Depends(get_db)):
     """
-    Registers a brand new user account with hashed password and generates a JWT session.
+    Registers a brand new user account with hashed password and generates a long-lived JWT session.
     """
     clean_email = req.email.strip().lower()
     clean_name = req.name.strip()
     
     is_valid, error_msg = validate_email_authenticity(clean_email)
-    if not is_valid:
+    # Block explicitly invalid format, dummy prefixes or known disposable domains
+    if not is_valid and any(k in (error_msg or "") for k in ["format", "disposable", "Dummy", "not permitted"]):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=error_msg or "Invalid email address."
@@ -589,12 +590,12 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
     if existing_by_email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An account with this email already exists. Please sign in."
+            detail="An account with this email already exists. Please sign in with your email and password."
         )
 
     # Process username
     if req.username and req.username.strip():
-        clean_username = req.username.strip().lower()
+        clean_username = req.username.strip().lower().replace(" ", "_")
         existing_by_user = db.query(User).filter(func.lower(User.username) == clean_username).first()
         if existing_by_user:
             raise HTTPException(
@@ -602,8 +603,9 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
                 detail="This username is already taken. Please choose a different username."
             )
     else:
-        # Generate default username from email prefix
-        base_user = clean_email.split("@")[0].lower()
+        # Generate default username from name or email prefix
+        base_user = clean_name.lower().replace(" ", "_") if clean_name else clean_email.split("@")[0].lower()
+        base_user = re.sub(r'[^a-z0-9_]', '', base_user) or "user"
         candidate = base_user
         idx = 1
         while db.query(User).filter(func.lower(User.username) == candidate).first():
@@ -618,6 +620,7 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
         username=clean_username,
         email=clean_email,
         password_hash=hashed_pw,
+        is_verified=True,
         created_at=datetime.utcnow()
     )
     db.add(new_user)
@@ -634,7 +637,7 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
     response.set_cookie(
         key="stockpulse_jwt_token",
         value=token,
-        max_age=30 * 86400,
+        max_age=365 * 86400,
         path="/",
         samesite="lax",
         httponly=False
@@ -642,7 +645,7 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
 
     return {
         "status": "SUCCESS",
-        "message": f"Account created successfully for {new_user.name}!",
+        "message": f"Account created successfully for {new_user.name}! Data stored permanently.",
         "access_token": token,
         "token_type": "bearer",
         "user": {
@@ -660,42 +663,63 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
 def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
     """
     Signs in an existing user using either their email, username, or full name and password.
+    Accurately matches the correct account and resolves duplicates.
     """
-    ident = req.identifier.strip().lower()
-    ident_compact = ident.replace(" ", "")
+    ident = req.identifier.strip()
+    ident_lower = ident.lower()
+    ident_compact = ident_lower.replace(" ", "")
 
-    # 1. Exact Email or Username match
-    matching_users = db.query(User).filter(
-        or_(
-            func.lower(User.email) == ident,
-            func.lower(User.username) == ident
-        )
-    ).all()
+    candidates = []
 
-    # 2. Email prefix match (e.g. user entered "fenilsojitra242" instead of "fenilsojitra242@gmail.com")
-    if not matching_users and "@" not in ident:
-        matching_users = db.query(User).filter(func.lower(User.email).like(f"{ident}@%")).all()
+    # Case A: Identifier contains '@' -> Exact Email lookup
+    if "@" in ident_lower:
+        candidates = db.query(User).filter(func.lower(User.email) == ident_lower).all()
+        if not candidates:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"No account found with email '{ident}'. Please check your spelling or create an account."
+            )
+    else:
+        # Case B: Identifier does not contain '@' -> Username, Email Prefix, or Full Name lookup
+        candidate_dict = {}
 
-    # 3. Full Name match (e.g. "Fenil Sojitra" or "FenilSojitra")
-    if not matching_users:
-        matching_users = db.query(User).filter(
+        # 1. Exact Username match
+        for u in db.query(User).filter(func.lower(User.username) == ident_lower).all():
+            candidate_dict[u.id] = u
+
+        # 2. Exact Email prefix match (e.g. user entered "fenilsojitra242" for "fenilsojitra242@gmail.com")
+        for u in db.query(User).filter(func.lower(User.email).like(f"{ident_lower}@%")).all():
+            if u.id not in candidate_dict:
+                candidate_dict[u.id] = u
+
+        # 3. Exact Full Name match (case-insensitive or compact without spaces)
+        for u in db.query(User).filter(
             or_(
-                func.lower(User.name) == ident,
+                func.lower(User.name) == ident_lower,
                 func.replace(func.lower(User.name), " ", "") == ident_compact
             )
-        ).order_by(User.id.desc()).all()
+        ).order_by(User.id.desc()).all():
+            if u.id not in candidate_dict:
+                candidate_dict[u.id] = u
 
-    if not matching_users:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email/username or password."
-        )
+        # 4. Partial Name match (e.g. user entered first name "Fenil" for "Fenil Sojitra")
+        if len(ident_lower) >= 3:
+            for u in db.query(User).filter(func.lower(User.name).like(f"{ident_lower}%")).order_by(User.id.desc()).all():
+                if u.id not in candidate_dict:
+                    candidate_dict[u.id] = u
+
+        candidates = list(candidate_dict.values())
+        if not candidates:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"No account found matching '{ident}'. Please check your spelling or sign in with your email address."
+            )
 
     # Verify password with whitespace tolerance across matched candidates
     plain_pw = req.password
     authenticated_user = None
 
-    for candidate in matching_users:
+    for candidate in candidates:
         if not candidate.password_hash:
             continue
         pw_ok = verify_password(plain_pw, candidate.password_hash)
@@ -710,7 +734,7 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
     if not authenticated_user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email/username or password."
+            detail="Incorrect password. Please verify your password or use 'Forgot Password?'."
         )
 
     user = authenticated_user
@@ -725,7 +749,7 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
     response.set_cookie(
         key="stockpulse_jwt_token",
         value=token,
-        max_age=30 * 86400,
+        max_age=365 * 86400,
         path="/",
         samesite="lax",
         httponly=False

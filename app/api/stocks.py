@@ -302,11 +302,22 @@ def get_stock_supertrend(
         "price": curr_price,
         "supertrend_price": st_analysis.get("supertrend_price", curr_price),
         "direction": st_analysis.get("direction", "BUY"),
+        "previous_direction": st_analysis.get("previous_direction"),
+        "target_direction": st_analysis.get("target_direction"),
         "distance_points": st_analysis.get("distance_points", 0.0),
         "proximity_threshold": st_analysis.get("proximity_threshold", proximity),
         "is_approaching": st_analysis.get("is_approaching", False),
+        "is_prediction_ready": st_analysis.get("is_prediction_ready", False),
         "is_flipped": st_analysis.get("is_flipped", False),
         "flip_signal": st_analysis.get("flip_signal"),
+        "candle_open": st_analysis.get("candle_open"),
+        "candle_close": st_analysis.get("candle_close"),
+        "candle_points": st_analysis.get("candle_points"),
+        "candle_color": st_analysis.get("candle_color"),
+        "candle_body_size": st_analysis.get("candle_body_size"),
+        "is_candle_stable": st_analysis.get("is_candle_stable"),
+        "candle_matches_target": st_analysis.get("candle_matches_target"),
+        "candle_age_seconds": st_analysis.get("candle_age_seconds"),
         "series": st_analysis.get("series", [])
     }
 
@@ -344,7 +355,8 @@ def test_supertrend_notification(
             supertrend_price=st_price,
             prev_direction="SELL",
             db=db,
-            user_id=current_user.id
+            user_id=current_user.id,
+            model_probability=0.88
         )
     elif sig == "SELL":
         st_price = round(curr_price + 1.20, 2)
@@ -355,6 +367,35 @@ def test_supertrend_notification(
             current_price=curr_price,
             supertrend_price=st_price,
             prev_direction="BUY",
+            db=db,
+            user_id=current_user.id,
+            model_probability=0.84
+        )
+    elif sig == "FALSE":
+        st_price = round(curr_price + 1.80, 2)
+        res = notification_manager.emit_supertrend_prediction_false(
+            alert=alert,
+            symbol=clean_sym,
+            current_price=curr_price,
+            supertrend_price=st_price,
+            current_direction="SELL",
+            db=db,
+            user_id=current_user.id
+        )
+    elif sig == "CHANGED":
+        st_price = round(curr_price + 1.10, 2)
+        res = notification_manager.emit_supertrend_changed(
+            alert=alert,
+            symbol=clean_sym,
+            current_price=curr_price,
+            supertrend_price=st_price,
+            previous_color="GREEN",
+            current_color="RED",
+            previous_points=2.0,
+            current_points=-2.0,
+            previous_direction="BUY",
+            current_direction="SELL",
+            change_reason="Candle shifted from GREEN (+2.00 pts) to RED (-2.00 pts)",
             db=db,
             user_id=current_user.id
         )
@@ -369,7 +410,9 @@ def test_supertrend_notification(
             proximity_threshold=1.0,
             current_direction="SELL",
             db=db,
-            user_id=current_user.id
+            user_id=current_user.id,
+            target_direction="BUY",
+            model_probability=0.85
         )
 
     return {

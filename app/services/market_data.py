@@ -651,11 +651,22 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                 "price": round(curr_price, 2),
                 "supertrend_price": st_analysis.get("supertrend_price"),
                 "direction": st_analysis.get("direction"),
+                "previous_direction": st_analysis.get("previous_direction"),
+                "target_direction": st_analysis.get("target_direction"),
                 "distance_points": st_analysis.get("distance_points"),
                 "proximity_threshold": st_analysis.get("proximity_threshold"),
                 "is_approaching": st_analysis.get("is_approaching"),
+                "is_prediction_ready": st_analysis.get("is_prediction_ready"),
                 "is_flipped": st_analysis.get("is_flipped"),
                 "flip_signal": st_analysis.get("flip_signal"),
+                "candle_open": st_analysis.get("candle_open"),
+                "candle_close": st_analysis.get("candle_close"),
+                "candle_points": st_analysis.get("candle_points"),
+                "candle_color": st_analysis.get("candle_color"),
+                "candle_body_size": st_analysis.get("candle_body_size"),
+                "is_candle_stable": st_analysis.get("is_candle_stable"),
+                "candle_matches_target": st_analysis.get("candle_matches_target"),
+                "candle_age_seconds": st_analysis.get("candle_age_seconds"),
                 "series": st_analysis.get("series", [])
             }
         except Exception:

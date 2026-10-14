@@ -29,13 +29,30 @@ def compute_macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int 
 
 
 def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
-    """Calculate Average True Range (ATR)."""
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
+    """Calculate Average True Range (ATR) with strict OHLC data sanitization."""
+    # Ensure close has valid positive numbers
+    clean_close = pd.to_numeric(close, errors='coerce').replace(0.0, np.nan).ffill().bfill().fillna(100.0)
+    clean_high = pd.to_numeric(high, errors='coerce').replace(0.0, np.nan).fillna(clean_close)
+    clean_low = pd.to_numeric(low, errors='coerce').replace(0.0, np.nan).fillna(clean_close)
+
+    # Physical validity: low > 0, low <= close, high >= close, high >= low
+    clean_low = np.maximum(0.01, np.minimum(clean_low, clean_close))
+    clean_high = np.maximum(clean_high, clean_close)
+    clean_low = np.minimum(clean_low, clean_high)
+
+    tr1 = (clean_high - clean_low).abs()
+    tr2 = (clean_high - clean_close.shift(1)).abs()
+    tr3 = (clean_low - clean_close.shift(1)).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    # Sanity guard: A single 1-minute candle TR should never exceed 4% of stock price
+    max_reasonable_tr = (clean_close * 0.04).clip(lower=0.50)
+    tr = tr.clip(lower=0.01, upper=max_reasonable_tr)
+
     atr = tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    return atr.fillna(tr.mean() if not tr.empty else 0.0)
+    atr = atr.fillna(tr.mean() if not tr.empty else 1.0)
+    atr = atr.clip(lower=0.01, upper=max_reasonable_tr)
+    return atr
 
 
 def compute_supertrend(
@@ -45,6 +62,7 @@ def compute_supertrend(
 ) -> pd.DataFrame:
     """
     Computes standard SuperTrend indicator with ATR volatility bands.
+    Guarantees strictly positive valid bands and reliable trend lines.
     Returns copy of df with:
       - 'supertrend': the active SuperTrend line price
       - 'supertrend_direction': 1 for BULLISH (BUY), -1 for BEARISH (SELL)
@@ -60,13 +78,13 @@ def compute_supertrend(
     if 'close' not in data.columns and 'price' in data.columns:
         data['close'] = data['price']
     if 'high' not in data.columns:
-        data['high'] = data.get('close', 0.0)
+        data['high'] = data.get('close', 100.0)
     if 'low' not in data.columns:
-        data['low'] = data.get('close', 0.0)
+        data['low'] = data.get('close', 100.0)
 
     n = len(data)
     if n < 2:
-        close_val = data['close'] if 'close' in data.columns else pd.Series([0.0] * n)
+        close_val = pd.to_numeric(data.get('close', 100.0), errors='coerce').fillna(100.0)
         data['supertrend'] = close_val
         data['supertrend_direction'] = 1
         data['supertrend_signal'] = None
@@ -74,14 +92,20 @@ def compute_supertrend(
         data['supertrend_lower'] = close_val
         return data
 
-    high = pd.to_numeric(data['high'], errors='coerce').fillna(data['close'])
-    low = pd.to_numeric(data['low'], errors='coerce').fillna(data['close'])
-    close = pd.to_numeric(data['close'], errors='coerce').fillna(0.0)
+    close = pd.to_numeric(data['close'], errors='coerce').replace(0.0, np.nan).ffill().bfill().fillna(100.0)
+    open_p = pd.to_numeric(data.get('open', close), errors='coerce').replace(0.0, np.nan).fillna(close)
+    high = pd.to_numeric(data['high'], errors='coerce').replace(0.0, np.nan).fillna(close)
+    low = pd.to_numeric(data['low'], errors='coerce').replace(0.0, np.nan).fillna(close)
+
+    # Physical validity constraints: low must be > 0 and low <= min(open, close)
+    low = np.maximum(0.01, np.minimum(low, np.minimum(open_p, close)))
+    high = np.maximum(high, np.maximum(open_p, close))
+    low = np.minimum(low, high)
 
     atr = compute_atr(high, low, close, period=period)
     hl2 = (high + low) / 2.0
     basic_upper = hl2 + (float(multiplier) * atr)
-    basic_lower = hl2 - (float(multiplier) * atr)
+    basic_lower = np.maximum(0.01, hl2 - (float(multiplier) * atr))
 
     final_upper = [0.0] * n
     final_lower = [0.0] * n
@@ -89,29 +113,33 @@ def compute_supertrend(
     supertrend = [0.0] * n
     signal = [None] * n
 
-    # Initialize first candle
-    final_upper[0] = float(basic_upper.iloc[0])
-    final_lower[0] = float(basic_lower.iloc[0])
+    # Initialize first candle with positive bounds
+    final_upper[0] = max(0.01, float(basic_upper.iloc[0]))
+    final_lower[0] = max(0.01, float(basic_lower.iloc[0]))
     trend[0] = 1 if float(close.iloc[0]) >= final_lower[0] else -1
     supertrend[0] = final_lower[0] if trend[0] == 1 else final_upper[0]
 
     for i in range(1, n):
-        b_up = float(basic_upper.iloc[i])
-        b_low = float(basic_lower.iloc[i])
+        b_up = max(0.01, float(basic_upper.iloc[i]))
+        b_low = max(0.01, float(basic_lower.iloc[i]))
         c_prev = float(close.iloc[i - 1])
         c_curr = float(close.iloc[i])
 
-        # Final Lower Band
+        # Final Lower Band (Support)
         if b_low > final_lower[i - 1] or c_prev < final_lower[i - 1]:
             final_lower[i] = b_low
         else:
             final_lower[i] = final_lower[i - 1]
 
-        # Final Upper Band
+        # Final Upper Band (Resistance)
         if b_up < final_upper[i - 1] or c_prev > final_upper[i - 1]:
             final_upper[i] = b_up
         else:
             final_upper[i] = final_upper[i - 1]
+
+        # Invariant: Support line must strictly remain positive and <= Upper Band
+        final_lower[i] = max(0.01, final_lower[i])
+        final_upper[i] = max(final_lower[i], final_upper[i])
 
         # Trend direction determination
         prev_trend = trend[i - 1]
@@ -147,15 +175,24 @@ def analyze_supertrend_hit(
     previous_direction: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Evaluates latest candles against SuperTrend levels for early proximity hit
-    and trend change (BUY/SELL flip).
+    Evaluates latest candles against SuperTrend levels for:
+    1. Physical proximity (within user's target points).
+    2. Candle stability & decisiveness (prevents premature micro-tick predictions).
+    3. Confirmed SuperTrend flip / hit signals.
+
+    Trend Anchoring Rule:
+    - The confirmed trend of the market is anchored to the last completed/closed candle.
+    - A forming candle does NOT flip the trend on momentary micro-ticks; it must either
+      close across the line or demonstrate mature, decisive penetration.
     """
     if isinstance(candles_or_df, pd.DataFrame):
-        df = candles_or_df
+        df = candles_or_df.copy()
     elif isinstance(candles_or_df, list):
-        df = pd.DataFrame(candles_or_df)
+        df = pd.DataFrame([dict(c) for c in candles_or_df])
     else:
         df = pd.DataFrame()
+
+    prox_limit = max(0.01, float(proximity_points))
 
     if df.empty or len(df) < 2:
         p = float(current_price or 100.0)
@@ -164,51 +201,169 @@ def analyze_supertrend_hit(
             "supertrend_price": p,
             "direction": "BUY",
             "previous_direction": previous_direction or "BUY",
+            "target_direction": "SELL",
             "distance_points": 0.0,
-            "proximity_threshold": float(proximity_points),
+            "proximity_threshold": prox_limit,
             "is_approaching": False,
+            "is_prediction_ready": False,
             "is_flipped": False,
             "flip_signal": None,
-            "atr": 0.0,
+            "candle_open": p,
+            "candle_close": p,
+            "candle_points": 0.0,
+            "candle_color": "GREEN",
+            "candle_body_size": 0.0,
+            "is_candle_stable": False,
+            "candle_matches_target": False,
+            "candle_age_seconds": 0.0,
+            "prev_candle_points": 0.0,
+            "prev_candle_color": "GREEN",
             "series": []
         }
 
+    # Normalize columns to lowercase
+    df.columns = [c.lower() for c in df.columns]
+    if 'close' not in df.columns and 'price' in df.columns:
+        df['close'] = df['price']
+
+    # Update latest candle close/high/low with current_price so SuperTrend calculates on real-time live price
+    if current_price is not None and not df.empty:
+        cp_val = float(current_price)
+        last_idx = df.index[-1]
+        df.loc[last_idx, 'close'] = cp_val
+        if 'high' in df.columns:
+            df.loc[last_idx, 'high'] = max(float(df.loc[last_idx, 'high']), cp_val)
+        if 'low' in df.columns:
+            cur_low = float(df.loc[last_idx, 'low'])
+            df.loc[last_idx, 'low'] = min(cur_low, cp_val) if cur_low > 0 else cp_val
+
     st_df = compute_supertrend(df, period=period, multiplier=multiplier)
     last_row = st_df.iloc[-1]
-    
+
     cp = float(current_price if current_price is not None else last_row['close'])
-    st_p = float(last_row['supertrend'])
-    dir_code = int(last_row['supertrend_direction'])
-    curr_dir = "BUY" if dir_code == 1 else "SELL"
 
-    # Previous direction from preceding candle or parameter
+    # Determine confirmed baseline trend from the last closed/completed candle
     if len(st_df) >= 2:
-        prev_dir_code = int(st_df['supertrend_direction'].iloc[-2])
-        candle_prev_dir = "BUY" if prev_dir_code == 1 else "SELL"
+        prev_row = st_df.iloc[-2]
+        closed_dir_code = int(prev_row['supertrend_direction'])
+        closed_trend_dir = "BUY" if closed_dir_code == 1 else "SELL"
+        prev_open = float(prev_row.get('open', prev_row.get('close', cp)))
+        prev_close = float(prev_row.get('close', cp))
+        prev_candle_points = round(prev_close - prev_open, 2)
+        prev_candle_color = "GREEN" if prev_candle_points >= 0 else "RED"
+
+        # Did the last closed candle complete a flip?
+        if len(st_df) >= 3:
+            prev_prev_dir_code = int(st_df['supertrend_direction'].iloc[-3])
+            did_closed_candle_flip = (closed_dir_code != prev_prev_dir_code)
+        else:
+            did_closed_candle_flip = False
     else:
-        candle_prev_dir = curr_dir
+        closed_dir_code = int(last_row['supertrend_direction'])
+        closed_trend_dir = "BUY" if closed_dir_code == 1 else "SELL"
+        prev_candle_points = 0.0
+        prev_candle_color = "GREEN"
+        did_closed_candle_flip = False
 
-    resolved_prev_dir = previous_direction or candle_prev_dir
-    is_flipped = bool(resolved_prev_dir and curr_dir != resolved_prev_dir)
+    # Forming/latest candle metrics
+    c_open = float(last_row.get('open', cp))
+    c_close = cp
+    candle_points = round(c_close - c_open, 2)
+    candle_color = "GREEN" if candle_points >= 0 else "RED"
+    candle_body_abs = round(abs(candle_points), 2)
 
-    # Anti-whipsaw filter: Require a clear penetration buffer beyond the SuperTrend level
-    # of at least the user's given points (proximity_points) to confirm a genuine trend flip
-    min_breakout = max(float(proximity_points or 1.0), 0.5)
-    if is_flipped:
-        penetration = (cp - st_p) if curr_dir == "BUY" else (st_p - cp)
-        if penetration < min_breakout:
-            # Price has not broken out with the required points buffer; treat as testing rather than a confirmed flip
-            curr_dir = resolved_prev_dir
-            is_flipped = False
+    # Estimate candle age in seconds from timestamp if present
+    candle_age_seconds = 60.0
+    full_time_val = last_row.get('full_time') or last_row.get('time')
+    if full_time_val:
+        try:
+            c_dt = pd.to_datetime(full_time_val)
+            if c_dt.tzinfo is not None:
+                candle_age_seconds = max(0.0, (pd.Timestamp.now(c_dt.tz) - c_dt).total_seconds())
+        except Exception:
+            pass
+
+    # Upper and Lower SuperTrend lines for the current candle
+    st_upper = float(last_row['supertrend_upper'])
+    st_lower = float(last_row['supertrend_lower'])
+
+    # Forming candle breakout / breakdown evaluation:
+    # A forming candle can ONLY confirm a flip before closing if it has decisively
+    # penetrated beyond the line with direction conviction and mature candle age.
+    min_decisive_penetration = max(1.20, min(3.0, prox_limit * 0.50))
+    forming_flipped = False
+    forming_flip_dir = None
+
+    if closed_trend_dir == "SELL":
+        # Price is below resistance (st_upper). A BUY flip requires breaking above st_upper.
+        if (cp - st_upper) >= min_decisive_penetration and candle_color == "GREEN" and candle_points > 0 and candle_body_abs >= 0.35 and candle_age_seconds >= 30.0:
+            forming_flipped = True
+            forming_flip_dir = "BUY"
+    elif closed_trend_dir == "BUY":
+        # Price is above support (st_lower). A SELL flip requires breaking below st_lower.
+        if (st_lower - cp) >= min_decisive_penetration and candle_color == "RED" and candle_points < 0 and candle_body_abs >= 0.35 and candle_age_seconds >= 30.0:
+            forming_flipped = True
+            forming_flip_dir = "SELL"
+
+    # Current established trend:
+    if did_closed_candle_flip:
+        curr_dir = closed_trend_dir
+        is_flipped = True
+    elif forming_flipped:
+        curr_dir = forming_flip_dir
+        is_flipped = True
+    else:
+        curr_dir = closed_trend_dir
+        is_flipped = False
+
+    # Check previous_direction constraint: flip is only new if different from previous_direction
+    resolved_prev_dir = previous_direction or closed_trend_dir
+    if resolved_prev_dir and curr_dir == resolved_prev_dir:
+        is_flipped = False
+
+    # Active SuperTrend line and target direction
+    if curr_dir == "SELL":
+        st_p = st_upper
+        target_dir = "BUY"
+        distance_points = round(max(0.0, st_upper - cp), 2)
+    else:
+        st_p = st_lower
+        target_dir = "SELL"
+        distance_points = round(max(0.0, cp - st_lower), 2)
+
+    # Candle Stability Rule:
+    # A newly created candle (with 0 or tiny body) is not yet stable.
+    # It must develop body conviction or mature beyond 15s with decisive movement.
+    stability_threshold = max(0.20, min(0.60, prox_limit * 0.20))
+    is_candle_stable = bool(
+        (candle_body_abs >= stability_threshold) or
+        (candle_age_seconds >= 15.0 and candle_body_abs >= 0.15)
+    )
+
+    # Directional Alignment Rule:
+    # BUY target requires a decided GREEN candle (candle_points > 0).
+    # SELL target requires a decided RED candle (candle_points < 0).
+    candle_matches_target = (
+        (target_dir == "BUY" and candle_color == "GREEN" and candle_points > 0) or
+        (target_dir == "SELL" and candle_color == "RED" and candle_points < 0)
+    )
 
     flip_signal = curr_dir if is_flipped else None
 
-    # Calculate points distance
-    distance_points = round(abs(cp - st_p), 2)
-    prox_limit = max(0.01, float(proximity_points))
-    is_approaching = bool(distance_points <= prox_limit and not is_flipped)
+    # Physical proximity (price is physically within user's points threshold of the active line)
+    is_approaching = bool(distance_points <= prox_limit and not is_flipped and st_p > 0.01)
 
-    # Series for chart visualization (all available candles)
+    # Model prediction readiness:
+    # Ready ONLY when physically approaching AND candle is decided & stable
+    is_prediction_ready = bool(
+        is_approaching and
+        candle_matches_target and
+        is_candle_stable and
+        not is_flipped and
+        st_p > 0.01
+    )
+
+    # Series for chart visualization
     series_points = []
     for idx, row in st_df.iterrows():
         t_val = row.get('time') or row.get('full_time') or str(idx)
@@ -222,7 +377,7 @@ def analyze_supertrend_hit(
         series_points.append({
             "time": str(t_val),
             "price": p_val,
-            "supertrend": st_val,
+            "supertrend": max(0.01, st_val),
             "direction": "BUY" if row['supertrend_direction'] == 1 else "SELL",
             "signal": sig_clean
         })
@@ -237,11 +392,23 @@ def analyze_supertrend_hit(
         "supertrend_price": round(st_p, 2),
         "direction": curr_dir,
         "previous_direction": resolved_prev_dir,
+        "target_direction": target_dir,
         "distance_points": distance_points,
         "proximity_threshold": prox_limit,
         "is_approaching": is_approaching,
+        "is_prediction_ready": is_prediction_ready,
         "is_flipped": is_flipped,
         "flip_signal": flip_signal,
+        "candle_open": round(c_open, 2),
+        "candle_close": round(c_close, 2),
+        "candle_points": candle_points,
+        "candle_color": candle_color,
+        "candle_body_size": candle_body_abs,
+        "is_candle_stable": is_candle_stable,
+        "candle_matches_target": candle_matches_target,
+        "candle_age_seconds": round(candle_age_seconds, 1),
+        "prev_candle_points": prev_candle_points,
+        "prev_candle_color": prev_candle_color,
         "series": series_points
     }
 

@@ -3282,6 +3282,11 @@ body.dark-mode .hud-threshold-item {
   box-shadow: 0 20px 40px -10px rgba(245, 158, 11, 0.35), 0 0 20px rgba(245, 158, 11, 0.2);
 }
 
+.stockpulse-popup-card.supertrend-changed {
+  border-left-color: #2563eb;
+  box-shadow: 0 20px 40px -10px rgba(37, 99, 235, 0.35), 0 0 20px rgba(37, 99, 235, 0.2);
+}
+
 /* Header */
 .popup-header {
   display: flex;
@@ -3345,6 +3350,11 @@ body.dark-mode .hud-threshold-item {
 .popup-icon-badge.supertrend-approaching {
   background: rgba(245, 158, 11, 0.18);
   color: #d97706;
+}
+
+.popup-icon-badge.supertrend-changed {
+  background: rgba(37, 99, 235, 0.16);
+  color: #2563eb;
 }
 
 .popup-title-text {

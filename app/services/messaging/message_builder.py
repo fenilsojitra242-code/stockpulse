@@ -284,99 +284,166 @@ class MessageBuilder:
             st_str = f"₹{st_price:,.2f}" if st_price is not None else "N/A"
             dist_pts = float(data.get("distance_points") or 0.0)
             prox_limit = float(data.get("proximity_threshold") or 1.0)
-            st_dir = str(data.get("current_direction") or "ACTIVE").upper()
-            title = f"⚡ SuperTrend Proximity: {symbol} within {dist_pts:.2f} pts of SuperTrend!"
+            curr_dir = str(data.get("current_direction") or "ACTIVE").upper()
+            target_dir = str(data.get("target_direction") or ("BUY" if curr_dir == "SELL" else "SELL")).upper()
+            prob_val = data.get("model_probability")
+            prob_str = f"{float(prob_val) * 100:.1f}%" if prob_val is not None else "High Conviction"
+
+            title = f"⚡ SuperIndicator Early Warning: {symbol} predicted to hit within {dist_pts:.2f} pts!"
             plain_text = (
-                f"StockPulse SuperTrend Proximity Alert\n\n"
+                f"SuperIndicator Early Warning — {symbol}\n\n"
                 f"Stock: {symbol}\n"
                 f"Live Price: {curr_price_str}\n"
-                f"SuperTrend Line: {st_str}\n"
-                f"Distance to Hit: {dist_pts:.2f} points (Threshold: {prox_limit:.1f} pt)\n"
-                f"Current Trend: {st_dir}\n\n"
-                f"Status: PROXIMITY HIT WARNING (Testing SuperTrend boundary)\n"
+                f"SuperIndicator Line: {st_str}\n"
+                f"Distance to Hit: {dist_pts:.2f} points (Target: {prox_limit:.1f} pts)\n"
+                f"Current Situation: {curr_dir}\n"
+                f"Predicted Trend Change: {target_dir}\n"
+                f"Model Probability: {prob_str}\n\n"
+                f"Status: Model predicts SuperIndicator will HIT and change to {target_dir} within your {prox_limit:.1f} points window!\n"
                 f"Time: {time_str}"
             )
             html_text = (
-                f"⚡ <b>SuperTrend Proximity Warning: {symbol}</b>\n\n"
+                f"⚡ <b>SuperIndicator Early Warning: {symbol}</b>\n\n"
                 f"<b>Stock:</b> <b>{symbol}</b>\n"
                 f"<b>Live Price:</b> <b>{curr_price_str}</b>\n"
-                f"<b>SuperTrend Line:</b> <b>{st_str}</b>\n"
-                f"<b>Gap to Hit:</b> <span style='color: #f59e0b; font-weight: 700;'>{dist_pts:.2f} points</span> (≤ {prox_limit:.1f} pt)\n"
-                f"<b>Active Trend:</b> <b>{st_dir}</b>\n\n"
-                f"<i>Price is testing the SuperTrend line. Potential trend reversal or rebound ahead!</i>\n"
+                f"<b>SuperIndicator Line:</b> <b>{st_str}</b>\n"
+                f"<b>Gap to Hit:</b> <span style='color: #f59e0b; font-weight: 700;'>{dist_pts:.2f} points</span> (Target: ≤ {prox_limit:.1f} pts)\n"
+                f"<b>Current Situation:</b> <b>{curr_dir}</b>\n"
+                f"<b>Predicted Change:</b> <b style='color: {'#16a34a' if target_dir == 'BUY' else '#dc2626'};'>{target_dir}</b> (Model: {prob_str})\n\n"
+                f"<i>Model predicts SuperIndicator hit within your {prox_limit:.1f} points window!</i>\n"
                 f"<b>Time:</b> {time_str}"
             )
-            short_summary = f"{symbol} testing SuperTrend line: only {dist_pts:.2f} pts away at {curr_price_str} (ST: {st_str})"
+            short_summary = f"{symbol} SuperIndicator Early Warning: model predicts hit within {dist_pts:.2f} pts to {target_dir} ({prob_str})"
 
         elif ev == NotificationEventType.SUPERTREND_BUY.value:
             st_price = data.get("supertrend_price")
             st_str = f"₹{st_price:,.2f}" if st_price is not None else "N/A"
             prob_val = data.get("model_probability")
             prob_str = f"{float(prob_val) * 100:.1f}%" if prob_val is not None else None
-            pts_val = data.get("points_distance")
-            pts_str = f"{float(pts_val):.2f} pts" if pts_val is not None else None
 
-            title = f"🟢 SuperTrend BUY: {symbol}" + (f" (Model: {prob_str})" if prob_str else "")
-            model_line = f"\nModel Conviction: {prob_str} ({pts_str})" if prob_str else ""
-            model_html = f"\n<b>Model Prediction Conviction:</b> <b style='color: #16a34a;'>{prob_str}</b> ({pts_str})\n" if prob_str else ""
+            title = f"🎯 SuperIndicator Hit: {symbol} — BUY Confirmed!"
+            model_line = f"\nModel Conviction: {prob_str}" if prob_str else ""
+            model_html = f"\n<b>Model Prediction:</b> <b style='color: #16a34a;'>TRUE ({prob_str})</b>\n" if prob_str else ""
 
             plain_text = (
-                f"StockPulse SuperTrend Signal — BUY\n\n"
+                f"SuperIndicator Hit — BUY Confirmed\n\n"
                 f"Stock: {symbol}\n"
-                f"Signal: BUY / BULLISH REVERSAL 🚀\n"
+                f"Status: SuperIndicator Hit (Model Prediction is TRUE!)\n"
+                f"Current Situation: BUY 🚀\n"
                 f"Trigger Price: {curr_price_str}\n"
-                f"SuperTrend Line: {st_str}\n"
-                f"Trend Transition: BEARISH (SELL) ➔ BULLISH (BUY){model_line}\n\n"
-                f"Indicator Status: SuperTrend line penetrated and confirmed GREEN by monitoring model!\n"
+                f"SuperIndicator Line: {st_str}{model_line}\n\n"
+                f"Status: SuperIndicator line hit and penetrated. Trend confirmed BUY!\n"
                 f"Time: {time_str}"
             )
             html_text = (
-                f"🟢 <b>SuperTrend Confirmed BUY Signal: {symbol}</b>\n\n"
+                f"🎯 <b>SuperIndicator Hit: {symbol}</b>\n\n"
                 f"<b>Stock:</b> <b>{symbol}</b>\n"
-                f"<b>Signal:</b> <span style='color: #16a34a; font-weight: 700;'>BUY / BULLISH REVERSAL</span> 🚀\n"
+                f"<b>Status:</b> <span style='color: #16a34a; font-weight: 700;'>Model Prediction is TRUE!</span>\n"
+                f"<b>Current Situation:</b> <b style='color: #16a34a;'>BUY</b> 🚀\n"
                 f"<b>Trigger Price:</b> <b>{curr_price_str}</b>\n"
-                f"<b>SuperTrend Support:</b> <b>{st_str}</b>\n"
-                f"<b>Trend Flip:</b> SELL ➔ <b style='color: #16a34a;'>BUY</b>\n"
+                f"<b>SuperIndicator Support:</b> <b>{st_str}</b>\n"
                 f"{model_html}\n"
-                f"<i>Monitoring model predicted and confirmed BUY trend conviction according to given points.</i>\n"
+                f"<i>SuperIndicator line hit and penetrated. Trend confirmed BUY!</i>\n"
                 f"<b>Time:</b> {time_str}"
             )
-            short_summary = f"{symbol} SuperTrend BUY confirmed at {curr_price_str} (ST: {st_str}" + (f", Model: {prob_str}" if prob_str else "") + ")"
+            short_summary = f"SuperIndicator Hit: {symbol} confirmed BUY at {curr_price_str} (Model Prediction is TRUE)"
 
         elif ev == NotificationEventType.SUPERTREND_SELL.value:
             st_price = data.get("supertrend_price")
             st_str = f"₹{st_price:,.2f}" if st_price is not None else "N/A"
             prob_val = data.get("model_probability")
             prob_str = f"{float(prob_val) * 100:.1f}%" if prob_val is not None else None
-            pts_val = data.get("points_distance")
-            pts_str = f"{float(pts_val):.2f} pts" if pts_val is not None else None
 
-            title = f"🔴 SuperTrend SELL: {symbol}" + (f" (Model: {prob_str})" if prob_str else "")
-            model_line = f"\nModel Conviction: {prob_str} ({pts_str})" if prob_str else ""
-            model_html = f"\n<b>Model Prediction Conviction:</b> <b style='color: #dc2626;'>{prob_str}</b> ({pts_str})\n" if prob_str else ""
+            title = f"🎯 SuperIndicator Hit: {symbol} — SELL Confirmed!"
+            model_line = f"\nModel Conviction: {prob_str}" if prob_str else ""
+            model_html = f"\n<b>Model Prediction:</b> <b style='color: #dc2626;'>TRUE ({prob_str})</b>\n" if prob_str else ""
 
             plain_text = (
-                f"StockPulse SuperTrend Signal — SELL\n\n"
+                f"SuperIndicator Hit — SELL Confirmed\n\n"
                 f"Stock: {symbol}\n"
-                f"Signal: SELL / BEARISH REVERSAL 🔻\n"
+                f"Status: SuperIndicator Hit (Model Prediction is TRUE!)\n"
+                f"Current Situation: SELL 🔻\n"
                 f"Trigger Price: {curr_price_str}\n"
-                f"SuperTrend Line: {st_str}\n"
-                f"Trend Transition: BULLISH (BUY) ➔ BEARISH (SELL){model_line}\n\n"
-                f"Indicator Status: SuperTrend line penetrated and confirmed RED by monitoring model!\n"
+                f"SuperIndicator Line: {st_str}{model_line}\n\n"
+                f"Status: SuperIndicator line hit and penetrated. Trend confirmed SELL!\n"
                 f"Time: {time_str}"
             )
             html_text = (
-                f"🔴 <b>SuperTrend Confirmed SELL Signal: {symbol}</b>\n\n"
+                f"🎯 <b>SuperIndicator Hit: {symbol}</b>\n\n"
                 f"<b>Stock:</b> <b>{symbol}</b>\n"
-                f"<b>Signal:</b> <span style='color: #dc2626; font-weight: 700;'>SELL / BEARISH REVERSAL</span> 🔻\n"
+                f"<b>Status:</b> <span style='color: #dc2626; font-weight: 700;'>Model Prediction is TRUE!</span>\n"
+                f"<b>Current Situation:</b> <b style='color: #dc2626;'>SELL</b> 🔻\n"
                 f"<b>Trigger Price:</b> <b>{curr_price_str}</b>\n"
-                f"<b>SuperTrend Resistance:</b> <b>{st_str}</b>\n"
-                f"<b>Trend Flip:</b> BUY ➔ <b style='color: #dc2626;'>SELL</b>\n"
+                f"<b>SuperIndicator Resistance:</b> <b>{st_str}</b>\n"
                 f"{model_html}\n"
-                f"<i>Monitoring model predicted and confirmed SELL trend conviction according to given points.</i>\n"
+                f"<i>SuperIndicator line hit and penetrated. Trend confirmed SELL!</i>\n"
                 f"<b>Time:</b> {time_str}"
             )
-            short_summary = f"{symbol} SuperTrend SELL confirmed at {curr_price_str} (ST: {st_str}" + (f", Model: {prob_str}" if prob_str else "") + ")"
+            short_summary = f"SuperIndicator Hit: {symbol} confirmed SELL at {curr_price_str} (Model Prediction is TRUE)"
+
+        elif ev == NotificationEventType.SUPERTREND_FALSE.value:
+            st_price = data.get("supertrend_price")
+            st_str = f"₹{st_price:,.2f}" if st_price is not None else "N/A"
+            curr_dir = str(data.get("current_direction") or "ACTIVE").upper()
+
+            title = f"❌ SuperIndicator: Model Prediction is False for {symbol}"
+            plain_text = (
+                f"SuperIndicator — Model Prediction is FALSE\n\n"
+                f"Stock: {symbol}\n"
+                f"Status: Model Prediction is FALSE (Did not hit SuperIndicator)\n"
+                f"Current Situation: {curr_dir}\n"
+                f"Current Price: {curr_price_str}\n"
+                f"SuperIndicator Line: {st_str}\n\n"
+                f"Status: Price bounced away without hitting SuperIndicator. Current situation remains {curr_dir}.\n"
+                f"Time: {time_str}"
+            )
+            html_text = (
+                f"❌ <b>SuperIndicator: Model Prediction is False</b>\n\n"
+                f"<b>Stock:</b> <b>{symbol}</b>\n"
+                f"<b>Status:</b> <span style='color: #dc2626; font-weight: 700;'>Model Prediction is FALSE</span> (Did not hit)\n"
+                f"<b>Current Situation:</b> <b>{curr_dir}</b>\n"
+                f"<b>Current Price:</b> <b>{curr_price_str}</b>\n"
+                f"<b>SuperIndicator Line:</b> <b>{st_str}</b>\n\n"
+                f"<i>Price pulled away without hitting SuperIndicator line. Current situation remains {curr_dir}.</i>\n"
+                f"<b>Time:</b> {time_str}"
+            )
+            short_summary = f"{symbol} SuperIndicator: Model Prediction is FALSE. Current situation remains {curr_dir} at {curr_price_str}"
+
+        elif ev == NotificationEventType.SUPERTREND_CHANGED.value:
+            st_price = data.get("supertrend_price")
+            st_str = f"₹{st_price:,.2f}" if st_price is not None else "N/A"
+            prev_color = str(data.get("previous_color") or "GREEN").upper()
+            curr_color = str(data.get("current_color") or "RED").upper()
+            prev_pts = float(data.get("previous_points") or 0.0)
+            curr_pts = float(data.get("current_points") or 0.0)
+            prev_dir = str(data.get("previous_direction") or "BUY").upper()
+            curr_dir = str(data.get("current_direction") or "SELL").upper()
+            change_reason = str(data.get("change_reason") or "Candle color & points shifted during formation")
+
+            title = f"🔄 SuperIndicator Change Alert: {symbol} shifted to {curr_color} ({curr_pts:+.2f} pts)!"
+            plain_text = (
+                f"SuperIndicator Shift Alert — {symbol}\n\n"
+                f"Stock: {symbol}\n"
+                f"Status: Candle Size & Direction Changed\n"
+                f"Previous: {prev_color} ({prev_pts:+.2f} pts, {prev_dir})\n"
+                f"New State: {curr_color} ({curr_pts:+.2f} pts, {curr_dir})\n"
+                f"Live Price: {curr_price_str}\n"
+                f"SuperIndicator Line: {st_str}\n"
+                f"Notice: {change_reason}\n"
+                f"Time: {time_str}"
+            )
+            html_text = (
+                f"🔄 <b>SuperIndicator Change Alert: {symbol}</b>\n\n"
+                f"<b>Stock:</b> <b>{symbol}</b>\n"
+                f"<b>Status:</b> <span style='color: #2563eb; font-weight: 700;'>Candle & Points Shifted</span>\n"
+                f"<b>Previous State:</b> {prev_color} ({prev_pts:+.2f} pts, {prev_dir})\n"
+                f"<b>Current State:</b> <b style='color: {'#16a34a' if curr_color == 'GREEN' else '#dc2626'};'>{curr_color} ({curr_pts:+.2f} pts, {curr_dir})</b>\n"
+                f"<b>Live Price:</b> <b>{curr_price_str}</b>\n"
+                f"<b>SuperIndicator Line:</b> <b>{st_str}</b>\n\n"
+                f"<i>Notice: {change_reason}</i>\n"
+                f"<b>Time:</b> {time_str}"
+            )
+            short_summary = f"{symbol} SuperIndicator Change: shifted from {prev_color} ({prev_pts:+.2f}) to {curr_color} ({curr_pts:+.2f})"
 
         else:
             # Fallback / Generic / Custom System Notifications

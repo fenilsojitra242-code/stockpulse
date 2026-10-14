@@ -8,10 +8,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  <!-- Favicon -->
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="alternate icon" type="image/png" sizes="32x32" href="/favicon.png">
-  <link rel="shortcut icon" href="/favicon.ico">
+  <!-- Favicon (<i class="fa-solid fa-chart-line"> logo) -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2">
 
   <link rel="stylesheet" href="/static/style.css">
   <style>
@@ -712,28 +710,70 @@
   </div>
 
   <script>
-    // If user already has a valid token, redirect directly to /live (unless explicitly logging out)
+    // Helper to read cookies safely
+    function getCookie(name) {
+      try {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(';').shift();
+      } catch (e) {}
+      return null;
+    }
+
+    // If user already has a valid token in localStorage OR cookies, redirect directly to /live
     (function checkExistingSession() {
       const urlParams = new URLSearchParams(window.location.search);
-      if (urlParams.get('logout') === 'true') {
+      const isLogout = urlParams.get('logout') === 'true';
+      const isTimeout = urlParams.get('session_timeout') === 'true';
+
+      if (isLogout || isTimeout) {
         localStorage.removeItem('stockpulse_jwt_token');
         localStorage.removeItem('stockpulse_user_profile');
+        localStorage.removeItem('stockpulse_last_active_ts');
+        document.cookie = 'stockpulse_jwt_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax';
+
+        document.addEventListener('DOMContentLoaded', () => {
+          setTimeout(() => {
+            if (isTimeout) {
+              showFeedback('⏱️ Session Expired: You were automatically signed out after closing the site or inactivity. Please sign in again.', true);
+            } else if (isLogout) {
+              showFeedback('You have successfully signed out of StockPulse.', false);
+            }
+          }, 100);
+        });
         return;
       }
-      const token = localStorage.getItem('stockpulse_jwt_token');
+
+      let token = localStorage.getItem('stockpulse_jwt_token') || getCookie('stockpulse_jwt_token');
       if (token) {
+        localStorage.setItem('stockpulse_jwt_token', token);
         fetch('/api/auth/me', {
           headers: { 'Authorization': 'Bearer ' + token }
         }).then(res => {
           if (res.ok) {
-            window.location.replace('/live');
-          } else {
-            localStorage.removeItem('stockpulse_jwt_token');
-            localStorage.removeItem('stockpulse_user_profile');
+            return res.json().then(data => {
+              if (data && data.user) {
+                localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
+              }
+              window.location.replace('/live');
+            });
           }
         }).catch(() => {});
       }
     })();
+
+    // Prefill remembered username or email on page load
+    document.addEventListener('DOMContentLoaded', () => {
+      try {
+        const remembered = localStorage.getItem('stockpulse_remembered_identifier');
+        const identInput = document.getElementById('login-identifier');
+        if (remembered && identInput && !identInput.value) {
+          identInput.value = remembered;
+          const passInput = document.getElementById('login-password');
+          if (passInput) passInput.focus();
+        }
+      } catch (e) {}
+    });
 
     // Tab switcher
     function switchAuthTab(mode) {
@@ -809,7 +849,7 @@
       const password = passInput.value;
 
       if (!identifier || !password) {
-        showFeedback('Please enter both your email/username and password.');
+        showFeedback('Please enter both your email/username/name and password.');
         return;
       }
 
@@ -836,6 +876,8 @@
         // Success!
         localStorage.setItem('stockpulse_jwt_token', data.access_token);
         localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
+        localStorage.setItem('stockpulse_remembered_identifier', identifier);
+        localStorage.setItem('stockpulse_last_active_ts', Date.now().toString());
         showFeedback(`Welcome back, ${data.user.name}! Redirecting...`, false);
 
         setTimeout(() => {
@@ -854,7 +896,7 @@
     let pendingRegistration = null;
     let otpCountdownInterval = null;
 
-    // Handle Register Submit -> Step 1: Send OTP
+    // Handle Register Submit -> Creates account directly & stores permanently in SQLite
     async function handleRegisterSubmit(e) {
       e.preventDefault();
       hideFeedback();
@@ -881,13 +923,13 @@
       }
 
       btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Verifying email & sending code...</span>';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Creating account...</span>';
 
       try {
-        const res = await fetch('/api/auth/send-registration-otp', {
+        const res = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, name, username: username || null })
+          body: JSON.stringify({ name, email, password, username: username || null })
         });
 
         const data = await res.json();
@@ -897,26 +939,35 @@
           showFeedback(detail, true);
           btn.disabled = false;
           btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
+          // If already exists, switch to login tab with email prefilled
+          if (detail.includes('already exists')) {
+            setTimeout(() => {
+              switchAuthTab('login');
+              const loginIdent = document.getElementById('login-identifier');
+              if (loginIdent) {
+                loginIdent.value = email;
+                document.getElementById('login-password').focus();
+              }
+            }, 1600);
+          }
           return;
         }
 
-        // OTP sent successfully!
-        pendingRegistration = { name, username, email, password };
-        btn.disabled = false;
-        btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
+        // Account created & stored permanently in DB!
+        localStorage.setItem('stockpulse_jwt_token', data.access_token);
+        localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
+        localStorage.setItem('stockpulse_remembered_identifier', email);
+        localStorage.setItem('stockpulse_last_active_ts', Date.now().toString());
 
-        // Switch to OTP Verification View
-        document.getElementById('form-register').style.display = 'none';
-        document.querySelector('.auth-tabs').style.display = 'none';
-        document.getElementById('form-otp').style.display = 'block';
-        document.getElementById('otp-target-email').textContent = email;
+        showFeedback(`Account created successfully! Welcome, ${data.user.name}! Entering dashboard...`, false);
 
-        renderOtpDeliveryNotice(data, email);
-        startOtpCountdown(60);
-        setupOtpDigitInputs();
+        setTimeout(() => {
+          window.location.href = '/live';
+        }, 500);
+
       } catch (err) {
-        console.error('OTP Send error:', err);
-        showFeedback('Network error. Unable to verify email.', true);
+        console.error('Registration error:', err);
+        showFeedback('Network error during registration. Please try again.', true);
         btn.disabled = false;
         btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
       }
@@ -1026,6 +1077,7 @@
         clearInterval(otpCountdownInterval);
         localStorage.setItem('stockpulse_jwt_token', data.access_token);
         localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
+        localStorage.setItem('stockpulse_last_active_ts', Date.now().toString());
         const usernameMsg = data.user && data.user.username ? ` Your username is "${data.user.username}".` : '';
         showFeedback(`Email verified! Welcome, ${data.user.name}!${usernameMsg} Entering dashboard...`, false);
 
@@ -1352,6 +1404,7 @@
         clearInterval(resetCountdownInterval);
         localStorage.setItem('stockpulse_jwt_token', data.access_token);
         localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
+        localStorage.setItem('stockpulse_last_active_ts', Date.now().toString());
         showFeedback(`Password updated successfully! Welcome back, ${data.user.name}! Redirecting...`, false);
 
         setTimeout(() => {

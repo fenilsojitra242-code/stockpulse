@@ -111,11 +111,15 @@
         eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #e0e7ff; color: #4338ca; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-server"></i> System Alert</span>';
       }
       if (evType === 'SUPERTREND_APPROACHING') {
-        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #fef3c7; color: #b45309; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-bolt"></i> SuperTrend Near Hit (≤1 pt)</span>';
+        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #fef3c7; color: #b45309; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-bolt"></i> SuperIndicator Early Warning</span>';
       } else if (evType === 'SUPERTREND_BUY') {
-        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #dcfce7; color: #15803d; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-arrow-trend-up"></i> SuperTrend BUY Hit</span>';
+        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #dcfce7; color: #15803d; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-arrow-trend-up"></i> SuperIndicator Hit (TRUE)</span>';
       } else if (evType === 'SUPERTREND_SELL') {
-        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #fee2e2; color: #b91c1c; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-arrow-trend-down"></i> SuperTrend SELL Hit</span>';
+        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #fee2e2; color: #b91c1c; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px;"><i class="fa-solid fa-arrow-trend-down"></i> SuperIndicator Hit (TRUE)</span>';
+      } else if (evType === 'SUPERTREND_FALSE') {
+        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #fef2f2; color: #991b1b; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid #fecaca;"><i class="fa-solid fa-circle-xmark"></i> Model Prediction FALSE</span>';
+      } else if (evType === 'SUPERTREND_CHANGED') {
+        eventBadgeHtml += '<span style="font-size: 11px; font-weight: 700; background: #eff6ff; color: #1d4ed8; padding: 2px 8px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid #bfdbfe;"><i class="fa-solid fa-arrows-rotate"></i> SuperIndicator Shift</span>';
       }
 
       item.innerHTML = `

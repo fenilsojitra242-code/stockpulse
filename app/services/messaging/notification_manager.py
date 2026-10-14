@@ -440,15 +440,23 @@ class NotificationManager:
         proximity_threshold: float,
         current_direction: str,
         db: Session,
-        user_id: Optional[int] = None
+        user_id: Optional[int] = None,
+        target_direction: Optional[str] = None,
+        model_probability: Optional[float] = None
     ) -> List[Dict[str, Any]]:
-        """Triggered when price comes within proximity threshold (e.g. 1 point) of SuperTrend level."""
+        """Triggered when price is within user points AND model predicts SuperIndicator hit."""
+        if supertrend_price <= 0.01 or current_price <= 0.01 or abs(supertrend_price - current_price) > (current_price * 0.25):
+            print(f"[NotificationManager] Rejected invalid SuperTrend approaching alert for {symbol}: price={current_price}, ST={supertrend_price}")
+            return []
+
         channels = cls._resolve_channels(alert)
         if alert:
             alert.last_event = NotificationEventType.SUPERTREND_APPROACHING.value
             db.commit()
             if not user_id and getattr(alert, "user_id", None):
                 user_id = alert.user_id
+
+        resolved_target = target_direction or ("BUY" if current_direction.upper() == "SELL" else "SELL")
 
         data = {
             "user_id": user_id,
@@ -459,7 +467,9 @@ class NotificationManager:
             "distance_points": distance_points,
             "proximity_threshold": proximity_threshold,
             "current_direction": current_direction,
+            "target_direction": resolved_target,
             "direction": current_direction,
+            "model_probability": model_probability,
             "timestamp": _ist_str(),
             "extra_data": json.dumps({
                 "symbol": symbol.upper(),
@@ -468,13 +478,123 @@ class NotificationManager:
                 "distance_points": distance_points,
                 "proximity_threshold": proximity_threshold,
                 "current_direction": current_direction,
+                "target_direction": resolved_target,
                 "direction": current_direction,
+                "model_probability": model_probability,
                 "event": NotificationEventType.SUPERTREND_APPROACHING.value
             })
         }
 
         return notification_service.dispatch(
             event_type=NotificationEventType.SUPERTREND_APPROACHING.value,
+            data=data,
+            channels=channels,
+            db=db
+        )
+
+    @classmethod
+    def emit_supertrend_prediction_false(
+        cls,
+        alert: Optional[Alert],
+        symbol: str,
+        current_price: float,
+        supertrend_price: float,
+        current_direction: str,
+        db: Session,
+        user_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Triggered when early prediction fails to hit and price pulls away (Model prediction is FALSE)."""
+        channels = cls._resolve_channels(alert)
+        if alert:
+            alert.last_event = NotificationEventType.SUPERTREND_FALSE.value
+            db.commit()
+            if not user_id and getattr(alert, "user_id", None):
+                user_id = alert.user_id
+
+        data = {
+            "user_id": user_id,
+            "alert_id": alert.id if alert else None,
+            "symbol": symbol.upper(),
+            "current_price": current_price,
+            "supertrend_price": supertrend_price,
+            "current_direction": current_direction,
+            "direction": current_direction,
+            "timestamp": _ist_str(),
+            "extra_data": json.dumps({
+                "symbol": symbol.upper(),
+                "current_price": current_price,
+                "supertrend_price": supertrend_price,
+                "current_direction": current_direction,
+                "direction": current_direction,
+                "event": NotificationEventType.SUPERTREND_FALSE.value
+            })
+        }
+
+        return notification_service.dispatch(
+            event_type=NotificationEventType.SUPERTREND_FALSE.value,
+            data=data,
+            channels=channels,
+            db=db
+        )
+
+    @classmethod
+    def emit_supertrend_changed(
+        cls,
+        alert: Optional[Alert],
+        symbol: str,
+        current_price: float,
+        supertrend_price: float,
+        previous_color: str,
+        current_color: str,
+        previous_points: float,
+        current_points: float,
+        previous_direction: str,
+        current_direction: str,
+        change_reason: str,
+        db: Session,
+        user_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Triggered when forming candle color, size, or points change significantly after prediction."""
+        channels = cls._resolve_channels(alert)
+        if alert:
+            alert.last_event = NotificationEventType.SUPERTREND_CHANGED.value
+            db.commit()
+            if not user_id and getattr(alert, "user_id", None):
+                user_id = alert.user_id
+
+        data = {
+            "user_id": user_id,
+            "alert_id": alert.id if alert else None,
+            "symbol": symbol.upper(),
+            "current_price": current_price,
+            "supertrend_price": supertrend_price,
+            "previous_color": str(previous_color).upper(),
+            "current_color": str(current_color).upper(),
+            "previous_points": previous_points,
+            "current_points": current_points,
+            "previous_direction": str(previous_direction).upper(),
+            "current_direction": str(current_direction).upper(),
+            "direction": str(current_direction).upper(),
+            "change_reason": change_reason,
+            "timestamp": _ist_str(),
+            "extra_data": json.dumps({
+                "symbol": symbol.upper(),
+                "current_price": current_price,
+                "supertrend_price": supertrend_price,
+                "previous_color": str(previous_color).upper(),
+                "current_color": str(current_color).upper(),
+                "previous_points": previous_points,
+                "current_points": current_points,
+                "previous_direction": str(previous_direction).upper(),
+                "current_direction": str(current_direction).upper(),
+                "direction": str(current_direction).upper(),
+                "change_reason": change_reason,
+                "event": NotificationEventType.SUPERTREND_CHANGED.value
+            })
+        }
+
+        return notification_service.dispatch(
+            event_type=NotificationEventType.SUPERTREND_CHANGED.value,
             data=data,
             channels=channels,
             db=db
@@ -496,7 +616,11 @@ class NotificationManager:
         model_probability: Optional[float] = None,
         points_distance: Optional[float] = None
     ) -> List[Dict[str, Any]]:
-        """Triggered when SuperTrend flips direction and is confirmed by the monitoring model."""
+        """Triggered when SuperTrend flips direction (SuperIndicator Hit — Model Prediction is TRUE)."""
+        if supertrend_price <= 0.01 or current_price <= 0.01 or abs(supertrend_price - current_price) > (current_price * 0.25):
+            print(f"[NotificationManager] Suppressed invalid SuperTrend signal for {symbol}: price={current_price}, ST={supertrend_price}. Values outside physical limits.")
+            return []
+
         now_ts = datetime.utcnow().timestamp()
         dedup_key = f"{user_id or 'all'}_{symbol.upper()}"
         last_sig, last_ts = cls._LAST_ST_SIGNAL.get(dedup_key, (None, 0.0))

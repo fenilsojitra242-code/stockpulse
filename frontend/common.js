@@ -19,11 +19,150 @@ window.StockPulse = (function () {
                      currentPath.startsWith('/register') ||
                      currentPath.startsWith('/signin');
 
-  // Enforce authentication gate: redirect unauthenticated users to /login immediately
-  const existingToken = localStorage.getItem(STORAGE_KEY_TOKEN);
+  // Helper to read cookies safely
+  function getCookie(name) {
+    try {
+      const value = `; ${document.cookie}`;
+      const parts = value.split(`; ${name}=`);
+      if (parts.length === 2) return parts.pop().split(';').shift();
+    } catch (e) {}
+    return null;
+  }
+
+  // --- AUTOMATIC SESSION TIMEOUT & AUTO LOGOUT ---
+  const STORAGE_KEY_SESSION_TIMEOUT = 'stockpulse_session_timeout_minutes';
+  const STORAGE_KEY_LAST_ACTIVE = 'stockpulse_last_active_ts';
+  const DEFAULT_SESSION_TIMEOUT_MINUTES = 15; // Default 15 minutes auto-logout when site closed/inactive
+
+  function getSessionTimeoutMinutes() {
+    const val = localStorage.getItem(STORAGE_KEY_SESSION_TIMEOUT);
+    if (!val) return DEFAULT_SESSION_TIMEOUT_MINUTES;
+    const num = parseInt(val, 10);
+    return isNaN(num) || num <= 0 ? DEFAULT_SESSION_TIMEOUT_MINUTES : num;
+  }
+
+  function setSessionTimeoutMinutes(mins) {
+    const m = Math.max(1, parseInt(mins, 10) || DEFAULT_SESSION_TIMEOUT_MINUTES);
+    localStorage.setItem(STORAGE_KEY_SESSION_TIMEOUT, m.toString());
+  }
+
+  function recordUserActivity() {
+    localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, Date.now().toString());
+  }
+
+  function performAutoLogout(reason = 'session_timeout') {
+    localStorage.removeItem(STORAGE_KEY_TOKEN);
+    localStorage.removeItem(STORAGE_KEY_USER);
+    localStorage.removeItem(STORAGE_KEY_LAST_ACTIVE);
+    // Invalidate cookie
+    document.cookie = 'stockpulse_jwt_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax';
+
+    // Best-effort notify backend
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon('/api/auth/logout');
+      } else {
+        fetch('/api/auth/logout', { method: 'POST', keepalive: true }).catch(() => {});
+      }
+    } catch (e) {}
+
+    const targetUrl = reason === 'session_timeout' ? '/login?session_timeout=true' : '/login?logout=true';
+    window.location.replace(targetUrl);
+  }
+
+  function checkSessionTimeout() {
+    if (isAuthPage) return false;
+    const token = getStoredToken();
+    if (!token) return false;
+
+    const lastActiveStr = localStorage.getItem(STORAGE_KEY_LAST_ACTIVE);
+    if (!lastActiveStr) {
+      // First visit: initialize last active timestamp
+      recordUserActivity();
+      return false;
+    }
+
+    const lastActive = parseInt(lastActiveStr, 10);
+    if (isNaN(lastActive) || lastActive <= 0) {
+      recordUserActivity();
+      return false;
+    }
+
+    const timeoutMinutes = getSessionTimeoutMinutes();
+    const timeoutMs = timeoutMinutes * 60 * 1000;
+    const elapsed = Date.now() - lastActive;
+
+    if (elapsed > timeoutMs) {
+      console.warn(`[StockPulse Session] Closed/inactive for ${(elapsed / 60000).toFixed(1)}m > ${timeoutMinutes}m timeout. Auto logging out.`);
+      performAutoLogout('session_timeout');
+      return true;
+    }
+
+    // Refresh active timestamp
+    recordUserActivity();
+    return false;
+  }
+
+  // Retrieve JWT token from either localStorage or HTTP cookie (bidirectional sync)
+  function getStoredToken() {
+    let t = localStorage.getItem(STORAGE_KEY_TOKEN);
+    if (!t) {
+      t = getCookie(STORAGE_KEY_TOKEN);
+      if (t) {
+        localStorage.setItem(STORAGE_KEY_TOKEN, t);
+      }
+    }
+    return t;
+  }
+
+  // 1. Immediately evaluate session timeout upon opening site
+  if (checkSessionTimeout()) {
+    return {};
+  }
+
+  // 2. Enforce authentication gate: redirect unauthenticated users to /login immediately
+  const existingToken = getStoredToken();
   if (!existingToken && !isAuthPage) {
     window.location.replace('/login');
     return {};
+  }
+
+  // 3. User activity & background timeout watcher
+  if (!isAuthPage) {
+    let lastRecord = 0;
+    const onUserActive = () => {
+      const now = Date.now();
+      if (now - lastRecord > 10000) {
+        lastRecord = now;
+        recordUserActivity();
+      }
+    };
+
+    ['mousedown', 'keydown', 'scroll', 'touchstart', 'click'].forEach(evt => {
+      window.addEventListener(evt, onUserActive, { passive: true });
+    });
+
+    // Record exact closing time when site / tab is closed or hidden
+    window.addEventListener('beforeunload', recordUserActivity);
+    window.addEventListener('pagehide', recordUserActivity);
+
+    // When tab becomes visible again or regains focus, check session timeout immediately
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        checkSessionTimeout();
+      } else {
+        recordUserActivity();
+      }
+    });
+
+    window.addEventListener('focus', () => {
+      checkSessionTimeout();
+    });
+
+    // Background interval check every 15s while tab is open
+    setInterval(() => {
+      checkSessionTimeout();
+    }, 15000);
   }
 
   // Intercept window.fetch to automatically include JWT Authorization header and handle session expiry
@@ -31,7 +170,7 @@ window.StockPulse = (function () {
     window._stockpulseFetchWrapped = true;
     const originalFetch = window.fetch;
     window.fetch = async function (resource, init = {}) {
-      const token = localStorage.getItem(STORAGE_KEY_TOKEN);
+      const token = getStoredToken();
       if (token) {
         init = init || {};
         init.headers = init.headers || {};
@@ -52,10 +191,10 @@ window.StockPulse = (function () {
 
       const response = await originalFetch(resource, init);
 
-      // Handle 401 Unauthorized by returning to /login
+      // Handle 401 Unauthorized by returning to /login only for authenticated user endpoints
       if (response.status === 401 && !isAuthPage) {
         const urlStr = typeof resource === 'string' ? resource : (resource.url || '');
-        if (urlStr.includes('/api/')) {
+        if (urlStr.includes('/api/auth/me') || urlStr.includes('/api/alerts') || urlStr.includes('/api/notifications')) {
           localStorage.removeItem(STORAGE_KEY_TOKEN);
           localStorage.removeItem(STORAGE_KEY_USER);
           window.location.replace('/login');
@@ -220,6 +359,8 @@ window.StockPulse = (function () {
       const isSuperTrendBuy = ev === 'SUPERTREND_BUY';
       const isSuperTrendSell = ev === 'SUPERTREND_SELL';
       const isSuperTrendApproaching = ev === 'SUPERTREND_APPROACHING';
+      const isSuperTrendFalse = ev === 'SUPERTREND_FALSE';
+      const isSuperTrendChanged = ev === 'SUPERTREND_CHANGED';
 
       if (isSuperTrendBuy) {
         // High-Energy Ascending Harmonic Quad (F5 -> A5 -> C6 -> E6) for BUY signal
@@ -254,7 +395,7 @@ window.StockPulse = (function () {
           osc.stop(now + idx * 0.11 + 0.38);
         });
       } else if (isSuperTrendApproaching) {
-        // Crisp Dual Sonar Ping (C6 -> E6) for 1-point proximity
+        // Crisp Dual Sonar Ping (C6 -> E6) for proximity warning
         const notes = [1046.50, 1318.51];
         notes.forEach((freq, idx) => {
           const osc = ctx.createOscillator();
@@ -268,6 +409,38 @@ window.StockPulse = (function () {
           gain.connect(ctx.destination);
           osc.start(now + idx * 0.13);
           osc.stop(now + idx * 0.13 + 0.35);
+        });
+      } else if (isSuperTrendFalse) {
+        // Low-Tone Descending Triple Ping (G5 -> E5 -> C5) for Model Prediction False
+        const notes = [783.99, 659.25, 523.25];
+        notes.forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(freq, now + idx * 0.12);
+          gain.gain.setValueAtTime(0.0001, now + idx * 0.12);
+          gain.gain.exponentialRampToValueAtTime(0.26, now + idx * 0.12 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.12 + 0.32);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + idx * 0.12);
+          osc.stop(now + idx * 0.12 + 0.35);
+        });
+      } else if (isSuperTrendChanged) {
+        // Dual-tone Shift Chime (E5 -> A5)
+        const notes = [659.25, 880.00];
+        notes.forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(freq, now + idx * 0.12);
+          gain.gain.setValueAtTime(0.0001, now + idx * 0.12);
+          gain.gain.exponentialRampToValueAtTime(0.32, now + idx * 0.12 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.12 + 0.35);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + idx * 0.12);
+          osc.stop(now + idx * 0.12 + 0.38);
         });
       } else if (isStopLoss) {
         // High-Urgency Triple Siren Pulse (B5 -> G5 -> E5)
@@ -436,11 +609,19 @@ window.StockPulse = (function () {
 
       let textToSay = '';
       if (ev === 'SUPERTREND_BUY') {
-        textToSay = `SuperTrend hit! Buy signal for ${sym}${currP ? ' at ' + currP + ' rupees' : ''}. Trend flipped bullish.`;
+        textToSay = `SuperIndicator Hit! Buy confirmed for ${sym}${currP ? ' at ' + currP + ' rupees' : ''}. Model prediction is true.`;
       } else if (ev === 'SUPERTREND_SELL') {
-        textToSay = `SuperTrend hit! Sell signal for ${sym}${currP ? ' at ' + currP + ' rupees' : ''}. Trend flipped bearish.`;
+        textToSay = `SuperIndicator Hit! Sell confirmed for ${sym}${currP ? ' at ' + currP + ' rupees' : ''}. Model prediction is true.`;
       } else if (ev === 'SUPERTREND_APPROACHING') {
-        textToSay = `SuperTrend alert. ${sym} is within one point of the SuperTrend line.`;
+        const tgt = extra.target_direction || 'next trend';
+        textToSay = `SuperIndicator Early Warning for ${sym}. Model predicts hit to ${tgt}.`;
+      } else if (ev === 'SUPERTREND_FALSE') {
+        const curSit = extra.current_direction || 'active';
+        textToSay = `SuperIndicator model prediction is false for ${sym}. Current situation remains ${curSit}.`;
+      } else if (ev === 'SUPERTREND_CHANGED') {
+        const curCol = extra.current_color || 'shifted';
+        const curPts = extra.current_points != null ? extra.current_points : '';
+        textToSay = `SuperIndicator shift alert for ${sym}. Candle turned ${curCol} with ${curPts} points.`;
       } else if (ev === 'TARGET_TRIGGERED' || ev === 'SUCCESS') {
         textToSay = `Target reached for ${sym}${currP ? ' at ' + currP + ' rupees' : ''}. Success!`;
       } else if (ev === 'EARLY_WARNING') {
@@ -875,6 +1056,8 @@ window.StockPulse = (function () {
       const isSuperTrendBuy = eventType === 'SUPERTREND_BUY';
       const isSuperTrendSell = eventType === 'SUPERTREND_SELL';
       const isSuperTrendApproaching = eventType === 'SUPERTREND_APPROACHING';
+      const isSuperTrendFalse = eventType === 'SUPERTREND_FALSE';
+      const isSuperTrendChanged = eventType === 'SUPERTREND_CHANGED';
 
       let eventClass = 'monitoring-started';
       let iconHtml = '<i class="fa-solid fa-play"></i>';
@@ -882,15 +1065,23 @@ window.StockPulse = (function () {
       if (isSuperTrendBuy) {
         eventClass = 'supertrend-buy';
         iconHtml = '<i class="fa-solid fa-arrow-trend-up"></i>';
-        badgeTitle = 'SuperTrend HIT: BUY Signal!';
+        badgeTitle = 'SuperIndicator HIT: BUY (Prediction TRUE!)';
       } else if (isSuperTrendSell) {
         eventClass = 'supertrend-sell';
         iconHtml = '<i class="fa-solid fa-arrow-trend-down"></i>';
-        badgeTitle = 'SuperTrend HIT: SELL Signal!';
+        badgeTitle = 'SuperIndicator HIT: SELL (Prediction TRUE!)';
       } else if (isSuperTrendApproaching) {
         eventClass = 'supertrend-approaching';
         iconHtml = '<i class="fa-solid fa-bolt"></i>';
-        badgeTitle = 'SuperTrend Proximity (≤ 1 Pt)';
+        badgeTitle = 'SuperIndicator Early Warning: Hit Predicted';
+      } else if (isSuperTrendFalse) {
+        eventClass = 'supertrend-false';
+        iconHtml = '<i class="fa-solid fa-circle-xmark"></i>';
+        badgeTitle = 'SuperIndicator: Model Prediction FALSE';
+      } else if (isSuperTrendChanged) {
+        eventClass = 'supertrend-changed';
+        iconHtml = '<i class="fa-solid fa-arrows-rotate"></i>';
+        badgeTitle = 'SuperIndicator: Candle Shift Alert';
       } else if (isStopLoss) {
         eventClass = 'stop-loss-triggered';
         iconHtml = '<i class="fa-solid fa-shield-halved"></i>';
@@ -934,11 +1125,13 @@ window.StockPulse = (function () {
 
       let moveText = '';
       if (isSuperTrendBuy) {
-        moveText = 'BUY SIGNAL';
+        moveText = 'HIT: BUY CONFIRMED';
       } else if (isSuperTrendSell) {
-        moveText = 'SELL SIGNAL';
+        moveText = 'HIT: SELL CONFIRMED';
       } else if (isSuperTrendApproaching) {
-        moveText = 'TESTING LINE';
+        moveText = 'HIT PREDICTED';
+      } else if (isSuperTrendFalse) {
+        moveText = `PREDICTION FALSE (${extra.current_direction || 'ACTIVE'})`;
       } else if (movement != null) {
         const signPrefix = movement >= 0 ? '+' : '';
         moveText = `${signPrefix}${movement.toFixed(2)}%`;
@@ -953,7 +1146,7 @@ window.StockPulse = (function () {
 
       // Real-time Progress Gauge calculation (for target alerts)
       let gaugeHtml = '';
-      if (targetPct && movement != null && !isSuperTrendBuy && !isSuperTrendSell && !isSuperTrendApproaching) {
+      if (targetPct && movement != null && !isSuperTrendBuy && !isSuperTrendSell && !isSuperTrendApproaching && !isSuperTrendFalse) {
         const progressPct = Math.min(100, Math.max(0, (Math.abs(movement) / Math.abs(targetPct)) * 100));
         let distText = '';
         if (targetPriceNum && currentPriceNum) {
@@ -978,12 +1171,30 @@ window.StockPulse = (function () {
       }
 
       let metricsGridHtml = '';
-      if (isSuperTrendBuy || isSuperTrendSell || isSuperTrendApproaching) {
+      if (isSuperTrendBuy || isSuperTrendSell || isSuperTrendApproaching || isSuperTrendFalse || isSuperTrendChanged) {
         const stPriceNum = extra.supertrend_price != null ? Number(extra.supertrend_price) : null;
         const stPriceStr = stPriceNum ? `₹${stPriceNum.toFixed(2)}` : 'Line';
         const distPts = extra.distance_points != null ? Number(extra.distance_points).toFixed(2) : '0.00';
-        const signalLabel = isSuperTrendBuy ? 'BUY (BULLISH)' : (isSuperTrendSell ? 'SELL (BEARISH)' : (extra.current_direction || 'TESTING'));
-        const signalColor = isSuperTrendBuy ? '#16a34a' : (isSuperTrendSell ? '#dc2626' : '#f59e0b');
+        let signalLabel = '';
+        let signalColor = '#f59e0b';
+        if (isSuperTrendBuy) {
+          signalLabel = 'BUY (TRUE)';
+          signalColor = '#16a34a';
+        } else if (isSuperTrendSell) {
+          signalLabel = 'SELL (TRUE)';
+          signalColor = '#dc2626';
+        } else if (isSuperTrendFalse) {
+          signalLabel = `FALSE (${extra.current_direction || 'ACTIVE'})`;
+          signalColor = '#dc2626';
+        } else if (isSuperTrendChanged) {
+          const col = extra.current_color || 'SHIFTED';
+          const pts = extra.current_points != null ? extra.current_points : '0.00';
+          signalLabel = `${col} (${pts > 0 ? '+' : ''}${pts} pts)`;
+          signalColor = col === 'GREEN' ? '#16a34a' : '#dc2626';
+        } else {
+          signalLabel = `${extra.target_direction || 'HIT'} PREDICTED`;
+          signalColor = '#f59e0b';
+        }
 
         metricsGridHtml = `
           <div class="popup-metrics-grid">
@@ -992,11 +1203,11 @@ window.StockPulse = (function () {
               <span class="popup-metric-value">${currentPrice}</span>
             </div>
             <div class="popup-metric-item">
-              <span class="popup-metric-label">SuperTrend Line</span>
+              <span class="popup-metric-label">SuperIndicator Line</span>
               <span class="popup-metric-value" style="color: ${signalColor}; font-weight: 700;">${stPriceStr}</span>
             </div>
             <div class="popup-metric-item">
-              <span class="popup-metric-label">${isSuperTrendApproaching ? 'Gap to Line' : 'Signal'}</span>
+              <span class="popup-metric-label">${isSuperTrendApproaching ? 'Gap to Line' : 'Status'}</span>
               <span class="popup-metric-value" style="color: ${signalColor}; font-weight: 700;">${isSuperTrendApproaching ? `${distPts} pts` : signalLabel}</span>
             </div>
           </div>
@@ -1374,23 +1585,25 @@ window.StockPulse = (function () {
 
     if (btnLogout) {
       btnLogout.addEventListener('click', async () => {
-        localStorage.removeItem(STORAGE_KEY_TOKEN);
-        localStorage.removeItem(STORAGE_KEY_USER);
-        try {
-          await fetch('/api/auth/logout', { method: 'POST' });
-        } catch (e) {}
-        window.location.replace('/login?logout=true');
+        performAutoLogout('manual_logout');
       });
     }
 
     if (formLogin) {
       formLogin.addEventListener('submit', async (e) => {
         e.preventDefault();
+        const existing = getUser() || {};
         const email = emailInput ? emailInput.value.trim() : '';
         const name = nameInput ? nameInput.value.trim() : '';
 
-        setUser({ email: email || 'trader@stockpulse.local', name: name || 'Trader' });
+        const updated = {
+          ...existing,
+          name: name || existing.name || 'Trader',
+          email: email || existing.email || 'user@stockpulse.io'
+        };
+        setUser(updated);
         renderUserUI();
+        renderNavbarUserPill();
         if (feedbackMsg) {
           feedbackMsg.className = 'login-feedback-msg success';
           feedbackMsg.textContent = 'Preferences saved! Popup alerts are ready.';
@@ -1413,8 +1626,40 @@ window.StockPulse = (function () {
     const btnDismissSettings = document.getElementById('btn-dismiss-settings');
     const btnSaveSettings = document.getElementById('btn-save-settings');
 
+    // Dynamically inject Session Timeout control if not already present
+    if (settingsModal) {
+      const modalBody = settingsModal.querySelector('.modal-body');
+      if (modalBody && !document.getElementById('setting-session-timeout')) {
+        const timeoutGroup = document.createElement('div');
+        timeoutGroup.className = 'settings-group';
+        timeoutGroup.style.marginTop = '16px';
+        timeoutGroup.innerHTML = `
+          <label class="settings-label" style="display: flex; align-items: center; gap: 6px;"><i class="fa-solid fa-clock-rotate-left text-blue"></i> Session Timeout (Auto-Logout)</label>
+          <p class="settings-desc">Automatically logs out your account if the site is closed or inactive.</p>
+          <div class="select-wrapper">
+            <select id="setting-session-timeout" class="control-select">
+              <option value="5">5 Minutes (Strict Security)</option>
+              <option value="15">15 Minutes (Default)</option>
+              <option value="30">30 Minutes</option>
+              <option value="60">1 Hour</option>
+              <option value="240">4 Hours</option>
+            </select>
+          </div>
+        `;
+        modalBody.appendChild(timeoutGroup);
+      }
+    }
+
+    function syncSettingsUI() {
+      const timeoutSel = document.getElementById('setting-session-timeout');
+      if (timeoutSel) {
+        timeoutSel.value = getSessionTimeoutMinutes().toString();
+      }
+    }
+
     if (btnOpenSettings && settingsModal) {
       btnOpenSettings.addEventListener('click', () => {
+        syncSettingsUI();
         settingsModal.style.display = 'flex';
       });
     }
@@ -1433,6 +1678,10 @@ window.StockPulse = (function () {
 
     if (btnSaveSettings && settingsModal) {
       btnSaveSettings.addEventListener('click', () => {
+        const timeoutSel = document.getElementById('setting-session-timeout');
+        if (timeoutSel) {
+          setSessionTimeoutMinutes(timeoutSel.value);
+        }
         settingsModal.style.display = 'none';
       });
     }
@@ -1499,15 +1748,11 @@ window.StockPulse = (function () {
       if (logoutBtn) {
         logoutBtn.addEventListener('mouseenter', () => logoutBtn.style.background = '#fee2e2');
         logoutBtn.addEventListener('mouseleave', () => logoutBtn.style.background = '#fef2f2');
-        logoutBtn.addEventListener('click', async () => {
-          localStorage.removeItem(STORAGE_KEY_TOKEN);
-          localStorage.removeItem(STORAGE_KEY_USER);
-          try {
-            await fetch('/api/auth/logout', { method: 'POST' });
-          } catch (e) {}
-          window.location.replace('/login');
+        logoutBtn.addEventListener('click', () => {
+          performAutoLogout('manual_logout');
         });
       }
+
     } else {
       const circleBtn = document.getElementById('nav-user-circle-btn');
       const nameEl = document.getElementById('nav-dropdown-name');
@@ -1529,12 +1774,31 @@ window.StockPulse = (function () {
     }
   }
 
+  // Sync current user profile from /api/auth/me to keep navbar and profile perfectly up-to-date
+  async function syncCurrentUserProfile() {
+    const token = getStoredToken();
+    if (!token) return;
+    try {
+      const res = await fetch('/api/auth/me', {
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.user) {
+          setUser(data.user);
+          renderNavbarUserPill();
+        }
+      }
+    } catch (e) {}
+  }
+
   // --- AUTO INITIALIZE ON DOM READY ---
   document.addEventListener('DOMContentLoaded', () => {
     if (isAuthPage) return;
     highlightCurrentNav();
     setupMobileMenu();
     renderNavbarUserPill();
+    syncCurrentUserProfile();
     setupAuthModal();
     setupSettingsModal();
     setupAudioUnlock();

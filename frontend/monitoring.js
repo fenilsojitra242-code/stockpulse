@@ -1103,7 +1103,7 @@
   if (btnTestSupertrend) {
     btnTestSupertrend.addEventListener('click', async () => {
       const sym = (el.stockInput ? el.stockInput.value.trim().toUpperCase() : currentStock) || 'TCS';
-      const signals = ['APPROACHING', 'BUY', 'SELL'];
+      const signals = ['APPROACHING', 'BUY', 'SELL', 'FALSE'];
       const sig = signals[testSignalCycle % signals.length];
       testSignalCycle++;
       btnTestSupertrend.disabled = true;
@@ -1560,9 +1560,15 @@
         prevCurrentDir.style.background = '';
         prevCurrentDir.style.color = '';
         prevCurrentDir.className = `st-preview-status ${isBuy ? 'buy' : 'sell'}`;
-        prevCurrentDir.innerHTML = isBuy
+        const cColor = data.candle_color || (isBuy ? 'GREEN' : 'RED');
+        const cPts = Number(data.candle_points || 0);
+        const cStable = data.is_candle_stable;
+        const ptsSign = cPts >= 0 ? `+${cPts.toFixed(2)}` : `${cPts.toFixed(2)}`;
+        const candleBadge = `<span style="margin-left: 6px; font-size: 11px; padding: 2px 7px; border-radius: 4px; background: ${cColor === 'GREEN' ? '#dcfce7' : '#fee2e2'}; color: ${cColor === 'GREEN' ? '#15803d' : '#b91c1c'}; font-weight: 700; border: 1px solid ${cColor === 'GREEN' ? '#bbf7d0' : '#fecaca'};">Candle: ${cColor} (${ptsSign} pts) ${cStable ? '● Stable' : '⏳ Forming'}</span>`;
+
+        prevCurrentDir.innerHTML = (isBuy
           ? `<i class="fa-solid fa-arrow-trend-up"></i> ${sym}: BUY (BULLISH)`
-          : `<i class="fa-solid fa-arrow-trend-down"></i> ${sym}: SELL (BEARISH)`;
+          : `<i class="fa-solid fa-arrow-trend-down"></i> ${sym}: SELL (BEARISH)`) + candleBadge;
       }
 
       const earlyAlertPrice = isBuy
