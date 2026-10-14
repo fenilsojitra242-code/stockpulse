@@ -548,13 +548,13 @@
 
         <div class="form-group" style="margin-bottom: 18px;">
           <label style="text-align: center; display: block; margin-bottom: 8px; font-weight: 600;">Enter 6-Digit Code</label>
-          <div class="otp-inputs-wrapper">
-            <input type="text" maxlength="1" class="otp-digit-input" data-idx="0" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" required>
-            <input type="text" maxlength="1" class="otp-digit-input" data-idx="1" inputmode="numeric" pattern="[0-9]*" required>
-            <input type="text" maxlength="1" class="otp-digit-input" data-idx="2" inputmode="numeric" pattern="[0-9]*" required>
-            <input type="text" maxlength="1" class="otp-digit-input" data-idx="3" inputmode="numeric" pattern="[0-9]*" required>
-            <input type="text" maxlength="1" class="otp-digit-input" data-idx="4" inputmode="numeric" pattern="[0-9]*" required>
-            <input type="text" maxlength="1" class="otp-digit-input" data-idx="5" inputmode="numeric" pattern="[0-9]*" required>
+          <div class="otp-inputs-wrapper" id="reg-otp-inputs">
+            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="0" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" required>
+            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="1" inputmode="numeric" pattern="[0-9]*" required>
+            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="2" inputmode="numeric" pattern="[0-9]*" required>
+            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="3" inputmode="numeric" pattern="[0-9]*" required>
+            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="4" inputmode="numeric" pattern="[0-9]*" required>
+            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="5" inputmode="numeric" pattern="[0-9]*" required>
           </div>
         </div>
 
@@ -896,7 +896,7 @@
     let pendingRegistration = null;
     let otpCountdownInterval = null;
 
-    // Handle Register Submit -> Creates account directly & stores permanently in SQLite
+    // Handle Register Submit -> Step 1: Request 6-Digit Email OTP
     async function handleRegisterSubmit(e) {
       e.preventDefault();
       hideFeedback();
@@ -909,7 +909,7 @@
 
       const name = nameInput.value.trim();
       const username = userInput.value.trim();
-      const email = emailInput.value.trim();
+      const email = emailInput.value.trim().toLowerCase();
       const password = passInput.value;
 
       if (!name || !email || !password) {
@@ -923,23 +923,23 @@
       }
 
       btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Creating account...</span>';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Sending verification code...</span>';
 
       try {
-        const res = await fetch('/api/auth/register', {
+        const res = await fetch('/api/auth/send-registration-otp', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, email, password, username: username || null })
+          body: JSON.stringify({ email, name, username: username || null })
         });
 
         const data = await res.json();
 
         if (!res.ok) {
-          const detail = data && data.detail ? data.detail : 'Registration failed. Please try again.';
+          const detail = data && data.detail ? data.detail : 'Could not send verification code. Please check your email.';
           showFeedback(detail, true);
           btn.disabled = false;
           btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
-          // If already exists, switch to login tab with email prefilled
+
           if (detail.includes('already exists')) {
             setTimeout(() => {
               switchAuthTab('login');
@@ -948,34 +948,40 @@
                 loginIdent.value = email;
                 document.getElementById('login-password').focus();
               }
-            }, 1600);
+            }, 1800);
           }
           return;
         }
 
-        // Account created & stored permanently in DB!
-        localStorage.setItem('stockpulse_jwt_token', data.access_token);
-        localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
-        localStorage.setItem('stockpulse_remembered_identifier', email);
-        localStorage.setItem('stockpulse_last_active_ts', Date.now().toString());
+        // Store pending registration info
+        pendingRegistration = { name, username, email, password };
+        btn.disabled = false;
+        btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
 
-        showFeedback(`Account created successfully! Welcome, ${data.user.name}! Entering dashboard...`, false);
+        // Switch to OTP view
+        document.getElementById('form-register').style.display = 'none';
+        const tabs = document.querySelector('.auth-tabs');
+        if (tabs) tabs.style.display = 'none';
 
-        setTimeout(() => {
-          window.location.href = '/live';
-        }, 500);
+        const formOtp = document.getElementById('form-otp');
+        formOtp.style.display = 'block';
+        document.getElementById('otp-target-email').textContent = email;
+
+        renderOtpDeliveryNotice(data, email);
+        startOtpCountdown(60);
+        setupOtpDigitInputs();
 
       } catch (err) {
-        console.error('Registration error:', err);
-        showFeedback('Network error during registration. Please try again.', true);
+        console.error('Registration OTP send error:', err);
+        showFeedback('Network error. Unable to send verification code. Please try again.', true);
         btn.disabled = false;
         btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
       }
     }
 
-    // Setup interactive 6-digit OTP boxes
+    // Setup interactive 6-digit OTP boxes for registration
     function setupOtpDigitInputs() {
-      const inputs = document.querySelectorAll('.otp-digit-input');
+      const inputs = document.querySelectorAll('#form-otp .reg-otp-digit');
       inputs.forEach((input, index) => {
         input.value = '';
         input.classList.remove('filled');
@@ -1014,11 +1020,13 @@
         };
       });
 
-      if (inputs[0]) inputs[0].focus();
+      setTimeout(() => {
+        if (inputs[0]) inputs[0].focus();
+      }, 60);
     }
 
     function fillOtpInputs(codeStr) {
-      const inputs = document.querySelectorAll('.otp-digit-input');
+      const inputs = document.querySelectorAll('#form-otp .reg-otp-digit');
       for (let i = 0; i < inputs.length; i++) {
         inputs[i].value = codeStr[i] || '';
         inputs[i].classList.toggle('filled', !!inputs[i].value);
@@ -1038,7 +1046,7 @@
         return;
       }
 
-      const inputs = document.querySelectorAll('.otp-digit-input');
+      const inputs = document.querySelectorAll('#form-otp .reg-otp-digit');
       const otpCode = Array.from(inputs).map(i => i.value).join('');
 
       if (otpCode.length !== 6) {
@@ -1073,17 +1081,18 @@
           return;
         }
 
-        // Verified!
+        // Verified and saved permanently in DB!
         clearInterval(otpCountdownInterval);
         localStorage.setItem('stockpulse_jwt_token', data.access_token);
         localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
+        localStorage.setItem('stockpulse_remembered_identifier', data.user.email);
         localStorage.setItem('stockpulse_last_active_ts', Date.now().toString());
         const usernameMsg = data.user && data.user.username ? ` Your username is "${data.user.username}".` : '';
         showFeedback(`Email verified! Welcome, ${data.user.name}!${usernameMsg} Entering dashboard...`, false);
 
         setTimeout(() => {
           window.location.href = '/live';
-        }, 900);
+        }, 800);
 
       } catch (err) {
         console.error('OTP Verification error:', err);
@@ -1300,7 +1309,7 @@
     }
 
     function setupResetOtpDigitInputs() {
-      const inputs = document.querySelectorAll('.reset-otp-digit');
+      const inputs = document.querySelectorAll('#form-reset-password .reset-otp-digit');
       inputs.forEach((input, index) => {
         input.value = '';
         input.classList.remove('filled');
@@ -1341,7 +1350,9 @@
         };
       });
 
-      if (inputs[0]) inputs[0].focus();
+      setTimeout(() => {
+        if (inputs[0]) inputs[0].focus();
+      }, 60);
     }
 
     async function handleResetPasswordSubmit(e) {
@@ -1354,7 +1365,7 @@
         return;
       }
 
-      const inputs = document.querySelectorAll('.reset-otp-digit');
+      const inputs = document.querySelectorAll('#form-reset-password .reset-otp-digit');
       const otpCode = Array.from(inputs).map(i => i.value).join('');
       const newPassInput = document.getElementById('reset-new-password');
       const confirmPassInput = document.getElementById('reset-confirm-password');
