@@ -3,12 +3,15 @@ Walk-Forward Supertrend Reversal Prediction Model Training & Evaluation Engine.
 
 Strictly follows quantitative and ML best practices:
 1. Accurate Supertrend target labeling on completed candle transitions.
+   - Whipsaw rejection: Target requires sustained reversal (>= 2 consecutive bars)
+     to prevent training on 1-bar noise.
 2. Distinct prediction horizons: 1m, 2m, and 5m for BUY-to-SELL and SELL-to-BUY.
 3. Chronological walk-forward validation (Train 60%, Val 20%, Test 20%) with zero temporal leakage.
-4. Model comparison: Baseline Heuristic, Logistic Regression, Random Forest, and XGBoost.
-5. Probability calibration (Platt/Sigmoid scaling).
+4. Model comparison: Baseline A (Standard ST), Baseline B (Transparent Rule-Based Filter), Baseline C (Random Forest / XGBoost).
+5. Probability calibration (Platt/Sigmoid scaling on validation set).
 6. Out-of-sample evaluation: Precision, Recall, False-Positive Rate, Lead Time distribution, and Brier Score.
-7. Model artifact export to app/ml/reversal_model.joblib and app/ml/reversal_metrics.json.
+7. Market regime evaluations: Strong Bullish, Strong Bearish, Sideways Choppy, High Volatility, Low Volatility.
+8. Model artifact export to app/ml/reversal_model.joblib and app/ml/reversal_metrics.json.
 """
 
 import os
@@ -39,6 +42,7 @@ from app.services.feature_engine import (
     SUPERTREND_REVERSAL_FEATURE_NAMES,
     sanitize_candles
 )
+from app.services.market_regime import classify_market_regime
 
 MODEL_OUTPUT_PATH = "app/ml/reversal_model.joblib"
 METRICS_OUTPUT_PATH = "app/ml/reversal_metrics.json"
@@ -67,15 +71,17 @@ def generate_reversal_dataset(
 ) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
     """
     Constructs chronologically sorted features and multi-horizon binary targets.
-    Target = 1 if the confirmed Supertrend flips within the next H candles, else 0.
+    Genuine Reversal Definition (Phase 3):
+    Target = 1 if the confirmed Supertrend undergoes a sustained flip (>= 2 bars in opposite direction)
+    within the next H candles. Filters out single-bar noise whipsaws.
     """
     all_feature_rows = []
     
-    # We will record target arrays for each horizon
     target_records = {f"reversal_{h}m": [] for h in horizons}
     direction_records = []
     symbol_records = []
     lead_time_records = []
+    regime_records = []
 
     for sym, raw_df in datasets.items():
         feat_matrix = compute_supertrend_reversal_matrix(raw_df, period=10, multiplier=3.0)
@@ -83,16 +89,14 @@ def generate_reversal_dataset(
         dirs = feat_matrix['supertrend_direction'].values
         max_h = max(horizons)
 
-        # Iterate leaving room for the maximum forward lookahead
-        for i in range(20, n - max_h):
+        for i in range(25, n - max_h):
             curr_dir = dirs[i]
             row = feat_matrix.iloc[i]
 
-            # Features vector dictionary
             f_dict = {}
             for col in SUPERTREND_REVERSAL_FEATURE_NAMES:
                 if col == 'horizon_minutes':
-                    f_dict[col] = 5.0  # default horizon placeholder
+                    f_dict[col] = 5.0
                 elif col in row:
                     f_dict[col] = float(row[col])
                 else:
@@ -102,17 +106,35 @@ def generate_reversal_dataset(
             direction_records.append(curr_dir)
             symbol_records.append(sym)
 
-            # Calculate actual future reversal transition for each horizon H
-            # A reversal is defined as dirs[i + k] != curr_dir for any 1 <= k <= H
+            # Classify regime up to bar i (strictly past data)
+            r_val = float(row.get('rsi_14', 50.0))
+            if r_val >= 54.0 and curr_dir == 1:
+                regime = "BULLISH_TREND"
+            elif r_val <= 46.0 and curr_dir == -1:
+                regime = "BEARISH_TREND"
+            else:
+                regime = "SIDEWAYS_CHOPPY"
+            regime_records.append(regime)
+
+            # Calculate actual future reversal transition for each horizon H (sustained >= 2 bars)
             for h in horizons:
-                future_dirs = dirs[i + 1: i + 1 + h]
-                has_flipped = int(np.any(future_dirs != curr_dir))
+                has_flipped = 0
+                for k in range(1, h + 1):
+                    if i + k < n and dirs[i + k] != curr_dir:
+                        next_k = i + k + 1
+                        if next_k < n:
+                            if dirs[next_k] != curr_dir:
+                                has_flipped = 1
+                                break
+                        else:
+                            has_flipped = 1
+                            break
                 target_records[f"reversal_{h}m"].append(has_flipped)
 
-            # Calculate actual lead time (number of bars until next flip, up to 30)
+            # Actual lead time to sustained flip
             lead = 30
-            for k in range(1, min(31, n - i)):
-                if dirs[i + k] != curr_dir:
+            for k in range(1, min(31, n - i - 1)):
+                if dirs[i + k] != curr_dir and dirs[i + k + 1] != curr_dir:
                     lead = k
                     break
             lead_time_records.append(lead)
@@ -122,42 +144,63 @@ def generate_reversal_dataset(
     targets_dict['direction'] = np.array(direction_records, dtype=np.int32)
     targets_dict['lead_time'] = np.array(lead_time_records, dtype=np.int32)
     targets_dict['symbol'] = np.array(symbol_records)
+    targets_dict['regime'] = np.array(regime_records)
 
     return features_df, targets_dict
 
 
-def evaluate_baseline_heuristic(
+def evaluate_baseline_candidates(
     X_test_df: pd.DataFrame,
-    y_test: np.ndarray,
-    atr_threshold: float = 0.50
+    y_test: np.ndarray
 ) -> Dict[str, Any]:
     """
-    Evaluates rule-based baseline:
-    Signals reversal warning if distance_to_band_atr <= atr_threshold AND adverse momentum > 0.
+    Evaluates Candidate A (Standard Supertrend without predictive ML)
+    and Candidate B (Supertrend plus transparent reversal-risk filter).
     """
     dist_atr = X_test_df['distance_to_band_atr'].values
     mom_adv = X_test_df['mom_adverse_3m'].values
 
-    # Baseline prediction rule: band proximity with adverse momentum
-    y_pred = ((dist_atr <= atr_threshold) & (mom_adv > 0.0)).astype(int)
+    # Candidate A: Standard Supertrend (no predictive early warning; signals only on immediate breach)
+    cand_a_preds = (dist_atr <= 0.10).astype(int)
+    cm_a = confusion_matrix(y_test, cand_a_preds)
+    tn_a, fp_a, fn_a, tp_a = cm_a.ravel() if cm_a.size == 4 else (len(y_test), 0, 0, 0)
+    prec_a = float(precision_score(y_test, cand_a_preds, zero_division=0))
+    rec_a = float(recall_score(y_test, cand_a_preds, zero_division=0))
+    f1_a = float(f1_score(y_test, cand_a_preds, zero_division=0))
+    fpr_a = float(fp_a / (fp_a + tn_a)) if (fp_a + tn_a) > 0 else 0.0
 
-    precision = float(precision_score(y_test, y_pred, zero_division=0))
-    recall = float(recall_score(y_test, y_pred, zero_division=0))
-    f1 = float(f1_score(y_test, y_pred, zero_division=0))
-    cm = confusion_matrix(y_test, y_pred)
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (len(y_test), 0, 0, 0)
-    fpr = float(fp / (fp + tn)) if (fp + tn) > 0 else 0.0
+    # Candidate B: Supertrend + transparent reversal-risk filter (band proximity <= 0.45 ATR and adverse momentum > 0)
+    cand_b_preds = ((dist_atr <= 0.45) & (mom_adv > 0.0)).astype(int)
+    cm_b = confusion_matrix(y_test, cand_b_preds)
+    tn_b, fp_b, fn_b, tp_b = cm_b.ravel() if cm_b.size == 4 else (len(y_test), 0, 0, 0)
+    prec_b = float(precision_score(y_test, cand_b_preds, zero_division=0))
+    rec_b = float(recall_score(y_test, cand_b_preds, zero_division=0))
+    f1_b = float(f1_score(y_test, cand_b_preds, zero_division=0))
+    fpr_b = float(fp_b / (fp_b + tn_b)) if (fp_b + tn_b) > 0 else 0.0
 
     return {
-        "model_name": "Rule-Based Baseline (Proximity & Momentum)",
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "f1": round(f1, 4),
-        "false_positive_rate": round(fpr, 4),
-        "true_positives": int(tp),
-        "false_positives": int(fp),
-        "false_negatives": int(fn),
-        "true_negatives": int(tn)
+        "candidate_A_standard_supertrend": {
+            "model_name": "Candidate A: Corrected Standard Supertrend (No Early Warning)",
+            "precision": round(prec_a, 4),
+            "recall": round(rec_a, 4),
+            "f1": round(f1_a, 4),
+            "false_positive_rate": round(fpr_a, 4),
+            "true_positives": int(tp_a),
+            "false_positives": int(fp_a),
+            "false_negatives": int(fn_a),
+            "true_negatives": int(tn_a)
+        },
+        "candidate_B_transparent_filter": {
+            "model_name": "Candidate B: Supertrend + Transparent Reversal-Risk Filter",
+            "precision": round(prec_b, 4),
+            "recall": round(rec_b, 4),
+            "f1": round(f1_b, 4),
+            "false_positive_rate": round(fpr_b, 4),
+            "true_positives": int(tp_b),
+            "false_positives": int(fp_b),
+            "false_negatives": int(fn_b),
+            "true_negatives": int(tn_b)
+        }
     }
 
 
@@ -174,7 +217,6 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
     n_samples = len(features_df)
     print(f"[Reversal Train] Total labeled historical transitions: {n_samples}")
 
-    # Primary prediction target is 5-minute reversal horizon
     primary_target = targets_dict["reversal_5m"]
     pos_rate = float(np.mean(primary_target)) * 100.0
     print(f"[Reversal Train] 5m Reversal positive sample rate: {pos_rate:.2f}%")
@@ -195,6 +237,7 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
 
     dirs_test = targets_dict['direction'][val_end:]
     lead_times_test = targets_dict['lead_time'][val_end:]
+    regimes_test = targets_dict['regime'][val_end:]
 
     # Scale linear model inputs using Train data only
     scaler = StandardScaler()
@@ -202,15 +245,16 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
     X_val_scaled = scaler.transform(X_val_df)
     X_test_scaled = scaler.transform(X_test_df)
 
-    # 1. Baseline Evaluation
-    baseline_metrics = evaluate_baseline_heuristic(X_test_df, y_test, atr_threshold=0.50)
-    print(f"[Reversal Train] Baseline: Precision={baseline_metrics['precision']:.3f}, Recall={baseline_metrics['recall']:.3f}, F1={baseline_metrics['f1']:.3f}")
+    # Baselines A & B Evaluation
+    baseline_metrics = evaluate_baseline_candidates(X_test_df, y_test)
+    print(f"[Reversal Train] Candidate A (No ML): Prec={baseline_metrics['candidate_A_standard_supertrend']['precision']:.3f}, Rec={baseline_metrics['candidate_A_standard_supertrend']['recall']:.3f}")
+    print(f"[Reversal Train] Candidate B (Filter): Prec={baseline_metrics['candidate_B_transparent_filter']['precision']:.3f}, Rec={baseline_metrics['candidate_B_transparent_filter']['recall']:.3f}")
 
-    # 2. Candidate Models
+    # Candidate C Models (Supervised Classifiers)
     models_to_test = {
         "Logistic Regression": (
             LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42),
-            True  # use scaled
+            True
         ),
         "Random Forest": (
             RandomForestClassifier(n_estimators=100, max_depth=6, class_weight="balanced", random_state=42, n_jobs=-1),
@@ -230,7 +274,7 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
         )
     }
 
-    comparison_results = {"baseline": baseline_metrics, "models": {}}
+    comparison_results = {"baselines": baseline_metrics, "models": {}}
     best_model_name = None
     best_f1 = -1.0
     best_clf = None
@@ -241,10 +285,9 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
         X_v = X_val_scaled if use_scaled else X_val_df.values
         X_te = X_test_scaled if use_scaled else X_test_df.values
 
-        # Train on training split
         model.fit(X_tr, y_train)
 
-        # Calibrate probabilities using Validation split
+        # Calibrate probabilities using Validation split (Platt / Sigmoid Scaling)
         try:
             calibrated = CalibratedClassifierCV(estimator=model, method="sigmoid", cv="prefit")
             calibrated.fit(X_v, y_val)
@@ -252,10 +295,9 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
         except Exception:
             eval_clf = model
 
-        # Predict probabilities on untouched Out-Of-Sample Test
         probs_test = eval_clf.predict_proba(X_te)[:, 1]
 
-        # Optimize decision threshold on Validation set to prioritize precision over false alerts
+        # Optimize decision threshold on Validation set
         best_thresh = 0.50
         best_val_f1 = 0.0
         val_probs = eval_clf.predict_proba(X_v)[:, 1]
@@ -306,13 +348,13 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
 
     print(f"[Reversal Train] Selected Champion Model: {best_model_name} (F1: {best_f1:.3f})")
 
-    # Evaluate Champion Model across Direction and Horizons
+    # Evaluate Champion Model across Direction, Horizon, and Regimes
     X_te_final = X_test_scaled if best_use_scaled else X_test_df.values
     test_probs = best_clf.predict_proba(X_te_final)[:, 1]
     champ_thresh = comparison_results["models"][best_model_name]["optimal_threshold"]
     test_preds = (test_probs >= champ_thresh).astype(int)
 
-    # 1. Directional breakdown (BUY -> SELL vs SELL -> BUY)
+    # 1. Directional breakdown
     is_buy_trend = (dirs_test == 1)
     is_sell_trend = (dirs_test == -1)
 
@@ -346,7 +388,7 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
             "false_positive_rate": round(float(h_fp / (h_fp + h_tn)) if (h_fp + h_tn) > 0 else 0.0, 4)
         }
 
-    # 3. Lead Time Distribution (for true positive warning detections)
+    # 3. Lead Time Distribution
     tp_mask = (test_preds == 1) & (y_test == 1)
     if np.sum(tp_mask) > 0:
         detected_leads = lead_times_test[tp_mask]
@@ -368,23 +410,38 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
     else:
         lead_dist = {"mean_minutes": 0.0, "median_minutes": 0.0, "lead_time_histogram": {}}
 
-    # 4. Volatility regime breakdown
+    # 4. Market Regime Breakdown (Phase 7)
+    regime_metrics = {}
+    for r_name in ("BULLISH_TREND", "BEARISH_TREND", "SIDEWAYS_CHOPPY"):
+        r_mask = (regimes_test == r_name)
+        if np.sum(r_mask) > 0:
+            r_y = y_test[r_mask]
+            r_pred = test_preds[r_mask]
+            r_cm = confusion_matrix(r_y, r_pred)
+            r_tn, r_fp, r_fn, r_tp = r_cm.ravel() if r_cm.size == 4 else (len(r_y), 0, 0, 0)
+            regime_metrics[r_name] = {
+                "samples": int(np.sum(r_mask)),
+                "precision": round(float(precision_score(r_y, r_pred, zero_division=0)), 4),
+                "recall": round(float(recall_score(r_y, r_pred, zero_division=0)), 4),
+                "f1": round(float(f1_score(r_y, r_pred, zero_division=0)), 4),
+                "false_positive_rate": round(float(r_fp / (r_fp + r_tn)) if (r_fp + r_tn) > 0 else 0.0, 4)
+            }
+
+    # Volatility breakdown
     vol_test = X_test_df['volatility_10m'].values
     median_vol = float(np.median(vol_test))
     high_vol_mask = vol_test >= median_vol
     low_vol_mask = vol_test < median_vol
 
-    regime_metrics = {
-        "high_volatility": {
-            "samples": int(np.sum(high_vol_mask)),
-            "precision": round(float(precision_score(y_test[high_vol_mask], test_preds[high_vol_mask], zero_division=0)), 4),
-            "recall": round(float(recall_score(y_test[high_vol_mask], test_preds[high_vol_mask], zero_division=0)), 4)
-        },
-        "low_volatility": {
-            "samples": int(np.sum(low_vol_mask)),
-            "precision": round(float(precision_score(y_test[low_vol_mask], test_preds[low_vol_mask], zero_division=0)), 4),
-            "recall": round(float(recall_score(y_test[low_vol_mask], test_preds[low_vol_mask], zero_division=0)), 4)
-        }
+    regime_metrics["HIGH_VOLATILITY"] = {
+        "samples": int(np.sum(high_vol_mask)),
+        "precision": round(float(precision_score(y_test[high_vol_mask], test_preds[high_vol_mask], zero_division=0)), 4),
+        "recall": round(float(recall_score(y_test[high_vol_mask], test_preds[high_vol_mask], zero_division=0)), 4)
+    }
+    regime_metrics["LOW_VOLATILITY"] = {
+        "samples": int(np.sum(low_vol_mask)),
+        "precision": round(float(precision_score(y_test[low_vol_mask], test_preds[low_vol_mask], zero_division=0)), 4),
+        "recall": round(float(recall_score(y_test[low_vol_mask], test_preds[low_vol_mask], zero_division=0)), 4)
     }
 
     full_report = {

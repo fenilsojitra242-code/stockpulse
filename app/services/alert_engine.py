@@ -8,6 +8,8 @@ from app.services.market_data import get_latest_market_snapshot
 from app.services.prediction import predict_target_probability, predict_supertrend_reversal
 from app.services.adaptive_threshold import adaptive_engine
 from app.services.messaging import notification_manager, NotificationEventType
+from app.services.diagnostic_logger import diagnostic_logger
+from app.services.market_regime import classify_market_regime
 
 
 POPULAR_SUPERTREND_SYMBOLS = ["TCS", "INFY", "RELIANCE", "HDFCBANK", "TATAMOTORS", "SBIN", "ICICIBANK", "BHARTIARTL", "ITC", "WIPRO"]
@@ -402,20 +404,49 @@ def _process_supertrend_state_transition(
 
     prev_confirmed_dir = state["confirmed_direction"]
 
+    # Reversal Prediction Layer & Market Regime (strictly causal):
+    candles_history = st_result.get("candles") or []
+    pred_res = predict_supertrend_reversal(
+        candles_or_df=candles_history,
+        confirmed_direction=prev_confirmed_dir,
+        horizon_minutes=5,
+        current_price=curr_price,
+        symbol=symbol,
+        supertrend_price=confirmed_st_p,
+        atr_value=st_result.get("atr", 1.0)
+    )
+    predicted_prob = float(pred_res.get("reversal_probability", risk_score))
+    is_pred_early_warning = bool(pred_res.get("is_early_warning_ready", False))
+    model_type = pred_res.get("model_type", "RULE_BASED")
+    uncertainty_flag = pred_res.get("uncertainty_flag", False)
+    market_regime = pred_res.get("market_regime", "SIDEWAYS_CHOPPY")
+    rec_confirming = int(pred_res.get("recommended_min_confirming_candles", 1))
+    pred_event_id = pred_res.get("event_id")
+
+    state["predicted_reversal_direction"] = target_dir
+    state["reversal_probability"] = predicted_prob
+    state["reversal_model_type"] = model_type
+    state["market_regime"] = market_regime
+    if pred_event_id:
+        state["last_prediction_event_id"] = pred_event_id
+
     # Deduplicate processing if candle timestamp has not progressed
     is_new_candle = (candle_ts != state.get("last_processed_candle_ts"))
 
     # 1. Evaluate Reversal Transition on Completed Candle
     if is_confirmed_flip and raw_confirmed_dir != prev_confirmed_dir and confirmed_st_p > 0.01:
-        # Check configurable reversal quality filter (Step 4 & Step 5):
-        # min_atr_distance_filter: minimum penetration beyond band in ATR multiples
+        # Check configurable reversal quality filter:
         passes_penetration = True
         min_atr_filter = float(st_result.get("min_atr_filter", 0.0) or 0.0)
         if min_atr_filter > 0.0 and penetration_atr_ratio < min_atr_filter:
             passes_penetration = False
 
         # Configurable confirming candles count (default 1 = immediate closed-candle, >1 = consecutive candles)
-        min_confirming_candles = int(st_result.get("min_confirming_candles", 1) or 1)
+        user_conf_candles = int(st_result.get("min_confirming_candles", 1) or 1)
+        if st_result.get("auto_regime_confirmation", False):
+            min_confirming_candles = max(user_conf_candles, rec_confirming)
+        else:
+            min_confirming_candles = user_conf_candles
 
         if passes_penetration:
             if state.get("pending_reversal_direction") == raw_confirmed_dir:
@@ -441,6 +472,15 @@ def _process_supertrend_state_transition(
                     state["early_warning_sent"] = False
                     state["warning_started_at"] = None
 
+                    # Resolve pending diagnostic prediction as TRUE_POSITIVE
+                    if state.get("last_prediction_event_id"):
+                        diagnostic_logger.resolve_outcome(
+                            event_id=state["last_prediction_event_id"],
+                            actual_flip_occurred=True,
+                            actual_subsequent_direction=raw_confirmed_dir,
+                            resolution_reason="CONFIRMED_FLIP"
+                        )
+
                     print(f"[SuperTrend] {condition_key} ({symbol}): CONFIRMED {raw_confirmed_dir}! Price: Rs.{curr_price:.2f}, ST: Rs.{confirmed_st_p:.2f} (Candle: {candle_ts})")
                     notification_manager.emit_supertrend_signal(
                         alert=alert,
@@ -461,43 +501,23 @@ def _process_supertrend_state_transition(
                         db.commit()
 
                     state["state"] = "MONITORING"
-                    return {"symbol": symbol, "type": "CONFIRMED_SIGNAL", "signal": raw_confirmed_dir, "candle_ts": candle_ts}
+                    return {"symbol": symbol, "type": "CONFIRMED_SIGNAL", "signal": raw_confirmed_dir, "candle_ts": candle_ts, "market_regime": market_regime}
             else:
-                # Transition pending confirmation: preserve confirmed trend
+                # Transition pending confirmation: preserve confirmed trend without breaking established BUY
                 state["state"] = f"PENDING_{raw_confirmed_dir}"
         else:
-            # Failed quality penetration: cancel any pending reversal and retain confirmed state
+            # Failed quality penetration: cancel pending reversal and retain confirmed state
             state["pending_reversal_direction"] = None
             state["confirming_candles_count"] = 0
 
     elif state.get("pending_reversal_direction") and raw_confirmed_dir == prev_confirmed_dir:
-        # Reversal failed / cancelled because raw trend returned to original confirmed direction
+        # Reversal cancelled because price rebounded to original confirmed direction
         state["pending_reversal_direction"] = None
         state["confirming_candles_count"] = 0
         state["state"] = "MONITORING"
 
     if is_new_candle:
         state["last_processed_candle_ts"] = candle_ts
-
-    # Reversal Prediction Layer (ML / Calibrated Heuristic):
-    candles_history = st_result.get("candles") or []
-    pred_res = predict_supertrend_reversal(
-        candles_or_df=candles_history,
-        confirmed_direction=prev_confirmed_dir,
-        horizon_minutes=5,
-        current_price=curr_price,
-        symbol=symbol,
-        supertrend_price=confirmed_st_p,
-        atr_value=st_result.get("atr", 1.0)
-    )
-    predicted_prob = float(pred_res.get("reversal_probability", risk_score))
-    is_pred_early_warning = bool(pred_res.get("is_early_warning_ready", False))
-    model_type = pred_res.get("model_type", "RULE_BASED")
-    uncertainty_flag = pred_res.get("uncertainty_flag", False)
-
-    state["predicted_reversal_direction"] = target_dir
-    state["reversal_probability"] = predicted_prob
-    state["reversal_model_type"] = model_type
 
     # 2. Early Warning: Developing Candle Proximity Entry, Intrabar Penetration, OR ML Early Warning
     # An intrabar dip or ML prediction while confirmed trend is BUY alerts provisional early warning ONLY, NEVER emits SELL CONFIRMED
@@ -515,7 +535,7 @@ def _process_supertrend_state_transition(
                 state["last_dispatched_event_id"] = event_id
                 state["early_warning_sent"] = True
 
-                print(f"[SuperTrend] {condition_key} ({symbol}): Early Warning Triggered! Distance: {dist_pts:.2f} <= {prox_pts:.2f} pts to {target_dir}. Model ({model_type}): {predicted_prob * 100:.1f}%")
+                print(f"[SuperTrend] {condition_key} ({symbol}): Early Warning Triggered! Distance: {dist_pts:.2f} <= {prox_pts:.2f} pts to {target_dir}. Model ({model_type}): {predicted_prob * 100:.1f}%, Regime: {market_regime}")
                 notification_manager.emit_supertrend_approaching(
                     alert=alert,
                     symbol=symbol,
@@ -540,7 +560,9 @@ def _process_supertrend_state_transition(
                     "distance": dist_pts,
                     "target_direction": target_dir,
                     "model_probability": predicted_prob,
-                    "model_type": model_type
+                    "model_type": model_type,
+                    "market_regime": market_regime,
+                    "prediction_state": pred_res.get("prediction_state", "EARLY_WARNING")
                 }
 
     # 3. Early Warning Expiration / Invalidation
@@ -550,6 +572,12 @@ def _process_supertrend_state_transition(
             state["state"] = "WARNING_EXPIRED"
             state["early_warning_sent"] = False
             state["warning_started_at"] = None
+            if state.get("last_prediction_event_id"):
+                diagnostic_logger.resolve_outcome(
+                    event_id=state["last_prediction_event_id"],
+                    actual_flip_occurred=False,
+                    resolution_reason="PULLED_AWAY"
+                )
             if alert and getattr(alert, "supertrend_approaching_sent", False):
                 alert.supertrend_approaching_sent = False
                 db.commit()
@@ -561,6 +589,12 @@ def _process_supertrend_state_transition(
             state["state"] = "WARNING_EXPIRED"
             state["early_warning_sent"] = False
             state["warning_started_at"] = None
+            if state.get("last_prediction_event_id"):
+                diagnostic_logger.resolve_outcome(
+                    event_id=state["last_prediction_event_id"],
+                    actual_flip_occurred=False,
+                    resolution_reason="TIMEOUT"
+                )
             if alert and getattr(alert, "supertrend_approaching_sent", False):
                 alert.supertrend_approaching_sent = False
                 db.commit()

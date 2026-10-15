@@ -10,6 +10,8 @@ from app.services.feature_engine import (
     SUPERTREND_REVERSAL_FEATURE_NAMES
 )
 from app.services.market_data import get_latest_market_snapshot
+from app.services.market_regime import classify_market_regime
+from app.services.diagnostic_logger import diagnostic_logger
 
 _MODEL_CACHE = None
 MODEL_PATH = "app/ml/model.joblib"
@@ -322,11 +324,19 @@ def predict_supertrend_reversal(
         trend_duration_bars=int(feat_dict.get('trend_duration_bars', 1))
     )
 
+    # Classify market regime at prediction time (strictly causal past data)
+    regime_info = classify_market_regime(candles_or_df)
+    primary_regime = regime_info.get("primary_regime", "SIDEWAYS_CHOPPY")
+    vol_regime = regime_info.get("volatility_regime", "NORMAL_VOLATILITY")
+    regime_thresh_boost = float(regime_info.get("recommended_threshold_boost", 0.0))
+    rec_confirming = int(regime_info.get("recommended_min_confirming_candles", 1))
+
     reversal_artifact = load_reversal_model()
     model_type = "RULE_BASED"
     is_heuristic = True
     calibrated_prob = heuristic_score
-    active_threshold = float(threshold) if threshold is not None else 0.55
+    base_thresh = float(threshold) if threshold is not None else 0.50
+    active_threshold = min(0.85, base_thresh + regime_thresh_boost)
 
     if reversal_artifact is not None and has_sufficient:
         try:
@@ -348,26 +358,64 @@ def predict_supertrend_reversal(
             model_type = str(reversal_artifact.get("model_name", "CALIBRATED_ML"))
             is_heuristic = False
             if threshold is None:
-                active_threshold = float(reversal_artifact.get("optimal_threshold", 0.55))
+                opt_thresh = float(reversal_artifact.get("optimal_threshold", 0.50))
+                active_threshold = min(0.85, opt_thresh + regime_thresh_boost)
 
         except Exception as e:
             print(f"[PredictionService] Reversal model inference exception for {symbol}: {e}. Using rule-based fallback.")
             calibrated_prob = heuristic_score
             model_type = "RULE_BASED"
             is_heuristic = True
-            active_threshold = float(threshold) if threshold is not None else 0.60
+            active_threshold = min(0.85, (float(threshold) if threshold is not None else 0.55) + regime_thresh_boost)
 
     # Decision: Trigger early warning only when calibrated probability meets threshold and quality passes
     is_early_warning = bool(calibrated_prob >= active_threshold and not uncertainty_flag)
 
+    # Phase 6 Strict 4-State Machine Separation
+    if uncertainty_flag or cp <= 0:
+        prediction_state = "DATA_UNAVAILABLE"
+        decision_reason = "Insufficient historical candles (< 15 bars) or invalid price"
+    elif is_early_warning:
+        prediction_state = "EARLY_WARNING"
+        decision_reason = f"Probability {calibrated_prob * 100:.1f}% >= threshold {active_threshold * 100:.0f}% in {primary_regime}"
+    else:
+        prediction_state = "NO_CLEAR_SIGNAL"
+        decision_reason = f"Within safe bounds ({dist_atr:.2f}x ATR). Probability {calibrated_prob * 100:.1f}% < threshold {active_threshold * 100:.0f}%"
+
     explanation = (
-        f"{symbol} is in confirmed {conf_dir} trend (ST: ₹{st_p:.2f}, distance: {dist_atr:.2f}x ATR). "
+        f"{symbol} is in confirmed {conf_dir} trend (ST: ₹{st_p:.2f}, distance: {dist_atr:.2f}x ATR, regime: {primary_regime}). "
         f"Early reversal warning to {reversal_target_dir} within {horizon}m: "
         f"probability {calibrated_prob * 100:.1f}% (threshold {active_threshold * 100:.0f}%, model: {model_type}). "
         f"{'CRITICAL REVERSAL RISK - EARLY WARNING ACTIVE' if is_early_warning else 'Within safe trend bounds'}"
     )
 
+    # Phase 2 Diagnostic Event Record (strictly past features snapshot)
+    event_rec = diagnostic_logger.record_prediction(
+        symbol=symbol,
+        candle_interval="1m",
+        prediction_timestamp=str(feat_dict.get('candle_timestamp') or ""),
+        market_data_timestamp=str(feat_dict.get('candle_timestamp') or ""),
+        confirmed_direction_before=conf_dir,
+        raw_direction=conf_dir,
+        atr=atr_val,
+        final_upper_band=st_p if conf_dir == "SELL" else (st_p + 2.0 * atr_val),
+        final_lower_band=st_p if conf_dir == "BUY" else max(0.01, st_p - 2.0 * atr_val),
+        closing_price=cp,
+        features_snapshot=feat_dict,
+        predicted_direction=reversal_target_dir,
+        horizon_minutes=horizon,
+        reversal_probability=calibrated_prob,
+        heuristic_score=heuristic_score,
+        applied_threshold=active_threshold,
+        market_regime=primary_regime,
+        volatility_regime=vol_regime,
+        early_warning_decision=is_early_warning,
+        decision_reason=decision_reason,
+        model_type=model_type
+    )
+
     return {
+        "event_id": event_rec.get("event_id"),
         "symbol": symbol,
         "current_direction": conf_dir,
         "confirmed_direction": conf_dir,
@@ -377,6 +425,11 @@ def predict_supertrend_reversal(
         "reversal_risk_score": heuristic_score,
         "threshold": active_threshold,
         "is_early_warning_ready": is_early_warning,
+        "prediction_state": prediction_state,
+        "decision_reason": decision_reason,
+        "market_regime": primary_regime,
+        "volatility_regime": vol_regime,
+        "recommended_min_confirming_candles": rec_confirming,
         "model_type": model_type,
         "is_heuristic": is_heuristic,
         "uncertainty_flag": uncertainty_flag,

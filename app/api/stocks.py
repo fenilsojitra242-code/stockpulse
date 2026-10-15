@@ -438,6 +438,23 @@ def test_supertrend_notification(
     }
 
 
+@router.get("/supertrend/diagnostics")
+def get_supertrend_diagnostics(limit: int = 50, symbol: Optional[str] = None):
+    """Retrieve recent causal prediction event logs for root-cause diagnosis."""
+    from app.services.diagnostic_logger import diagnostic_logger
+    logs = diagnostic_logger.get_recent_events(limit=limit, symbol=symbol)
+    return {"status": "success", "count": len(logs), "logs": logs}
+
+
+@router.get("/supertrend/diagnostics/summary")
+def get_supertrend_diagnostics_summary():
+    """Retrieve aggregate performance and false positive diagnostics across market regimes."""
+    from app.services.diagnostic_logger import diagnostic_logger
+    summary = diagnostic_logger.get_summary()
+    return {"status": "success", "summary": summary}
+
+
+
 
 def seed_default_stocks_if_needed(db: Session):
     """Seed initial stock list in DB and backfill any missing stocks."""

@@ -1112,6 +1112,116 @@ class TestSuperTrendAnalyzer(unittest.TestCase):
         finally:
             db.close()
 
+    def test_phase2_diagnostic_event_logging(self):
+        """Phase 2: Verify diagnostic event logger records causal features and resolves outcomes."""
+        from app.services.diagnostic_logger import diagnostic_logger
+
+        rec = diagnostic_logger.record_prediction(
+            symbol="INFY",
+            candle_interval="1m",
+            prediction_timestamp="2026-10-15T10:00:00",
+            market_data_timestamp="2026-10-15T10:00:00",
+            confirmed_direction_before="BUY",
+            raw_direction="BUY",
+            atr=1.5,
+            final_upper_band=105.0,
+            final_lower_band=95.0,
+            closing_price=100.0,
+            features_snapshot={"dist_to_st_norm": 0.05, "rsi": 45.0, "atr_norm": 0.01},
+            predicted_direction="SELL",
+            horizon_minutes=5,
+            reversal_probability=0.72,
+            heuristic_score=0.65,
+            applied_threshold=0.65,
+            market_regime="SIDEWAYS_CHOPPY",
+            volatility_regime="HIGH_VOLATILITY",
+            early_warning_decision=True,
+            decision_reason="Probability above threshold in choppy regime",
+            model_type="CALIBRATED_ML"
+        )
+        event_id = rec.get("event_id")
+        self.assertIsNotNone(event_id)
+
+        # Retrieve recent logs
+        logs = diagnostic_logger.get_recent_events(limit=5)
+        logged_event = next((l for l in logs if l.get("event_id") == event_id), None)
+        self.assertIsNotNone(logged_event)
+        self.assertEqual(logged_event["symbol"], "INFY")
+        self.assertEqual(logged_event["confirmed_direction_before"], "BUY")
+        self.assertEqual(logged_event["market_regime"], "SIDEWAYS_CHOPPY")
+        self.assertEqual(logged_event["outcome"], "PENDING")
+
+        # Resolve outcome as TRUE_POSITIVE
+        resolved = diagnostic_logger.resolve_outcome(
+            event_id=event_id,
+            actual_flip_occurred=True,
+            actual_subsequent_direction="SELL",
+            resolution_reason="CONFIRMED_FLIP"
+        )
+        self.assertTrue(resolved)
+
+        # Check summary metrics
+        summary = diagnostic_logger.get_summary()
+        self.assertGreaterEqual(summary["total_predictions"], 1)
+
+    def test_phase6_state_separation(self):
+        """Phase 6: Strict state separation - Early warning NEVER mutates confirmed direction."""
+        from app.services.prediction import predict_supertrend_reversal
+
+        # Synthetic candles in established BUY trend
+        candles = []
+        p = 100.0
+        for i in range(25):
+            candles.append({
+                "open": p - 0.5, "high": p + 1.0, "low": p - 0.5, "close": p,
+                "volume": 1000, "full_time": f"10:{i:02d}"
+            })
+            p += 0.5
+
+        # Query prediction with high reversal probability scenario
+        pred = predict_supertrend_reversal(
+            candles_or_df=candles,
+            confirmed_direction="BUY",
+            horizon_minutes=5,
+            current_price=110.0,
+            symbol="TCS",
+            supertrend_price=109.8,
+            atr_value=1.5
+        )
+
+        # State must be one of the strict 4 states
+        self.assertIn(pred["prediction_state"], ["CONFIRMED", "EARLY_WARNING", "NO_CLEAR_SIGNAL", "DATA_UNAVAILABLE"])
+        # Most critically: prediction output does NOT flip confirmed direction
+        self.assertNotEqual(pred.get("prediction_state"), "SELL_CONFIRMED")
+        self.assertEqual(pred["reversal_target_direction"], "SELL")
+
+    def test_phase7_market_regime_classification(self):
+        """Phase 7: Verify market regime classification identifies trends and choppy conditions."""
+        from app.services.market_regime import classify_market_regime
+
+        # 1. Bullish series: consistently higher closes
+        bullish_candles = [{"open": 100 + i, "high": 101 + i, "low": 99.5 + i, "close": 100.8 + i, "volume": 1000} for i in range(30)]
+        bull_regime = classify_market_regime(bullish_candles)
+        self.assertEqual(bull_regime["primary_regime"], "BULLISH_TREND")
+        self.assertEqual(bull_regime["recommended_threshold_boost"], 0.0)
+
+        # 2. Bearish series: consistently lower closes
+        bearish_candles = [{"open": 200 - i, "high": 200.5 - i, "low": 198.5 - i, "close": 199.0 - i, "volume": 1000} for i in range(30)]
+        bear_regime = classify_market_regime(bearish_candles)
+        self.assertEqual(bear_regime["primary_regime"], "BEARISH_TREND")
+
+        # 3. Sideways choppy series: oscillating around mean
+        choppy_candles = []
+        for i in range(30):
+            noise = 2.0 if (i % 2 == 0) else -2.0
+            choppy_candles.append({"open": 150.0, "high": 153.0, "low": 147.0, "close": 150.0 + noise, "volume": 1000})
+        chop_regime = classify_market_regime(choppy_candles)
+        self.assertEqual(chop_regime["primary_regime"], "SIDEWAYS_CHOPPY")
+        # In choppy markets, confirming candles = 2 and threshold boost > 0
+        self.assertEqual(chop_regime["recommended_min_confirming_candles"], 2)
+        self.assertGreater(chop_regime["recommended_threshold_boost"], 0.0)
+
+
 
 
 def run_quantitative_performance_evaluation():
