@@ -782,6 +782,8 @@ FEATURE_NAMES = [
 SUPERTREND_REVERSAL_FEATURE_NAMES = [
     'direction_code',        # Current confirmed direction: +1 (BUY) or -1 (SELL)
     'distance_to_band_atr',  # |Close - Supertrend| / ATR
+    'band_slope_3m',         # Supertrend band slope: (ST[t] - ST[t-3]) / ATR
+    'dist_change_3m',        # Recent band distance change: dist_atr[t] - dist_atr[t-3]
     'return_1m',             # 1-minute return %
     'return_2m',             # 2-minute return %
     'return_3m',             # 3-minute return %
@@ -804,6 +806,9 @@ SUPERTREND_REVERSAL_FEATURE_NAMES = [
     'vol_ratio_20m',         # Volume / 20-period Volume SMA
     'vol_change_1m',         # 1-minute volume % change
     'trend_duration_bars',   # Completed bars in current confirmed trend
+    'mtf_5m_trend',          # Multi-timeframe 5m Supertrend trend direction (+1 or -1)
+    'mtf_5m_rsi',            # Multi-timeframe 5m RSI context
+    'mtf_5m_return',         # Multi-timeframe 5m return %
     'horizon_minutes'        # Prediction horizon (1, 2, or 5)
 ]
 
@@ -817,7 +822,7 @@ def compute_supertrend_reversal_matrix(
     """
     Computes standard Supertrend alongside rich technical indicator features
     for historical walk-forward modeling or vectorized inference.
-    Strictly uses information available up to each candle timestamp (no lookahead).
+    Strictly uses information available up to each completed candle timestamp (no lookahead).
     """
     clean_df = sanitize_candles(df)
     if clean_df.empty or len(clean_df) < 5:
@@ -841,8 +846,10 @@ def compute_supertrend_reversal_matrix(
     st_df['momentum_3m'] = (c - c.shift(3)).fillna(0.0)
     st_df['momentum_5m'] = (c - c.shift(5)).fillna(0.0)
 
-    # 3. Supertrend Band Distance
+    # 3. Supertrend Band Distance, Band Slope, and Distance Change
     st_df['distance_to_band_atr'] = (np.abs(c - st_df['supertrend']) / atr).fillna(0.0)
+    st_df['band_slope_3m'] = ((st_df['supertrend'] - st_df['supertrend'].shift(3)) / atr).fillna(0.0)
+    st_df['dist_change_3m'] = (st_df['distance_to_band_atr'] - st_df['distance_to_band_atr'].shift(3)).fillna(0.0)
 
     # 4. RSI & Changes
     rsi = compute_rsi(c, period=14)
@@ -875,7 +882,15 @@ def compute_supertrend_reversal_matrix(
     st_df['vol_ratio_20m'] = (vol_num / vol_sma20).fillna(1.0)
     st_df['vol_change_1m'] = vol_num.pct_change(1).replace([np.inf, -np.inf], 0.0).fillna(0.0) * 100.0
 
-    # 10. Trend Duration (bars in current trend) & Adverse Momentum
+    # 10. Multi-Timeframe 5-Minute Context (derived causally from completed 1m windows)
+    h5 = h.rolling(5, min_periods=1).max()
+    l5 = l.rolling(5, min_periods=1).min()
+    st_df['mtf_5m_return'] = c.pct_change(5).fillna(0.0) * 100.0
+    st_df['mtf_5m_rsi'] = compute_rsi(c, period=min(len(c), 50)).fillna(50.0)
+    st5_df = compute_supertrend(pd.DataFrame({'open': o, 'high': h5, 'low': l5, 'close': c, 'volume': vol}), period=period, multiplier=multiplier)
+    st_df['mtf_5m_trend'] = st5_df['supertrend_direction'].fillna(1.0)
+
+    # 11. Trend Duration (bars in current trend) & Adverse Momentum
     dirs = st_df['supertrend_direction'].values
     n = len(dirs)
     trend_dur = np.zeros(n, dtype=np.float32)
@@ -914,10 +929,14 @@ def extract_supertrend_reversal_feature_vector(
     horizon_minutes: int = 5,
     current_price: Optional[float] = None,
     period: int = 10,
-    multiplier: float = 3.0
+    multiplier: float = 3.0,
+    exclude_incomplete_candle: bool = True
 ) -> Tuple[np.ndarray, Dict[str, Any], bool]:
     """
-    Extracts the calibrated reversal feature vector for the latest candle.
+    Extracts the calibrated reversal feature vector strictly from completed candles.
+    When exclude_incomplete_candle is True:
+      - If candles contain a developing/unclosed bar, features are extracted from the
+        last closed completed candle to prevent lookahead or mid-bar noise leakage.
     Returns:
         (feature_vector: np.ndarray, feature_dict: Dict, has_sufficient_history: bool)
     """
@@ -936,17 +955,14 @@ def extract_supertrend_reversal_feature_vector(
         clean_df = clean_df.iloc[-100:].reset_index(drop=True)
 
     df = clean_df.copy()
-    if current_price is not None and current_price > 0:
-        last_idx = df.index[-1]
-        df.loc[last_idx, 'close'] = float(current_price)
-        if 'high' in df.columns:
-            df.loc[last_idx, 'high'] = max(float(df.loc[last_idx, 'high']), float(current_price))
-        if 'low' in df.columns:
-            cur_low = float(df.loc[last_idx, 'low'])
-            df.loc[last_idx, 'low'] = min(cur_low, float(current_price)) if cur_low > 0 else float(current_price)
-
     matrix = compute_supertrend_reversal_matrix(df, period=period, multiplier=multiplier)
-    last_row = matrix.iloc[-1]
+
+    # In live polling, if the last candle in df is an open developing candle (or current_price is passed),
+    # completed candle is at iloc[-2] if len >= 2; else iloc[-1].
+    if exclude_incomplete_candle and current_price is not None and len(matrix) >= 2:
+        last_row = matrix.iloc[-2]
+    else:
+        last_row = matrix.iloc[-1]
 
     feature_dict = {}
     vec = []

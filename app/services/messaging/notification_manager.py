@@ -442,7 +442,8 @@ class NotificationManager:
         db: Session,
         user_id: Optional[int] = None,
         target_direction: Optional[str] = None,
-        model_probability: Optional[float] = None
+        model_probability: Optional[float] = None,
+        horizon_minutes: int = 5
     ) -> List[Dict[str, Any]]:
         """Triggered when price is within user points AND model predicts SuperIndicator hit."""
         if supertrend_price <= 0.01 or current_price <= 0.01 or abs(supertrend_price - current_price) > (current_price * 0.25):
@@ -470,6 +471,7 @@ class NotificationManager:
             "target_direction": resolved_target,
             "direction": current_direction,
             "model_probability": model_probability,
+            "horizon_minutes": horizon_minutes,
             "timestamp": _ist_str(),
             "extra_data": json.dumps({
                 "symbol": symbol.upper(),
@@ -481,6 +483,7 @@ class NotificationManager:
                 "target_direction": resolved_target,
                 "direction": current_direction,
                 "model_probability": model_probability,
+                "horizon_minutes": horizon_minutes,
                 "event": NotificationEventType.SUPERTREND_APPROACHING.value
             })
         }

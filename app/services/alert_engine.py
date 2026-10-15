@@ -547,7 +547,8 @@ def _process_supertrend_state_transition(
                     db=db,
                     user_id=user_id,
                     target_direction=target_dir,
-                    model_probability=predicted_prob
+                    model_probability=predicted_prob,
+                    horizon_minutes=int(pred_res.get("horizon_minutes", 5))
                 )
                 if alert:
                     alert.supertrend_approaching_sent = True

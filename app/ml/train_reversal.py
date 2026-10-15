@@ -15,9 +15,14 @@ Strictly follows quantitative and ML best practices:
 """
 
 import os
+import sys
 import glob
 import json
 import time
+
+# Ensure project root is on sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
 import joblib
 import numpy as np
 import pandas as pd
@@ -36,6 +41,10 @@ from sklearn.metrics import (
     confusion_matrix
 )
 import xgboost as xgb
+try:
+    import lightgbm as lgb
+except ImportError:
+    lgb = None
 
 from app.services.feature_engine import (
     compute_supertrend_reversal_matrix,
@@ -222,22 +231,28 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
     print(f"[Reversal Train] 5m Reversal positive sample rate: {pos_rate:.2f}%")
 
     # Chronological Walk-Forward Split (60% Train, 20% Val, 20% Test)
+    # Embargo gap of 5 bars prevents future 5m label lookahead from leaking across split boundaries
+    embargo_gap = 5
     train_end = int(n_samples * 0.60)
     val_end = int(n_samples * 0.80)
 
+    train_idx = slice(0, train_end - embargo_gap)
+    val_idx = slice(train_end, val_end - embargo_gap)
+    test_idx = slice(val_end, n_samples)
+
     feature_cols = [c for c in SUPERTREND_REVERSAL_FEATURE_NAMES if c != 'horizon_minutes']
 
-    X_train_df = features_df.iloc[:train_end][feature_cols]
-    X_val_df = features_df.iloc[train_end:val_end][feature_cols]
-    X_test_df = features_df.iloc[val_end:][feature_cols]
+    X_train_df = features_df.iloc[train_idx][feature_cols]
+    X_val_df = features_df.iloc[val_idx][feature_cols]
+    X_test_df = features_df.iloc[test_idx][feature_cols]
 
-    y_train = primary_target[:train_end]
-    y_val = primary_target[train_end:val_end]
-    y_test = primary_target[val_end:]
+    y_train = primary_target[train_idx]
+    y_val = primary_target[val_idx]
+    y_test = primary_target[test_idx]
 
-    dirs_test = targets_dict['direction'][val_end:]
-    lead_times_test = targets_dict['lead_time'][val_end:]
-    regimes_test = targets_dict['regime'][val_end:]
+    dirs_test = targets_dict['direction'][test_idx]
+    lead_times_test = targets_dict['lead_time'][test_idx]
+    regimes_test = targets_dict['regime'][test_idx]
 
     # Scale linear model inputs using Train data only
     scaler = StandardScaler()
@@ -251,13 +266,14 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
     print(f"[Reversal Train] Candidate B (Filter): Prec={baseline_metrics['candidate_B_transparent_filter']['precision']:.3f}, Rec={baseline_metrics['candidate_B_transparent_filter']['recall']:.3f}")
 
     # Candidate C Models (Supervised Classifiers)
+    pos_weight = max(1.0, float((len(y_train) - sum(y_train)) / max(1, sum(y_train))))
     models_to_test = {
         "Logistic Regression": (
             LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42),
             True
         ),
         "Random Forest": (
-            RandomForestClassifier(n_estimators=100, max_depth=6, class_weight="balanced", random_state=42, n_jobs=-1),
+            RandomForestClassifier(n_estimators=100, max_depth=6, class_weight="balanced", random_state=42, n_jobs=1),
             False
         ),
         "XGBoost": (
@@ -265,14 +281,28 @@ def train_and_evaluate_reversal_models() -> Dict[str, Any]:
                 n_estimators=120,
                 max_depth=4,
                 learning_rate=0.05,
-                scale_pos_weight=max(1.0, float((len(y_train) - sum(y_train)) / max(1, sum(y_train)))),
+                scale_pos_weight=pos_weight,
                 eval_metric="logloss",
                 random_state=42,
-                n_jobs=-1
+                n_jobs=1
             ),
             False
         )
     }
+
+    if lgb is not None:
+        models_to_test["LightGBM"] = (
+            lgb.LGBMClassifier(
+                n_estimators=100,
+                max_depth=4,
+                learning_rate=0.05,
+                class_weight="balanced",
+                random_state=42,
+                n_jobs=1,
+                verbose=-1
+            ),
+            False
+        )
 
     comparison_results = {"baselines": baseline_metrics, "models": {}}
     best_model_name = None
