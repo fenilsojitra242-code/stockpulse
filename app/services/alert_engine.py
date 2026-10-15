@@ -54,15 +54,14 @@ def get_supertrend_settings(db: Session, user_id: Optional[int] = None) -> Dict[
         min_atr_filter = float(row_atr_f.value) if (row_atr_f and row_atr_f.value) else 0.0
         min_confirming_candles = int(row_conf_c.value) if (row_conf_c and row_conf_c.value) else 1
 
+        selected_symbols: List[str] = []
         if row_syms and row_syms.value is not None:
             try:
-                selected_symbols = json.loads(row_syms.value)
-                if not isinstance(selected_symbols, list) or len(selected_symbols) == 0:
-                    selected_symbols = POPULAR_SUPERTREND_SYMBOLS
+                decoded = json.loads(row_syms.value)
+                if isinstance(decoded, list):
+                    selected_symbols = [str(s).strip().upper() for s in decoded if s and isinstance(s, (str, int))]
             except Exception:
-                selected_symbols = POPULAR_SUPERTREND_SYMBOLS
-        else:
-            selected_symbols = POPULAR_SUPERTREND_SYMBOLS
+                selected_symbols = []
 
         return {
             "enabled": enabled,
@@ -663,7 +662,7 @@ def scan_default_watchlist_supertrend(
 
     symbols = watchlist_symbols if watchlist_symbols is not None else settings.get("selected_symbols", [])
     if not symbols:
-        symbols = POPULAR_SUPERTREND_SYMBOLS
+        return []
 
     prox_pts = float(settings.get("proximity_points", 1.0))
     period = int(settings.get("period", 10))

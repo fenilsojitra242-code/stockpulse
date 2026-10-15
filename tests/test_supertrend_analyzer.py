@@ -1065,6 +1065,54 @@ class TestSuperTrendAnalyzer(unittest.TestCase):
         finally:
             ae.notification_manager = orig_nm
 
+    def test_27_supertrend_settings_empty_by_default_and_user_retention(self):
+        """Verify 0 shares selected by default on login, and custom shares preserved on relogin."""
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.database.database import Base
+        from app.services.alert_engine import scan_default_watchlist_supertrend
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        db = Session()
+
+        try:
+            # 1. Fresh user (user_id=101) with no settings row
+            settings_fresh = get_supertrend_settings(db, user_id=101)
+            self.assertEqual(settings_fresh["selected_symbols"], [], "Fresh user must have 0 shares selected on login")
+            self.assertGreater(len(settings_fresh["popular_symbols"]), 0, "Popular symbols suggestions must be present")
+
+            # 2. Scanner returns empty list when no shares selected
+            scanned = scan_default_watchlist_supertrend(db, user_id=101)
+            self.assertEqual(scanned, [], "Scanner must not scan or alert when user has 0 shares selected")
+
+            # 3. User selects 1 share (e.g. TCS)
+            save_supertrend_settings(db, selected_symbols=["TCS"], user_id=101)
+            settings_saved = get_supertrend_settings(db, user_id=101)
+            self.assertEqual(settings_saved["selected_symbols"], ["TCS"])
+
+            # 4. User relogins (new session fetch for user_id=101)
+            settings_relogin = get_supertrend_settings(db, user_id=101)
+            self.assertEqual(settings_relogin["selected_symbols"], ["TCS"], "Only user-selected share must be returned on relogin")
+
+            # 5. User adds multiple shares
+            save_supertrend_settings(db, selected_symbols=["TCS", "RELIANCE"], user_id=101)
+            settings_multi = get_supertrend_settings(db, user_id=101)
+            self.assertEqual(settings_multi["selected_symbols"], ["TCS", "RELIANCE"])
+
+            # 6. User clears all shares
+            save_supertrend_settings(db, selected_symbols=[], user_id=101)
+            settings_cleared = get_supertrend_settings(db, user_id=101)
+            self.assertEqual(settings_cleared["selected_symbols"], [], "Cleared shares must remain empty list and not revert to popular")
+
+            # 7. Another user (user_id=102) remains isolated with 0 shares
+            settings_other = get_supertrend_settings(db, user_id=102)
+            self.assertEqual(settings_other["selected_symbols"], [])
+        finally:
+            db.close()
+
+
 
 def run_quantitative_performance_evaluation():
     """
