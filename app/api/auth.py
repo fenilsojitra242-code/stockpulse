@@ -1,4 +1,5 @@
 import os
+import re
 import bcrypt
 import jwt
 from datetime import datetime, timedelta
@@ -38,6 +39,51 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
     except Exception:
         return False
+
+
+def seed_default_user_if_needed(db: Session) -> User:
+    """
+    Ensures the fixed testing user (name='user', username='user', password='123456') exists in the database.
+    """
+    test_user = db.query(User).filter(
+        or_(
+            func.lower(User.username) == "user",
+            func.lower(User.name) == "user",
+            func.lower(User.email) == "user@stockpulse.local"
+        )
+    ).first()
+
+    if not test_user:
+        test_user = User(
+            name="user",
+            username="user",
+            email="user@stockpulse.local",
+            password_hash=hash_password("123456"),
+            is_verified=True,
+            created_at=datetime.utcnow()
+        )
+        db.add(test_user)
+        db.commit()
+        db.refresh(test_user)
+        print("[StockPulse] Fixed test user 'user' (pass: '123456') initialized.")
+    else:
+        needs_commit = False
+        if not test_user.password_hash or not verify_password("123456", test_user.password_hash):
+            test_user.password_hash = hash_password("123456")
+            needs_commit = True
+        if test_user.username != "user":
+            test_user.username = "user"
+            needs_commit = True
+        if test_user.name != "user":
+            test_user.name = "user"
+            needs_commit = True
+        if not test_user.is_verified:
+            test_user.is_verified = True
+            needs_commit = True
+        if needs_commit:
+            db.commit()
+            db.refresh(test_user)
+    return test_user
 
 
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
@@ -233,170 +279,62 @@ class ResetPasswordRequest(BaseModel):
 @router.post("/send-registration-otp")
 def send_registration_otp(req: SendOTPRequest, db: Session = Depends(get_db)):
     """
-    1. Validates email syntax, blocks dummy/test emails and disposable providers.
-    2. Performs DNS MX lookup to ensure domain has real mail servers.
-    3. Checks if email or username is already taken.
-    4. Generates 6-digit OTP code and dispatches branded email via SMTP.
+    Testing stage: OTP requirement is disabled. Returns instant success.
     """
     clean_email = req.email.strip().lower()
-    clean_name = req.name.strip()
-
-    # Step 1 & 2: Pre-check email authenticity & DNS MX mail servers
-    is_valid, error_msg = validate_email_authenticity(clean_email)
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_msg or "Invalid email address."
-        )
-
-    # Check if email is already registered
-    existing_user = db.query(User).filter(func.lower(User.email) == clean_email).first()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An account with this email already exists. Please sign in."
-        )
-
-    # Check if username is already taken
-    if req.username and req.username.strip():
-        clean_username = req.username.strip().lower()
-        existing_by_user = db.query(User).filter(func.lower(User.username) == clean_username).first()
-        if existing_by_user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="This username is already taken. Please choose a different username."
-            )
-
-    # Rate limiting: max 1 OTP request every 25 seconds for the same email
-    now = datetime.utcnow()
-    recent_otp = db.query(EmailOTP).filter(
-        func.lower(EmailOTP.email) == clean_email,
-        EmailOTP.created_at >= now - timedelta(seconds=25)
-    ).first()
-    if recent_otp:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="A verification code was just sent. Please wait 25 seconds before requesting another code."
-        )
-
-    # Invalidate previous unused OTPs for this email
-    db.query(EmailOTP).filter(
-        func.lower(EmailOTP.email) == clean_email,
-        EmailOTP.is_used == False
-    ).update({"is_used": True})
-
-    # Generate secure 6-digit code (100000 - 999999)
-    otp_code = f"{secrets.randbelow(900000) + 100000}"
-    expires_at = now + timedelta(minutes=10)
-
-    otp_record = EmailOTP(
-        email=clean_email,
-        otp_code=otp_code,
-        purpose="REGISTRATION",
-        expires_at=expires_at,
-        is_used=False,
-        created_at=now
-    )
-    db.add(otp_record)
-    db.commit()
-
-    # Dispatch email via SMTP
-    sent_ok, send_err, smtp_configured = send_otp_email(clean_email, clean_name, otp_code)
-
-    response_payload = {
-        "status": "success",
-        "email": clean_email,
-        "expires_in_seconds": 600,
-        "smtp_configured": smtp_configured
-    }
-
-    if not sent_ok:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unable to send verification email to {clean_email}. Please check the email address or try again."
-        )
-
     return {
         "status": "success",
-        "message": f"6-digit verification code sent to {clean_email}. Please check your email inbox.",
+        "message": "OTP system disabled for testing stage. You can register directly or log in using user / 123456.",
         "email": clean_email,
-        "expires_in_seconds": 600
+        "otp_disabled": True
     }
 
 
 @router.post("/verify-registration-otp", status_code=status.HTTP_201_CREATED)
 def verify_registration_otp(req: VerifyOTPRegisterRequest, response: Response, db: Session = Depends(get_db)):
     """
-    Verifies the 6-digit code entered by user.
-    Creates the account, sets is_verified=True, and issues a JWT token.
+    Testing stage fallback: Registers or authenticates user directly without OTP verification.
     """
     clean_email = req.email.strip().lower()
-    clean_otp = req.otp.strip()
-    clean_name = req.name.strip()
+    clean_name = req.name.strip() if req.name else "Trader"
 
-    # Find matching unexpired, unused OTP record
-    now = datetime.utcnow()
-    otp_record = db.query(EmailOTP).filter(
-        func.lower(EmailOTP.email) == clean_email,
-        EmailOTP.otp_code == clean_otp,
-        EmailOTP.is_used == False,
-        EmailOTP.expires_at >= now
-    ).order_by(EmailOTP.created_at.desc()).first()
-
-    if not otp_record:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired verification code. Please check your email or request a new code."
-        )
-
-    # Check if user with this email was created in the meantime
-    existing_by_email = db.query(User).filter(func.lower(User.email) == clean_email).first()
-    if existing_by_email:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An account with this email already exists. Please sign in."
-        )
-
-    # Mark OTP as used
-    otp_record.is_used = True
-
-    # Process username
-    if req.username and req.username.strip():
-        clean_username = req.username.strip().lower()
-        existing_by_user = db.query(User).filter(func.lower(User.username) == clean_username).first()
-        if existing_by_user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="This username is already taken. Please choose a different username."
-            )
+    # Check if user already exists
+    existing_user = db.query(User).filter(func.lower(User.email) == clean_email).first()
+    if existing_user:
+        user = existing_user
     else:
-        base_user = clean_email.split("@")[0].lower()
-        candidate = base_user
-        idx = 1
-        while db.query(User).filter(func.lower(User.username) == candidate).first():
-            candidate = f"{base_user}_{idx}"
-            idx += 1
-        clean_username = candidate
+        # Process username
+        if req.username and req.username.strip():
+            clean_username = req.username.strip().lower()
+            existing_by_user = db.query(User).filter(func.lower(User.username) == clean_username).first()
+            if existing_by_user:
+                clean_username = f"{clean_username}_{int(datetime.utcnow().timestamp())}"
+        else:
+            base_user = clean_email.split("@")[0].lower()
+            clean_username = base_user
+            idx = 1
+            while db.query(User).filter(func.lower(User.username) == clean_username).first():
+                clean_username = f"{base_user}_{idx}"
+                idx += 1
 
-    hashed_pw = hash_password(req.password)
-
-    new_user = User(
-        name=clean_name,
-        username=clean_username,
-        email=clean_email,
-        password_hash=hashed_pw,
-        is_verified=True,
-        created_at=datetime.utcnow()
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+        hashed_pw = hash_password(req.password or "123456")
+        user = User(
+            name=clean_name,
+            username=clean_username,
+            email=clean_email,
+            password_hash=hashed_pw,
+            is_verified=True,
+            created_at=datetime.utcnow()
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
 
     token = create_access_token({
-        "sub": str(new_user.id),
-        "email": new_user.email,
-        "username": new_user.username,
-        "name": new_user.name
+        "sub": str(user.id),
+        "email": user.email,
+        "username": user.username or "",
+        "name": user.name
     })
 
     response.set_cookie(
@@ -410,15 +348,15 @@ def verify_registration_otp(req: VerifyOTPRegisterRequest, response: Response, d
 
     return {
         "status": "SUCCESS",
-        "message": f"Email verified and account created for {new_user.name}!",
+        "message": f"Welcome, {user.name}! (Testing stage - OTP bypassed)",
         "access_token": token,
         "token_type": "bearer",
         "user": {
-            "id": new_user.id,
-            "name": new_user.name,
-            "username": new_user.username,
-            "email": new_user.email,
-            "created_at": new_user.created_at.isoformat(),
+            "id": user.id,
+            "name": user.name,
+            "username": user.username,
+            "email": user.email,
+            "created_at": user.created_at.isoformat(),
             "active_alerts_count": 0
         }
     }
@@ -436,62 +374,19 @@ def resend_registration_otp(req: ResendOTPRequest, db: Session = Depends(get_db)
 @router.post("/forgot-password")
 def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
     """
-    Initiates password reset by sending a secure 6-digit OTP to the user's verified email.
+    Password reset initiation (Testing stage: OTP disabled).
     """
     clean_email = req.email.strip().lower()
-
-    # 1. Verify user exists
     user = db.query(User).filter(func.lower(User.email) == clean_email).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No account found with this email address. Please check your spelling or create an account."
-        )
-
-    # 2. Rate limiting: max 1 reset code request every 25 seconds
-    now = datetime.utcnow()
-    recent_otp = db.query(EmailOTP).filter(
-        func.lower(EmailOTP.email) == clean_email,
-        EmailOTP.created_at >= now - timedelta(seconds=25)
-    ).first()
-    if recent_otp:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="A reset code was just sent. Please wait 25 seconds before requesting another code."
-        )
-
-    # 3. Invalidate prior unused OTPs for this email
-    db.query(EmailOTP).filter(
-        func.lower(EmailOTP.email) == clean_email,
-        EmailOTP.is_used == False
-    ).update({"is_used": True})
-
-    # 4. Generate secure 6-digit code
-    otp_code = f"{secrets.randbelow(900000) + 100000}"
-    expires_at = now + timedelta(minutes=10)
-
-    otp_record = EmailOTP(
-        email=clean_email,
-        otp_code=otp_code,
-        purpose="PASSWORD_RESET",
-        expires_at=expires_at,
-        is_used=False,
-        created_at=now
-    )
-    db.add(otp_record)
-    db.commit()
-
-    # 5. Dispatch email via Brevo / Resend / SMTP
-    sent_ok, send_err, _ = send_otp_email(clean_email, user.name, otp_code, purpose="PASSWORD_RESET")
-    if not sent_ok:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unable to send password reset email to {clean_email}. Please try again later."
+            detail=f"No account found with email '{clean_email}'. You can sign in using fixed test credentials: username 'user', password '123456'."
         )
 
     return {
         "status": "success",
-        "message": f"6-digit password reset code sent to {clean_email}. Please check your email inbox.",
+        "message": "Testing mode active (OTP disabled). You can sign in using fixed test credentials: user / 123456, or reset your password directly.",
         "email": clean_email,
         "expires_in_seconds": 600
     }
@@ -500,27 +395,11 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
 @router.post("/reset-password")
 def reset_password(req: ResetPasswordRequest, response: Response, db: Session = Depends(get_db)):
     """
-    Verifies the 6-digit reset code and sets a new password for the account.
+    Directly updates password for the account without requiring OTP in testing stage.
     """
     clean_email = req.email.strip().lower()
-    clean_otp = req.otp.strip()
 
-    # 1. Find matching unexpired, unused OTP record
-    now = datetime.utcnow()
-    otp_record = db.query(EmailOTP).filter(
-        func.lower(EmailOTP.email) == clean_email,
-        EmailOTP.otp_code == clean_otp,
-        EmailOTP.is_used == False,
-        EmailOTP.expires_at >= now
-    ).order_by(EmailOTP.created_at.desc()).first()
-
-    if not otp_record:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired reset code. Please check your email or request a new code."
-        )
-
-    # 2. Look up user account
+    # Look up user account
     user = db.query(User).filter(func.lower(User.email) == clean_email).first()
     if not user:
         raise HTTPException(
@@ -528,15 +407,12 @@ def reset_password(req: ResetPasswordRequest, response: Response, db: Session = 
             detail="User account not found."
         )
 
-    # 3. Mark OTP as used
-    otp_record.is_used = True
-
-    # 4. Hash new password and save
+    # Hash new password and save
     user.password_hash = hash_password(req.new_password)
     db.commit()
     db.refresh(user)
 
-    # 5. Generate fresh access token so user is automatically signed in
+    # Generate fresh access token so user is automatically signed in
     token = create_access_token({
         "sub": str(user.id),
         "email": user.email,
@@ -572,17 +448,15 @@ def reset_password(req: ResetPasswordRequest, response: Response, db: Session = 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register_user(req: RegisterRequest, response: Response, db: Session = Depends(get_db)):
     """
-    Registers a brand new user account with hashed password and generates a long-lived JWT session.
+    Registers a brand new user account directly without OTP and generates a long-lived JWT session.
     """
     clean_email = req.email.strip().lower()
     clean_name = req.name.strip()
     
-    is_valid, error_msg = validate_email_authenticity(clean_email)
-    # Block explicitly invalid format, dummy prefixes or known disposable domains
-    if not is_valid and any(k in (error_msg or "") for k in ["format", "disposable", "Dummy", "not permitted"]):
+    if not clean_email or "@" not in clean_email or "." not in clean_email.split("@")[-1]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_msg or "Invalid email address."
+            detail="Please provide a valid email address (e.g. user@example.com)"
         )
 
     # Check if email is already taken
@@ -662,11 +536,46 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
 @router.post("/login", status_code=status.HTTP_200_OK)
 def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
     """
-    Signs in an existing user using either their email, username, or full name and password.
-    Accurately matches the correct account and resolves duplicates.
+    Signs in a user.
+    Supports fixed testing stage credentials: name/username="user", password="123456".
     """
     ident = req.identifier.strip()
     ident_lower = ident.lower()
+    plain_pw = req.password
+
+    # Instant authentication bypass for fixed testing credentials: username="user", pass="123456"
+    if ident_lower in ["user", "user@stockpulse.local", "user@example.com", "user@stockpulse.io"] and (plain_pw.strip() == "123456" or plain_pw == "123456"):
+        user = seed_default_user_if_needed(db)
+        token = create_access_token({
+            "sub": str(user.id),
+            "email": user.email,
+            "username": user.username or "user",
+            "name": user.name
+        })
+        response.set_cookie(
+            key="stockpulse_jwt_token",
+            value=token,
+            max_age=365 * 86400,
+            path="/",
+            samesite="lax",
+            httponly=False
+        )
+        active_count = db.query(Alert).filter(Alert.user_id == user.id, Alert.status == "MONITORING").count()
+        return {
+            "status": "SUCCESS",
+            "message": f"Welcome back, {user.name}!",
+            "access_token": token,
+            "token_type": "bearer",
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "username": user.username,
+                "email": user.email,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "active_alerts_count": active_count
+            }
+        }
+
     ident_compact = ident_lower.replace(" ", "")
 
     candidates = []

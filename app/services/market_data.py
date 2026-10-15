@@ -659,6 +659,9 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                 "is_prediction_ready": st_analysis.get("is_prediction_ready"),
                 "is_flipped": st_analysis.get("is_flipped"),
                 "flip_signal": st_analysis.get("flip_signal"),
+                "provisional_direction": st_analysis.get("provisional_direction"),
+                "provisional_supertrend_price": st_analysis.get("provisional_supertrend_price"),
+                "penetration_atr_ratio": st_analysis.get("penetration_atr_ratio"),
                 "candle_open": st_analysis.get("candle_open"),
                 "candle_close": st_analysis.get("candle_close"),
                 "candle_points": st_analysis.get("candle_points"),
@@ -667,6 +670,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                 "is_candle_stable": st_analysis.get("is_candle_stable"),
                 "candle_matches_target": st_analysis.get("candle_matches_target"),
                 "candle_age_seconds": st_analysis.get("candle_age_seconds"),
+                "candle_timestamp": st_analysis.get("candle_timestamp"),
                 "series": st_analysis.get("series", [])
             }
         except Exception:

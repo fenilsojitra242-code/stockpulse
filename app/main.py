@@ -16,7 +16,7 @@ from app.api.alerts import router as alerts_router
 from app.api.history import router as history_router
 from app.api.system import router as system_router
 from app.api.notifications import router as notifications_router
-from app.api.auth import router as auth_router
+from app.api.auth import router as auth_router, seed_default_user_if_needed
 from app.services.scheduler import start_scheduler, stop_scheduler
 from app.services.prediction import load_model
 
@@ -30,10 +30,11 @@ async def lifespan(app: FastAPI):
     from app.database.database import run_db_migrations
     run_db_migrations(engine)
     
-    # Seed stocks
+    # Seed stocks & default testing user
     db = SessionLocal()
     try:
         seed_default_stocks_if_needed(db)
+        seed_default_user_if_needed(db)
     finally:
         db.close()
         

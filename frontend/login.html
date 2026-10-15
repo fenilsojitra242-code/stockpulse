@@ -405,9 +405,7 @@
       <div id="auth-feedback" class="auth-feedback-banner">
         <i id="feedback-icon" class="fa-solid fa-circle-exclamation"></i>
         <span id="feedback-text">Message</span>
-      </div>
-
-      <!-- 1. SIGN IN FORM -->
+      </div>      <!-- 1. SIGN IN FORM -->
       <form id="form-login" onsubmit="handleLoginSubmit(event)" autocomplete="on">
         <div class="form-group">
           <label for="login-identifier">Email, Username, or Full Name</label>
@@ -456,7 +454,7 @@
         </p>
       </form>
 
-      <!-- 2. CREATE ACCOUNT FORM -->
+      <!-- 2. CREATE ACCOUNT FORM (DIRECT REGISTRATION - NO OTP) -->
       <form id="form-register" onsubmit="handleRegisterSubmit(event)" style="display: none;" autocomplete="on">
         <div class="form-group">
           <label for="register-name">Full Name</label>
@@ -531,165 +529,101 @@
         </p>
       </form>
 
-      <!-- 3. EMAIL OTP VERIFICATION FORM -->
-      <form id="form-otp" class="auth-form" style="display: none;" onsubmit="handleOtpSubmit(event)">
-        <div style="text-align: center; margin-bottom: 18px;">
+      <!-- 3. FORGOT PASSWORD (REQUEST RESET) -->
+      <form id="form-forgot-password" class="auth-form" style="display: none;" onsubmit="handleForgotPasswordSubmit(event)" autocomplete="on">
+        <div style="text-align: center; margin-bottom: 20px;">
           <div style="width: 52px; height: 52px; border-radius: 50%; background: #eff6ff; color: #2563eb; display: inline-flex; align-items: center; justify-content: center; font-size: 22px; margin-bottom: 12px; border: 1px solid #bfdbfe;">
-            <i class="fa-solid fa-envelope-circle-check"></i>
+            <i class="fa-solid fa-key"></i>
           </div>
-          <h3 style="margin: 0 0 6px 0; color: #0f172a; font-size: 19px; font-weight: 700;">Verify Your Email</h3>
-          <p style="margin: 0; color: #64748b; font-size: 13px; line-height: 1.5;">
-            We sent a 6-digit verification code to<br>
-            <strong id="otp-target-email" style="color: #0f172a;">user@example.com</strong>
+          <h3 style="margin: 0 0 6px 0; color: #0f172a; font-size: 20px; font-weight: 700;">Reset Password</h3>
+          <p style="margin: 0; color: #64748b; font-size: 13.5px; line-height: 1.5;">
+            Testing mode active (OTP disabled). Enter your registered email to set a new password directly.
           </p>
         </div>
 
-        <div id="otp-smtp-alert" style="display: none; margin-bottom: 16px;"></div>
-
-        <div class="form-group" style="margin-bottom: 18px;">
-          <label style="text-align: center; display: block; margin-bottom: 8px; font-weight: 600;">Enter 6-Digit Code</label>
-          <div class="otp-inputs-wrapper" id="reg-otp-inputs">
-            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="0" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" required>
-            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="1" inputmode="numeric" pattern="[0-9]*" required>
-            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="2" inputmode="numeric" pattern="[0-9]*" required>
-            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="3" inputmode="numeric" pattern="[0-9]*" required>
-            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="4" inputmode="numeric" pattern="[0-9]*" required>
-            <input type="text" maxlength="1" class="otp-digit-input reg-otp-digit" data-idx="5" inputmode="numeric" pattern="[0-9]*" required>
+        <div class="form-group">
+          <label for="forgot-email">Registered Email Address</label>
+          <div class="input-wrapper">
+            <i class="fa-solid fa-envelope field-icon"></i>
+            <input
+              type="email"
+              id="forgot-email"
+              class="auth-input"
+              placeholder="Enter your registered email"
+              required
+              autocomplete="email"
+            >
           </div>
         </div>
 
-        <button type="submit" id="btn-otp-verify" class="auth-submit-btn">
-          <span>Verify & Enter Dashboard</span>
+        <button type="submit" id="btn-forgot-submit" class="auth-submit-btn">
+          <span>Continue to Set Password</span>
           <i class="fa-solid fa-arrow-right"></i>
         </button>
 
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 18px; padding-top: 14px; border-top: 1px solid #f1f5f9; font-size: 13px;">
-          <button type="button" class="auth-switch-link" onclick="backToRegisterEdit()" style="color: #64748b; text-decoration: none;">
-            <i class="fa-solid fa-arrow-left"></i> Change Email
-          </button>
-          <div>
-            <span id="otp-countdown-text" style="color: #94a3b8; font-size: 12px;">Resend in <strong id="otp-seconds">60</strong>s</span>
-            <button type="button" id="btn-resend-otp" class="auth-switch-link" style="display: none; font-weight: 700;" onclick="resendOtpCode()">Resend Code</button>
+        <p class="auth-footer-prompt">
+          Remembered your password?
+          <button type="button" class="auth-switch-link" onclick="backToLoginFromForgot()">Sign in here</button>
+        </p>
+      </form>
+
+      <!-- 4. RESET PASSWORD (DIRECT PASSWORD UPDATE - NO OTP) -->
+      <form id="form-reset-password" class="auth-form" style="display: none;" onsubmit="handleResetPasswordSubmit(event)">
+        <div style="text-align: center; margin-bottom: 18px;">
+          <div style="width: 52px; height: 52px; border-radius: 50%; background: #f0fdf4; color: #16a34a; display: inline-flex; align-items: center; justify-content: center; font-size: 22px; margin-bottom: 12px; border: 1px solid #bbf7d0;">
+            <i class="fa-solid fa-shield-halved"></i>
+          </div>
+          <h3 style="margin: 0 0 6px 0; color: #0f172a; font-size: 20px; font-weight: 700;">Set New Password</h3>
+          <p style="margin: 0; color: #64748b; font-size: 13px; line-height: 1.5;">
+            Updating password for <strong id="reset-target-email" style="color: #0f172a;">user@example.com</strong>
+          </p>
+        </div>
+
+        <div class="form-group">
+          <label for="reset-new-password">New Password</label>
+          <div class="input-wrapper">
+            <i class="fa-solid fa-lock field-icon"></i>
+            <input
+              type="password"
+              id="reset-new-password"
+              class="auth-input"
+              placeholder="Enter new password (min 4 characters)"
+              required
+              autocomplete="new-password"
+            >
+            <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('reset-new-password', this)" title="Show/hide password">
+              <i class="fa-solid fa-eye"></i>
+            </button>
           </div>
         </div>
+
+        <div class="form-group">
+          <label for="reset-confirm-password">Confirm New Password</label>
+          <div class="input-wrapper">
+            <i class="fa-solid fa-lock-check field-icon"></i>
+            <input
+              type="password"
+              id="reset-confirm-password"
+              class="auth-input"
+              placeholder="Confirm new password"
+              required
+              autocomplete="new-password"
+            >
+            <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('reset-confirm-password', this)" title="Show/hide password">
+              <i class="fa-solid fa-eye"></i>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" id="btn-reset-submit" class="auth-submit-btn">
+          <span>Update Password & Enter Dashboard</span>
+          <i class="fa-solid fa-arrow-right"></i>
+        </button>
+
+        <p class="auth-footer-prompt">
+          <button type="button" class="auth-switch-link" onclick="backToLoginFromForgot()">Back to Sign In</button>
+        </p>
       </form>
- 
-       <!-- 4. FORGOT PASSWORD (REQUEST CODE) -->
-       <form id="form-forgot-password" class="auth-form" style="display: none;" onsubmit="handleForgotPasswordSubmit(event)" autocomplete="on">
-         <div style="text-align: center; margin-bottom: 20px;">
-           <div style="width: 52px; height: 52px; border-radius: 50%; background: #eff6ff; color: #2563eb; display: inline-flex; align-items: center; justify-content: center; font-size: 22px; margin-bottom: 12px; border: 1px solid #bfdbfe;">
-             <i class="fa-solid fa-key"></i>
-           </div>
-           <h3 style="margin: 0 0 6px 0; color: #0f172a; font-size: 20px; font-weight: 700;">Reset Your Password</h3>
-           <p style="margin: 0; color: #64748b; font-size: 13.5px; line-height: 1.5;">
-             Enter your registered email address and we'll send you a 6-digit code to create a new password.
-           </p>
-         </div>
- 
-         <div class="form-group">
-           <label for="forgot-email">Registered Email Address</label>
-           <div class="input-wrapper">
-             <i class="fa-solid fa-envelope field-icon"></i>
-             <input
-               type="email"
-               id="forgot-email"
-               class="auth-input"
-               placeholder="Enter your registered email"
-               required
-               autocomplete="email"
-             >
-           </div>
-         </div>
- 
-         <button type="submit" id="btn-forgot-submit" class="auth-submit-btn">
-           <span>Send Reset Code</span>
-           <i class="fa-solid fa-arrow-right"></i>
-         </button>
- 
-         <p class="auth-footer-prompt">
-           Remembered your password?
-           <button type="button" class="auth-switch-link" onclick="backToLoginFromForgot()">Sign in here</button>
-         </p>
-       </form>
- 
-       <!-- 5. RESET PASSWORD (ENTER CODE & SET NEW PASSWORD) -->
-       <form id="form-reset-password" class="auth-form" style="display: none;" onsubmit="handleResetPasswordSubmit(event)">
-         <div style="text-align: center; margin-bottom: 18px;">
-           <div style="width: 52px; height: 52px; border-radius: 50%; background: #f0fdf4; color: #16a34a; display: inline-flex; align-items: center; justify-content: center; font-size: 22px; margin-bottom: 12px; border: 1px solid #bbf7d0;">
-             <i class="fa-solid fa-shield-halved"></i>
-           </div>
-           <h3 style="margin: 0 0 6px 0; color: #0f172a; font-size: 20px; font-weight: 700;">Create New Password</h3>
-           <p style="margin: 0; color: #64748b; font-size: 13px; line-height: 1.5;">
-             We sent a 6-digit reset code to<br>
-             <strong id="reset-target-email" style="color: #0f172a;">user@example.com</strong>
-           </p>
-         </div>
- 
-         <div id="reset-delivery-alert" style="display: none; margin-bottom: 16px;"></div>
- 
-         <div class="form-group" style="margin-bottom: 18px;">
-           <label style="text-align: center; display: block; margin-bottom: 8px; font-weight: 600;">Enter 6-Digit Reset Code</label>
-           <div class="otp-inputs-wrapper" id="reset-otp-inputs">
-             <input type="text" maxlength="1" class="otp-digit-input reset-otp-digit" data-idx="0" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" required>
-             <input type="text" maxlength="1" class="otp-digit-input reset-otp-digit" data-idx="1" inputmode="numeric" pattern="[0-9]*" required>
-             <input type="text" maxlength="1" class="otp-digit-input reset-otp-digit" data-idx="2" inputmode="numeric" pattern="[0-9]*" required>
-             <input type="text" maxlength="1" class="otp-digit-input reset-otp-digit" data-idx="3" inputmode="numeric" pattern="[0-9]*" required>
-             <input type="text" maxlength="1" class="otp-digit-input reset-otp-digit" data-idx="4" inputmode="numeric" pattern="[0-9]*" required>
-             <input type="text" maxlength="1" class="otp-digit-input reset-otp-digit" data-idx="5" inputmode="numeric" pattern="[0-9]*" required>
-           </div>
-         </div>
- 
-         <div class="form-group">
-           <label for="reset-new-password">New Password</label>
-           <div class="input-wrapper">
-             <i class="fa-solid fa-lock field-icon"></i>
-             <input
-               type="password"
-               id="reset-new-password"
-               class="auth-input"
-               placeholder="Enter new password (min 4 characters)"
-               required
-               autocomplete="new-password"
-             >
-             <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('reset-new-password', this)" title="Show/hide password">
-               <i class="fa-solid fa-eye"></i>
-             </button>
-           </div>
-         </div>
- 
-         <div class="form-group">
-           <label for="reset-confirm-password">Confirm New Password</label>
-           <div class="input-wrapper">
-             <i class="fa-solid fa-lock-check field-icon"></i>
-             <input
-               type="password"
-               id="reset-confirm-password"
-               class="auth-input"
-               placeholder="Confirm new password"
-               required
-               autocomplete="new-password"
-             >
-             <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('reset-confirm-password', this)" title="Show/hide password">
-               <i class="fa-solid fa-eye"></i>
-             </button>
-           </div>
-         </div>
- 
-         <button type="submit" id="btn-reset-submit" class="auth-submit-btn">
-           <span>Update Password & Enter Dashboard</span>
-           <i class="fa-solid fa-arrow-right"></i>
-         </button>
- 
-         <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 18px; padding-top: 14px; border-top: 1px solid #f1f5f9; font-size: 13px;">
-           <button type="button" class="auth-switch-link" onclick="openForgotPassword()" style="color: #64748b; text-decoration: none;">
-             <i class="fa-solid fa-arrow-left"></i> Change Email
-           </button>
-           <div>
-             <span id="reset-countdown-text" style="color: #94a3b8; font-size: 12px;">Resend in <strong id="reset-seconds">60</strong>s</span>
-             <button type="button" id="btn-resend-reset-otp" class="auth-switch-link" style="display: none; font-weight: 700;" onclick="resendResetOtpCode()">Resend Code</button>
-           </div>
-         </div>
-       </form>
 
       <!-- Highlights Footer -->
       <div class="feature-highlights">
@@ -762,15 +696,13 @@
       }
     })();
 
-    // Prefill remembered username or email on page load
+    // Autofocus identifier or populate remembered username on page load
     document.addEventListener('DOMContentLoaded', () => {
       try {
-        const remembered = localStorage.getItem('stockpulse_remembered_identifier');
         const identInput = document.getElementById('login-identifier');
-        if (remembered && identInput && !identInput.value) {
+        const remembered = localStorage.getItem('stockpulse_remembered_identifier');
+        if (identInput && remembered) {
           identInput.value = remembered;
-          const passInput = document.getElementById('login-password');
-          if (passInput) passInput.focus();
         }
       } catch (e) {}
     });
@@ -892,11 +824,7 @@
       }
     }
 
-    // Pending registration state while waiting for OTP
-    let pendingRegistration = null;
-    let otpCountdownInterval = null;
-
-    // Handle Register Submit -> Step 1: Request 6-Digit Email OTP
+    // Direct Registration (Testing Stage: OTP Removed)
     async function handleRegisterSubmit(e) {
       e.preventDefault();
       hideFeedback();
@@ -923,19 +851,24 @@
       }
 
       btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Sending verification code...</span>';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Creating account...</span>';
 
       try {
-        const res = await fetch('/api/auth/send-registration-otp', {
+        const res = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, name, username: username || null })
+          body: JSON.stringify({
+            name,
+            username: username || null,
+            email,
+            password
+          })
         });
 
         const data = await res.json();
 
         if (!res.ok) {
-          const detail = data && data.detail ? data.detail : 'Could not send verification code. Please check your email.';
+          const detail = data && data.detail ? data.detail : 'Could not create account.';
           showFeedback(detail, true);
           btn.disabled = false;
           btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
@@ -953,263 +886,32 @@
           return;
         }
 
-        // Store pending registration info
-        pendingRegistration = { name, username, email, password };
-        btn.disabled = false;
-        btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
-
-        // Switch to OTP view
-        document.getElementById('form-register').style.display = 'none';
-        const tabs = document.querySelector('.auth-tabs');
-        if (tabs) tabs.style.display = 'none';
-
-        const formOtp = document.getElementById('form-otp');
-        formOtp.style.display = 'block';
-        document.getElementById('otp-target-email').textContent = email;
-
-        renderOtpDeliveryNotice(data, email);
-        startOtpCountdown(60);
-        setupOtpDigitInputs();
-
-      } catch (err) {
-        console.error('Registration OTP send error:', err);
-        showFeedback('Network error. Unable to send verification code. Please try again.', true);
-        btn.disabled = false;
-        btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
-      }
-    }
-
-    // Setup interactive 6-digit OTP boxes for registration
-    function setupOtpDigitInputs() {
-      const inputs = document.querySelectorAll('#form-otp .reg-otp-digit');
-      inputs.forEach((input, index) => {
-        input.value = '';
-        input.classList.remove('filled');
-
-        input.oninput = (e) => {
-          const val = e.target.value.replace(/\D/g, '');
-          e.target.value = val ? val[val.length - 1] : '';
-          e.target.classList.toggle('filled', !!e.target.value);
-
-          if (e.target.value && index < inputs.length - 1) {
-            inputs[index + 1].focus();
-          }
-
-          // Check if all 6 digits entered
-          const fullCode = Array.from(inputs).map(i => i.value).join('');
-          if (fullCode.length === 6) {
-            handleOtpSubmit();
-          }
-        };
-
-        input.onkeydown = (e) => {
-          if (e.key === 'Backspace' && !input.value && index > 0) {
-            inputs[index - 1].focus();
-          }
-        };
-
-        input.onpaste = (e) => {
-          e.preventDefault();
-          const pastedData = (e.clipboardData || window.clipboardData).getData('text').trim().replace(/\D/g, '');
-          if (pastedData) {
-            fillOtpInputs(pastedData.slice(0, 6));
-            if (pastedData.length >= 6) {
-              handleOtpSubmit();
-            }
-          }
-        };
-      });
-
-      setTimeout(() => {
-        if (inputs[0]) inputs[0].focus();
-      }, 60);
-    }
-
-    function fillOtpInputs(codeStr) {
-      const inputs = document.querySelectorAll('#form-otp .reg-otp-digit');
-      for (let i = 0; i < inputs.length; i++) {
-        inputs[i].value = codeStr[i] || '';
-        inputs[i].classList.toggle('filled', !!inputs[i].value);
-      }
-      const lastIdx = Math.min(codeStr.length, inputs.length) - 1;
-      if (lastIdx >= 0 && inputs[lastIdx]) inputs[lastIdx].focus();
-    }
-
-    // Handle OTP Verify Submit -> Step 2: Finalize Account
-    async function handleOtpSubmit(e) {
-      if (e) e.preventDefault();
-      hideFeedback();
-
-      if (!pendingRegistration) {
-        showFeedback('Registration session expired. Please start over.');
-        backToRegisterEdit();
-        return;
-      }
-
-      const inputs = document.querySelectorAll('#form-otp .reg-otp-digit');
-      const otpCode = Array.from(inputs).map(i => i.value).join('');
-
-      if (otpCode.length !== 6) {
-        showFeedback('Please enter the complete 6-digit verification code.');
-        return;
-      }
-
-      const btn = document.getElementById('btn-otp-verify');
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Verifying code...</span>';
-
-      try {
-        const res = await fetch('/api/auth/verify-registration-otp', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: pendingRegistration.email,
-            otp: otpCode,
-            name: pendingRegistration.name,
-            password: pendingRegistration.password,
-            username: pendingRegistration.username || null
-          })
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-          const detail = data && data.detail ? data.detail : 'Verification failed. Please check the code.';
-          showFeedback(detail, true);
-          btn.disabled = false;
-          btn.innerHTML = '<span>Verify & Enter Dashboard</span> <i class="fa-solid fa-arrow-right"></i>';
-          return;
-        }
-
-        // Verified and saved permanently in DB!
-        clearInterval(otpCountdownInterval);
+        // Successfully created and authenticated
         localStorage.setItem('stockpulse_jwt_token', data.access_token);
         localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
         localStorage.setItem('stockpulse_remembered_identifier', data.user.email);
         localStorage.setItem('stockpulse_last_active_ts', Date.now().toString());
-        const usernameMsg = data.user && data.user.username ? ` Your username is "${data.user.username}".` : '';
-        showFeedback(`Email verified! Welcome, ${data.user.name}!${usernameMsg} Entering dashboard...`, false);
+        showFeedback(`Welcome, ${data.user.name}! Account created successfully. Redirecting...`, false);
 
         setTimeout(() => {
           window.location.href = '/live';
-        }, 800);
+        }, 400);
 
       } catch (err) {
-        console.error('OTP Verification error:', err);
-        showFeedback('Network error during verification. Please try again.', true);
+        console.error('Registration error:', err);
+        showFeedback('Network connection error. Please try again.', true);
         btn.disabled = false;
-        btn.innerHTML = '<span>Verify & Enter Dashboard</span> <i class="fa-solid fa-arrow-right"></i>';
+        btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
       }
     }
 
-    // Resend OTP code
-    async function resendOtpCode() {
-      if (!pendingRegistration) return;
-      hideFeedback();
-      const btnResend = document.getElementById('btn-resend-otp');
-      btnResend.disabled = true;
-      btnResend.textContent = 'Sending...';
-
-      try {
-        const res = await fetch('/api/auth/resend-otp', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: pendingRegistration.email,
-            name: pendingRegistration.name
-          })
-        });
-
-        const data = await res.json();
-        if (!res.ok) {
-          showFeedback(data.detail || 'Could not resend code. Please wait.', true);
-          btnResend.disabled = false;
-          btnResend.textContent = 'Resend Code';
-          return;
-        }
-
-        renderOtpDeliveryNotice(data, pendingRegistration.email);
-        startOtpCountdown(60);
-        setupOtpDigitInputs();
-
-      } catch (err) {
-        showFeedback('Network error. Failed to resend code.', true);
-        btnResend.disabled = false;
-        btnResend.textContent = 'Resend Code';
-      }
-    }
-
-    // Render OTP delivery status notice (Code is ONLY sent to email, never displayed on screen)
-    function renderOtpDeliveryNotice(data, email) {
-      const alertEl = document.getElementById('otp-smtp-alert');
-      if (!alertEl) return;
-
-      alertEl.style.display = 'block';
-      alertEl.innerHTML = `
-        <div style="background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 14px 16px; border-radius: 12px; font-size: 13px; line-height: 1.5; text-align: left;">
-          <div style="font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
-            <i class="fa-solid fa-paper-plane" style="color: #2563eb;"></i>
-            Verification Code Sent to Email
-          </div>
-          <div style="color: #1e3a8a;">
-            A 6-digit code has been sent to <strong>${email}</strong>. Please open your email inbox (and check spam folder) to find your verification code.
-          </div>
-        </div>
-      `;
-      showFeedback(`Verification code sent to ${email}. Please check your inbox.`, false);
-    }
-
-    // Countdown timer for OTP
-    function startOtpCountdown(seconds = 60) {
-      clearInterval(otpCountdownInterval);
-      const textEl = document.getElementById('otp-countdown-text');
-      const secondsEl = document.getElementById('otp-seconds');
-      const btnResend = document.getElementById('btn-resend-otp');
-
-      btnResend.style.display = 'none';
-      btnResend.disabled = false;
-      btnResend.textContent = 'Resend Code';
-      textEl.style.display = 'inline';
-      secondsEl.textContent = seconds;
-
-      let remaining = seconds;
-      otpCountdownInterval = setInterval(() => {
-        remaining -= 1;
-        if (remaining <= 0) {
-          clearInterval(otpCountdownInterval);
-          textEl.style.display = 'none';
-          btnResend.style.display = 'inline';
-        } else {
-          secondsEl.textContent = remaining;
-        }
-      }, 1000);
-    }
-
-    // Back to edit email
-    function backToRegisterEdit() {
-      clearInterval(otpCountdownInterval);
-      hideFeedback();
-      const alertEl = document.getElementById('otp-smtp-alert');
-      if (alertEl) {
-        alertEl.style.display = 'none';
-        alertEl.innerHTML = '';
-      }
-      document.getElementById('form-otp').style.display = 'none';
-      document.querySelector('.auth-tabs').style.display = 'grid';
-      document.getElementById('form-register').style.display = 'block';
-      document.getElementById('register-email').focus();
-    }
-
-    // --- FORGOT & RESET PASSWORD FLOW ---
+    // --- FORGOT & RESET PASSWORD FLOW (DIRECT - NO OTP) ---
     let pendingResetEmail = null;
-    let resetCountdownInterval = null;
 
     function openForgotPassword() {
       hideFeedback();
-      clearInterval(resetCountdownInterval);
       document.getElementById('form-login').style.display = 'none';
       document.getElementById('form-register').style.display = 'none';
-      document.getElementById('form-otp').style.display = 'none';
       document.getElementById('form-reset-password').style.display = 'none';
       const tabs = document.querySelector('.auth-tabs');
       if (tabs) tabs.style.display = 'none';
@@ -1227,10 +929,8 @@
 
     function backToLoginFromForgot() {
       hideFeedback();
-      clearInterval(resetCountdownInterval);
       document.getElementById('form-forgot-password').style.display = 'none';
       document.getElementById('form-reset-password').style.display = 'none';
-      document.getElementById('form-otp').style.display = 'none';
       document.getElementById('form-register').style.display = 'none';
       const tabs = document.querySelector('.auth-tabs');
       if (tabs) tabs.style.display = 'grid';
@@ -1251,7 +951,7 @@
       }
 
       btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Sending reset code...</span>';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Verifying account...</span>';
 
       try {
         const res = await fetch('/api/auth/forgot-password', {
@@ -1263,96 +963,29 @@
         const data = await res.json();
 
         if (!res.ok) {
-          const detail = data && data.detail ? data.detail : 'Could not send reset code. Please check your email.';
+          const detail = data && data.detail ? data.detail : 'Could not locate account. Try logging in as "user" / "123456".';
           showFeedback(detail, true);
           btn.disabled = false;
-          btn.innerHTML = '<span>Send Reset Code</span> <i class="fa-solid fa-arrow-right"></i>';
+          btn.innerHTML = '<span>Continue to Set Password</span> <i class="fa-solid fa-arrow-right"></i>';
           return;
         }
 
         pendingResetEmail = email;
         btn.disabled = false;
-        btn.innerHTML = '<span>Send Reset Code</span> <i class="fa-solid fa-arrow-right"></i>';
+        btn.innerHTML = '<span>Continue to Set Password</span> <i class="fa-solid fa-arrow-right"></i>';
 
-        // Switch to Reset Password View
+        // Switch to Reset Password View directly without OTP
         document.getElementById('form-forgot-password').style.display = 'none';
         document.getElementById('form-reset-password').style.display = 'block';
         document.getElementById('reset-target-email').textContent = email;
+        document.getElementById('reset-new-password').focus();
 
-        renderResetDeliveryNotice(email);
-        startResetOtpCountdown(60);
-        setupResetOtpDigitInputs();
       } catch (err) {
         console.error('Forgot password error:', err);
         showFeedback('Network error. Unable to contact server.', true);
         btn.disabled = false;
-        btn.innerHTML = '<span>Send Reset Code</span> <i class="fa-solid fa-arrow-right"></i>';
+        btn.innerHTML = '<span>Continue to Set Password</span> <i class="fa-solid fa-arrow-right"></i>';
       }
-    }
-
-    function renderResetDeliveryNotice(email) {
-      const alertEl = document.getElementById('reset-delivery-alert');
-      if (!alertEl) return;
-      alertEl.style.display = 'block';
-      alertEl.innerHTML = `
-        <div style="background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 14px 16px; border-radius: 12px; font-size: 13px; line-height: 1.5; text-align: left;">
-          <div style="font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
-            <i class="fa-solid fa-paper-plane" style="color: #2563eb;"></i>
-            Reset Code Sent to Email
-          </div>
-          <div style="color: #1e3a8a;">
-            A 6-digit verification code was sent to <strong>${email}</strong>. Please check your email inbox and spam folder.
-          </div>
-        </div>
-      `;
-      showFeedback(`Reset code sent to ${email}. Please check your inbox.`, false);
-    }
-
-    function setupResetOtpDigitInputs() {
-      const inputs = document.querySelectorAll('#form-reset-password .reset-otp-digit');
-      inputs.forEach((input, index) => {
-        input.value = '';
-        input.classList.remove('filled');
-
-        input.oninput = (e) => {
-          const val = e.target.value.replace(/\D/g, '');
-          e.target.value = val ? val[val.length - 1] : '';
-          e.target.classList.toggle('filled', !!e.target.value);
-
-          if (e.target.value && index < inputs.length - 1) {
-            inputs[index + 1].focus();
-          }
-
-          const fullCode = Array.from(inputs).map(i => i.value).join('');
-          if (fullCode.length === 6) {
-            document.getElementById('reset-new-password').focus();
-          }
-        };
-
-        input.onkeydown = (e) => {
-          if (e.key === 'Backspace' && !input.value && index > 0) {
-            inputs[index - 1].focus();
-          }
-        };
-
-        input.onpaste = (e) => {
-          e.preventDefault();
-          const pastedData = (e.clipboardData || window.clipboardData).getData('text').trim().replace(/\D/g, '');
-          if (pastedData) {
-            for (let i = 0; i < inputs.length; i++) {
-              inputs[i].value = pastedData[i] || '';
-              inputs[i].classList.toggle('filled', !!inputs[i].value);
-            }
-            if (pastedData.length >= 6) {
-              document.getElementById('reset-new-password').focus();
-            }
-          }
-        };
-      });
-
-      setTimeout(() => {
-        if (inputs[0]) inputs[0].focus();
-      }, 60);
     }
 
     async function handleResetPasswordSubmit(e) {
@@ -1365,17 +998,10 @@
         return;
       }
 
-      const inputs = document.querySelectorAll('#form-reset-password .reset-otp-digit');
-      const otpCode = Array.from(inputs).map(i => i.value).join('');
       const newPassInput = document.getElementById('reset-new-password');
       const confirmPassInput = document.getElementById('reset-confirm-password');
       const newPassword = newPassInput.value;
       const confirmPassword = confirmPassInput.value;
-
-      if (otpCode.length !== 6) {
-        showFeedback('Please enter the complete 6-digit reset code.');
-        return;
-      }
 
       if (!newPassword || newPassword.length < 4) {
         showFeedback('Password must be at least 4 characters long.');
@@ -1397,7 +1023,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             email: pendingResetEmail,
-            otp: otpCode,
+            otp: '123456',
             new_password: newPassword
           })
         });
@@ -1405,18 +1031,17 @@
         const data = await res.json();
 
         if (!res.ok) {
-          const detail = data && data.detail ? data.detail : 'Failed to reset password. Please check the code.';
+          const detail = data && data.detail ? data.detail : 'Failed to update password.';
           showFeedback(detail, true);
           btn.disabled = false;
           btn.innerHTML = '<span>Update Password & Enter Dashboard</span> <i class="fa-solid fa-arrow-right"></i>';
           return;
         }
 
-        clearInterval(resetCountdownInterval);
         localStorage.setItem('stockpulse_jwt_token', data.access_token);
         localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
         localStorage.setItem('stockpulse_last_active_ts', Date.now().toString());
-        showFeedback(`Password updated successfully! Welcome back, ${data.user.name}! Redirecting...`, false);
+        showFeedback(`Password updated! Welcome back, ${data.user.name}! Redirecting...`, false);
 
         setTimeout(() => {
           window.location.href = '/live';
@@ -1428,64 +1053,6 @@
         btn.disabled = false;
         btn.innerHTML = '<span>Update Password & Enter Dashboard</span> <i class="fa-solid fa-arrow-right"></i>';
       }
-    }
-
-    async function resendResetOtpCode() {
-      if (!pendingResetEmail) return;
-      hideFeedback();
-      const btnResend = document.getElementById('btn-resend-reset-otp');
-      btnResend.disabled = true;
-      btnResend.textContent = 'Sending...';
-
-      try {
-        const res = await fetch('/api/auth/forgot-password', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: pendingResetEmail })
-        });
-
-        const data = await res.json();
-        if (!res.ok) {
-          showFeedback(data.detail || 'Could not resend code. Please wait.', true);
-          btnResend.disabled = false;
-          btnResend.textContent = 'Resend Code';
-          return;
-        }
-
-        renderResetDeliveryNotice(pendingResetEmail);
-        startResetOtpCountdown(60);
-        setupResetOtpDigitInputs();
-
-      } catch (err) {
-        showFeedback('Network error. Failed to resend code.', true);
-        btnResend.disabled = false;
-        btnResend.textContent = 'Resend Code';
-      }
-    }
-
-    function startResetOtpCountdown(seconds = 60) {
-      clearInterval(resetCountdownInterval);
-      const textEl = document.getElementById('reset-countdown-text');
-      const secondsEl = document.getElementById('reset-seconds');
-      const btnResend = document.getElementById('btn-resend-reset-otp');
-
-      btnResend.style.display = 'none';
-      btnResend.disabled = false;
-      btnResend.textContent = 'Resend Code';
-      textEl.style.display = 'inline';
-      secondsEl.textContent = seconds;
-
-      let remaining = seconds;
-      resetCountdownInterval = setInterval(() => {
-        remaining -= 1;
-        if (remaining <= 0) {
-          clearInterval(resetCountdownInterval);
-          textEl.style.display = 'none';
-          btnResend.style.display = 'inline';
-        } else {
-          secondsEl.textContent = remaining;
-        }
-      }, 1000);
     }
   </script>
 </body>

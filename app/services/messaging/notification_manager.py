@@ -625,9 +625,9 @@ class NotificationManager:
         dedup_key = f"{user_id or 'all'}_{symbol.upper()}"
         last_sig, last_ts = cls._LAST_ST_SIGNAL.get(dedup_key, (None, 0.0))
 
-        # Anti-whipsaw guard: suppress identical signals or rapid flips within 120 seconds
-        if (now_ts - last_ts) < 120.0:
-            print(f"[NotificationManager] Suppressed rapid SuperTrend signal for {symbol} ({signal} within 120s of previous {last_sig}). Anti-whipsaw active.")
+        # Deduplication guard: suppress identical duplicate signals within 15 seconds
+        if last_sig == signal.upper() and (now_ts - last_ts) < 15.0:
+            print(f"[NotificationManager] Suppressed duplicate SuperTrend signal for {symbol} ({signal} within 15s).")
             return []
 
         cls._LAST_ST_SIGNAL[dedup_key] = (signal.upper(), now_ts)

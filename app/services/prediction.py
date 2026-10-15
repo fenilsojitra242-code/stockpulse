@@ -1,12 +1,21 @@
 import os
 import joblib
 import numpy as np
-from typing import Dict, Any, Optional, Tuple
-from app.services.feature_engine import create_dynamic_features_vector, FEATURE_NAMES
+from typing import Dict, Any, Optional, Tuple, List
+from app.services.feature_engine import (
+    create_dynamic_features_vector,
+    FEATURE_NAMES,
+    extract_supertrend_reversal_feature_vector,
+    calculate_reversal_risk_score,
+    SUPERTREND_REVERSAL_FEATURE_NAMES
+)
 from app.services.market_data import get_latest_market_snapshot
 
 _MODEL_CACHE = None
 MODEL_PATH = "app/ml/model.joblib"
+
+_REVERSAL_MODEL_CACHE = None
+REVERSAL_MODEL_PATH = "app/ml/reversal_model.joblib"
 
 
 def load_model():
@@ -230,4 +239,159 @@ def predict_target_probability(
         "explanation": explanation,
         "disclaimer": "⚠️ Model-generated estimate; not a guarantee."
     }
+
+
+def load_reversal_model() -> Optional[Dict[str, Any]]:
+    """Load cached Supertrend reversal model artifact or load from disk."""
+    global _REVERSAL_MODEL_CACHE
+    if _REVERSAL_MODEL_CACHE is not None:
+        return _REVERSAL_MODEL_CACHE
+
+    if os.path.exists(REVERSAL_MODEL_PATH):
+        try:
+            _REVERSAL_MODEL_CACHE = joblib.load(REVERSAL_MODEL_PATH)
+            clf = _REVERSAL_MODEL_CACHE.get("model")
+            if hasattr(clf, "estimator") and hasattr(clf.estimator, "n_jobs"):
+                clf.estimator.n_jobs = 1
+            elif hasattr(clf, "n_jobs"):
+                clf.n_jobs = 1
+            print(f"[PredictionService] Loaded Supertrend reversal model: {_REVERSAL_MODEL_CACHE.get('model_name', 'Unknown')}")
+            return _REVERSAL_MODEL_CACHE
+        except Exception as e:
+            print(f"[PredictionService] Error loading reversal model from {REVERSAL_MODEL_PATH}: {e}")
+
+    return None
+
+
+def predict_supertrend_reversal(
+    candles_or_df: Any,
+    confirmed_direction: str,
+    horizon_minutes: int = 5,
+    current_price: Optional[float] = None,
+    threshold: Optional[float] = None,
+    symbol: str = "STOCK",
+    period: int = 10,
+    multiplier: float = 3.0,
+    supertrend_price: Optional[float] = None,
+    atr_value: Optional[float] = None
+) -> Dict[str, Any]:
+    """
+    Predictive Early Reversal Layer for SuperTrend:
+    Estimates the probability that the confirmed Supertrend will undergo a genuine
+    transition (BUY -> SELL or SELL -> BUY) within the next horizon_minutes (1, 2, or 5).
+
+    - Uses trained calibrated ML model (Random Forest / XGBoost) when available.
+    - Transparently falls back to calibrated heuristic risk score if model artifact
+      is missing, preserving full operational integrity.
+    - Flags uncertainty if historical candles are insufficient (< 15 bars).
+    - Guaranteed invariant: NEVER overwrites the confirmed Supertrend indicator state.
+    """
+    conf_dir = "BUY" if str(confirmed_direction).upper() == "BUY" else "SELL"
+    reversal_target_dir = "SELL" if conf_dir == "BUY" else "BUY"
+    horizon = int(horizon_minutes) if horizon_minutes in (1, 2, 5) else 5
+
+    # Extract feature vector
+    feat_vec, feat_dict, has_sufficient = extract_supertrend_reversal_feature_vector(
+        candles_or_df=candles_or_df,
+        horizon_minutes=horizon,
+        current_price=current_price,
+        period=period,
+        multiplier=multiplier
+    )
+
+    cp = float(current_price if current_price is not None else feat_dict.get('close', 100.0))
+    st_p = float(supertrend_price if supertrend_price is not None else feat_dict.get('supertrend', cp))
+    atr_val = float(atr_value if atr_value is not None else feat_dict.get('atr_14', 1.0))
+    dist_pts = round(abs(cp - st_p), 2)
+    dist_atr = round(dist_pts / max(0.01, atr_val), 2)
+
+    # Uncertainty handling
+    uncertainty_flag = not has_sufficient
+    data_quality = "OPTIMAL" if has_sufficient else "INSUFFICIENT_HISTORY"
+
+    # Transparent rule-based heuristic score fallback
+    heuristic_score = calculate_reversal_risk_score(
+        distance_points=dist_pts,
+        atr_value=atr_val,
+        proximity_points=max(0.5, atr_val * 0.5),
+        target_direction=reversal_target_dir,
+        candle_color="RED" if feat_dict.get('candle_body_atr', 0.0) < 0 else "GREEN",
+        candle_points=round(feat_dict.get('candle_body_atr', 0.0) * atr_val, 2),
+        momentum_adverse=float(feat_dict.get('mom_adverse_3m', 0.0) * atr_val),
+        delta_rsi=float(feat_dict.get('delta_rsi_3m', 0.0)),
+        trend_duration_bars=int(feat_dict.get('trend_duration_bars', 1))
+    )
+
+    reversal_artifact = load_reversal_model()
+    model_type = "RULE_BASED"
+    is_heuristic = True
+    calibrated_prob = heuristic_score
+    active_threshold = float(threshold) if threshold is not None else 0.55
+
+    if reversal_artifact is not None and has_sufficient:
+        try:
+            clf = reversal_artifact.get("model")
+            scaler = reversal_artifact.get("scaler")
+            use_scaled = reversal_artifact.get("use_scaled", False)
+            feat_cols = reversal_artifact.get("feature_names", [])
+
+            # Extract features matching the model's exact expected names and order
+            X_in = np.array([[feat_dict.get(c, 0.0) for c in feat_cols]], dtype=np.float32)
+            if scaler is not None and use_scaled:
+                X_in = scaler.transform(X_in)
+
+            # Calibrated probability output
+            ml_proba = float(clf.predict_proba(X_in)[0, 1])
+
+            # Blend with heuristic sanity score to smooth rare anomalous spikes
+            calibrated_prob = round(float(np.clip(0.70 * ml_proba + 0.30 * heuristic_score, 0.02, 0.98)), 4)
+            model_type = str(reversal_artifact.get("model_name", "CALIBRATED_ML"))
+            is_heuristic = False
+            if threshold is None:
+                active_threshold = float(reversal_artifact.get("optimal_threshold", 0.55))
+
+        except Exception as e:
+            print(f"[PredictionService] Reversal model inference exception for {symbol}: {e}. Using rule-based fallback.")
+            calibrated_prob = heuristic_score
+            model_type = "RULE_BASED"
+            is_heuristic = True
+            active_threshold = float(threshold) if threshold is not None else 0.60
+
+    # Decision: Trigger early warning only when calibrated probability meets threshold and quality passes
+    is_early_warning = bool(calibrated_prob >= active_threshold and not uncertainty_flag)
+
+    explanation = (
+        f"{symbol} is in confirmed {conf_dir} trend (ST: ₹{st_p:.2f}, distance: {dist_atr:.2f}x ATR). "
+        f"Early reversal warning to {reversal_target_dir} within {horizon}m: "
+        f"probability {calibrated_prob * 100:.1f}% (threshold {active_threshold * 100:.0f}%, model: {model_type}). "
+        f"{'CRITICAL REVERSAL RISK - EARLY WARNING ACTIVE' if is_early_warning else 'Within safe trend bounds'}"
+    )
+
+    return {
+        "symbol": symbol,
+        "current_direction": conf_dir,
+        "confirmed_direction": conf_dir,
+        "reversal_target_direction": reversal_target_dir,
+        "horizon_minutes": horizon,
+        "reversal_probability": calibrated_prob,
+        "reversal_risk_score": heuristic_score,
+        "threshold": active_threshold,
+        "is_early_warning_ready": is_early_warning,
+        "model_type": model_type,
+        "is_heuristic": is_heuristic,
+        "uncertainty_flag": uncertainty_flag,
+        "data_quality": data_quality,
+        "distance_points": dist_pts,
+        "distance_to_band_atr": dist_atr,
+        "features_summary": {
+            "mom_adverse_3m": round(float(feat_dict.get('mom_adverse_3m', 0.0)), 3),
+            "delta_rsi_3m": round(float(feat_dict.get('delta_rsi_3m', 0.0)), 2),
+            "rsi_14": round(float(feat_dict.get('rsi_14', 50.0)), 1),
+            "macd_hist": round(float(feat_dict.get('macd_hist', 0.0)), 3),
+            "trend_duration_bars": int(feat_dict.get('trend_duration_bars', 1)),
+            "volatility_10m": round(float(feat_dict.get('volatility_10m', 0.0)), 3)
+        },
+        "explanation": explanation
+    }
+
 

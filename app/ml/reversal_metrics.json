@@ -1,0 +1,153 @@
+{
+  "timestamp": "2026-10-15T07:53:49Z",
+  "champion_model": "Random Forest",
+  "optimal_threshold": 0.55,
+  "total_test_samples": 1780,
+  "comparison_summary": {
+    "baseline": {
+      "model_name": "Rule-Based Baseline (Proximity & Momentum)",
+      "precision": 0.6607,
+      "recall": 0.1548,
+      "f1": 0.2508,
+      "false_positive_rate": 0.0123,
+      "true_positives": 37,
+      "false_positives": 19,
+      "false_negatives": 202,
+      "true_negatives": 1522
+    },
+    "models": {
+      "Logistic Regression": {
+        "model_name": "Logistic Regression",
+        "optimal_threshold": 0.6,
+        "precision": 0.3287,
+        "recall": 0.4979,
+        "f1": 0.396,
+        "brier_score": 0.1884,
+        "roc_auc": 0.7293,
+        "false_positive_rate": 0.1577,
+        "true_positives": 119,
+        "false_positives": 243,
+        "false_negatives": 120,
+        "true_negatives": 1298
+      },
+      "Random Forest": {
+        "model_name": "Random Forest",
+        "optimal_threshold": 0.55,
+        "precision": 0.4053,
+        "recall": 0.4477,
+        "f1": 0.4254,
+        "brier_score": 0.1731,
+        "roc_auc": 0.732,
+        "false_positive_rate": 0.1019,
+        "true_positives": 107,
+        "false_positives": 157,
+        "false_negatives": 132,
+        "true_negatives": 1384
+      },
+      "XGBoost": {
+        "model_name": "XGBoost",
+        "optimal_threshold": 0.55,
+        "precision": 0.3799,
+        "recall": 0.364,
+        "f1": 0.3718,
+        "brier_score": 0.1534,
+        "roc_auc": 0.7146,
+        "false_positive_rate": 0.0921,
+        "true_positives": 87,
+        "false_positives": 142,
+        "false_negatives": 152,
+        "true_negatives": 1399
+      }
+    }
+  },
+  "directional_performance": {
+    "BUY_TO_SELL": {
+      "samples": 886,
+      "precision": 0.4225,
+      "recall": 0.5085,
+      "f1": 0.4615,
+      "false_positive_rate": 0.1068
+    },
+    "SELL_TO_BUY": {
+      "samples": 894,
+      "precision": 0.3852,
+      "recall": 0.3884,
+      "f1": 0.3868,
+      "false_positive_rate": 0.097
+    }
+  },
+  "horizon_performance": {
+    "1m": {
+      "positive_count": 50,
+      "precision": 0.1553,
+      "recall": 0.82,
+      "f1": 0.2611,
+      "false_positive_rate": 0.1289
+    },
+    "2m": {
+      "positive_count": 100,
+      "precision": 0.25,
+      "recall": 0.66,
+      "f1": 0.3626,
+      "false_positive_rate": 0.1179
+    },
+    "5m": {
+      "positive_count": 239,
+      "precision": 0.4053,
+      "recall": 0.4477,
+      "f1": 0.4254,
+      "false_positive_rate": 0.1019
+    }
+  },
+  "lead_time_analysis": {
+    "mean_minutes": 2.32,
+    "median_minutes": 2.0,
+    "min_minutes": 1,
+    "max_minutes": 5,
+    "lead_time_histogram": {
+      "1_minute": 41,
+      "2_minutes": 25,
+      "3_minutes": 18,
+      "4_minutes": 12,
+      "5_minutes": 11
+    }
+  },
+  "regime_performance": {
+    "high_volatility": {
+      "samples": 890,
+      "precision": 0.3851,
+      "recall": 0.5229
+    },
+    "low_volatility": {
+      "samples": 890,
+      "precision": 0.431,
+      "recall": 0.3846
+    }
+  },
+  "feature_names": [
+    "direction_code",
+    "distance_to_band_atr",
+    "return_1m",
+    "return_2m",
+    "return_3m",
+    "return_5m",
+    "momentum_3m",
+    "momentum_5m",
+    "mom_adverse_3m",
+    "mom_adverse_5m",
+    "rsi_14",
+    "delta_rsi_3m",
+    "delta_rsi_5m",
+    "macd_hist",
+    "delta_macd_hist_3m",
+    "ema_9_slope_3m",
+    "ema_21_slope_3m",
+    "atr_ratio_5m",
+    "volatility_10m",
+    "candle_range_atr",
+    "candle_body_atr",
+    "vol_ratio_20m",
+    "vol_change_1m",
+    "trend_duration_bars"
+  ]
+}

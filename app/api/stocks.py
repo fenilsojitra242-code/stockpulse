@@ -227,6 +227,11 @@ class SuperTrendSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
     proximity_points: Optional[float] = None
     selected_symbols: Optional[List[str]] = None
+    period: Optional[int] = None
+    multiplier: Optional[float] = None
+    band_buffer_pct: Optional[float] = None
+    min_atr_distance_filter: Optional[float] = None
+    min_confirming_candles: Optional[int] = None
 
 
 @router.get("/supertrend/settings")
@@ -252,6 +257,11 @@ def save_supertrend_settings_endpoint(
     - enabled (bool)
     - proximity_points (float)
     - selected_symbols (list of stock symbols)
+    - period (int, default 10)
+    - multiplier (float, default 3.0)
+    - band_buffer_pct (float, default 0.0)
+    - min_atr_distance_filter (float, default 0.0)
+    - min_confirming_candles (int, default 1)
     """
     from app.services.alert_engine import save_supertrend_settings
     return save_supertrend_settings(
@@ -259,7 +269,12 @@ def save_supertrend_settings_endpoint(
         enabled=payload.enabled,
         proximity_points=payload.proximity_points,
         selected_symbols=payload.selected_symbols,
-        user_id=current_user.id
+        user_id=current_user.id,
+        period=payload.period,
+        multiplier=payload.multiplier,
+        band_buffer_pct=payload.band_buffer_pct,
+        min_atr_distance_filter=payload.min_atr_distance_filter,
+        min_confirming_candles=payload.min_confirming_candles
     )
 
 
