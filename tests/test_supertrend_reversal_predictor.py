@@ -234,9 +234,15 @@ class TestSupertrendReversalPredictor(unittest.TestCase):
         st_val = base_st["supertrend_price"]
         prox_price = round(st_val + 1.0, 2)  # Distance = 1.0 pt <= 2.0 pts
 
+        # Configure last candle with adverse pullback towards support
+        candles[-1]["open"] = prox_price + 1.5
+        candles[-1]["close"] = prox_price
+        candles[-1]["high"] = prox_price + 1.6
+        candles[-1]["low"] = prox_price - 0.1
+
         st_res = analyze_supertrend_hit(candles, current_price=prox_price, period=10, multiplier=3.0, proximity_points=2.0)
         st_res["candles"] = candles
-        candle_ts = st_res["candle_timestamp"]
+        st_res["reversal_probability"] = 0.75
 
         # 1. Initialize state
         _process_supertrend_state_transition(
@@ -253,7 +259,7 @@ class TestSupertrendReversalPredictor(unittest.TestCase):
             prox_pts=2.0
         )
 
-        # 2. First tick in proximity -> Triggers early warning
+        # 2. First tick in proximity with strong evidence -> Triggers early warning
         with patch("app.services.alert_engine.notification_manager.emit_supertrend_approaching") as mock_emit:
             res1 = _process_supertrend_state_transition(
                 condition_key="test_notif_sym",
@@ -316,17 +322,24 @@ class TestSupertrendReversalPredictor(unittest.TestCase):
         candles = make_synthetic_candles(n=30, start_price=100.0, trend="UP")
         mock_db = MagicMock()
 
-        st_res = analyze_supertrend_hit(candles, current_price=100.2, period=10, multiplier=3.0, proximity_points=2.0)
+        base_st = analyze_supertrend_hit(candles, period=10, multiplier=3.0)
+        st_val = base_st["supertrend_price"]
+        prox_price = round(st_val + 1.0, 2)
+
+        candles[-1]["open"] = prox_price + 1.5
+        candles[-1]["close"] = prox_price
+        st_res = analyze_supertrend_hit(candles, current_price=prox_price, period=10, multiplier=3.0, proximity_points=2.0)
         st_res["candles"] = candles
         st_res["is_approaching"] = True
+        st_res["reversal_probability"] = 0.75
 
         # Initialize and trigger warning
-        _process_supertrend_state_transition("exp_sym", None, "EXP_SYM", st_res, 100.2, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0)
-        _process_supertrend_state_transition("exp_sym", None, "EXP_SYM", st_res, 100.2, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0)
-        self.assertEqual(_SUPERTREND_STATES["exp_sym"]["state"], "EARLY_WARNING")
+        _process_supertrend_state_transition("exp_sym", None, "EXP_SYM", st_res, prox_price, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0)
+        _process_supertrend_state_transition("exp_sym", None, "EXP_SYM", st_res, prox_price, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0)
+        self.assertEqual(_SUPERTREND_STATES["exp_sym"]["state"], "EARLY_WARNING_SENT")
 
         # Price rallies away from line (distance = 15.0 pts > 2.0 * 1.5)
-        st_res_away = analyze_supertrend_hit(candles, current_price=115.0, period=10, multiplier=3.0, proximity_points=2.0)
+        st_res_away = analyze_supertrend_hit(candles, current_price=st_val + 15.0, period=10, multiplier=3.0, proximity_points=2.0)
         st_res_away["candles"] = candles
         st_res_away["is_approaching"] = False
 
@@ -335,7 +348,7 @@ class TestSupertrendReversalPredictor(unittest.TestCase):
             alert=None,
             symbol="EXP_SYM",
             st_result=st_res_away,
-            curr_price=115.0,
+            curr_price=st_val + 15.0,
             db=mock_db,
             user_id=1,
             now=datetime.utcnow(),
@@ -347,6 +360,111 @@ class TestSupertrendReversalPredictor(unittest.TestCase):
         self.assertEqual(res_exp["type"], "WARNING_EXPIRED")
         self.assertEqual(res_exp["reason"], "PULLED_AWAY")
         self.assertEqual(_SUPERTREND_STATES["exp_sym"]["state"], "MONITORING")
+
+    # -------------------------------------------------------------
+    # Precision Regression Tests: Multi-Factor Confluence
+    # -------------------------------------------------------------
+    def test_precision_weak_prediction_does_not_trigger_early_warning(self):
+        """Weak prediction probability (< threshold) suppresses early warning even within proximity."""
+        candles = make_synthetic_candles(n=30, start_price=100.0, trend="UP")
+        mock_db = MagicMock()
+
+        st_res = analyze_supertrend_hit(candles, current_price=100.5, period=10, multiplier=3.0, proximity_points=2.0)
+        st_res["candles"] = candles
+        st_res["distance_points"] = 0.5  # within proximity
+        st_res["reversal_probability"] = 0.20  # Explicit weak score
+
+        # Initialize
+        _process_supertrend_state_transition("weak_pred", None, "WEAK_SYM", st_res, 100.5, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0)
+
+        # Process tick - with low score (< 0.50), warning must be suppressed
+        with patch("app.services.alert_engine.notification_manager.emit_supertrend_approaching") as mock_emit:
+            res = _process_supertrend_state_transition(
+                "weak_pred", None, "WEAK_SYM", st_res, 100.5, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0
+            )
+            self.assertIsNone(res, "Weak prediction must not trigger early warning!")
+            mock_emit.assert_not_called()
+            self.assertEqual(_SUPERTREND_STATES["weak_pred"]["state"], "MONITORING")
+
+    def test_precision_opposing_candle_momentum_suppresses_warning(self):
+        """When confirmed trend is BUY and candle expands upwards strongly, warning for SELL reversal is suppressed."""
+        candles = make_synthetic_candles(n=30, start_price=100.0, trend="UP")
+        mock_db = MagicMock()
+
+        base_st = analyze_supertrend_hit(candles, period=10, multiplier=3.0)
+        st_val = base_st["supertrend_price"]
+        prox_price = round(st_val + 1.0, 2)
+
+        # Expanding green candle: close > open + 0.50
+        candles[-1]["open"] = prox_price - 0.2
+        candles[-1]["close"] = prox_price + 0.5
+        st_res = analyze_supertrend_hit(candles, current_price=prox_price, period=10, multiplier=3.0, proximity_points=2.0)
+        st_res["candles"] = candles
+        st_res["distance_points"] = 1.0  # within proximity
+        st_res["reversal_probability"] = 0.60
+
+        _process_supertrend_state_transition("opp_mom", None, "OPP_SYM", st_res, prox_price, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0)
+
+        with patch("app.services.alert_engine.notification_manager.emit_supertrend_approaching") as mock_emit:
+            res = _process_supertrend_state_transition(
+                "opp_mom", None, "OPP_SYM", st_res, prox_price, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0
+            )
+            self.assertIsNone(res, "Opposing momentum candle must suppress early warning!")
+            mock_emit.assert_not_called()
+
+    def test_precision_stale_or_unavailable_data_suppresses_warning(self):
+        """Stale or unavailable market data transitions to DATA_UNAVAILABLE and suppresses alerts."""
+        candles = make_synthetic_candles(n=30, start_price=100.0, trend="UP")
+        mock_db = MagicMock()
+
+        st_res = analyze_supertrend_hit(candles, current_price=100.5, period=10, multiplier=3.0, proximity_points=2.0)
+        st_res["candles"] = candles
+
+        _process_supertrend_state_transition("stale_sym", None, "STALE_SYM", st_res, 100.5, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0)
+
+        res = _process_supertrend_state_transition(
+            "stale_sym", None, "STALE_SYM", st_res, 100.5, mock_db, 1, datetime.utcnow(), True, "STALE", 2.0
+        )
+        self.assertIsNotNone(res)
+        self.assertEqual(res["type"], "DATA_UNAVAILABLE")
+        self.assertEqual(_SUPERTREND_STATES["stale_sym"]["state"], "DATA_UNAVAILABLE")
+
+    def test_precision_same_candle_re_entry_after_expiration_is_suppressed(self):
+        """If early warning expired on candle T, price flapping back into proximity on the same candle is suppressed."""
+        candles = make_synthetic_candles(n=30, start_price=100.0, trend="UP")
+        mock_db = MagicMock()
+
+        base_st = analyze_supertrend_hit(candles, period=10, multiplier=3.0)
+        st_val = base_st["supertrend_price"]
+        prox_price = round(st_val + 1.0, 2)
+
+        candles[-1]["open"] = prox_price + 1.5
+        candles[-1]["close"] = prox_price
+        c_ts = candles[-1]["full_time"]
+        st_res = analyze_supertrend_hit(candles, current_price=prox_price, period=10, multiplier=3.0, proximity_points=2.0)
+        st_res["candles"] = candles
+        st_res["candle_timestamp"] = c_ts
+        st_res["reversal_probability"] = 0.75
+
+        # Initialize and trigger warning
+        _process_supertrend_state_transition("flap_sym", None, "FLAP_SYM", st_res, prox_price, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0)
+        _process_supertrend_state_transition("flap_sym", None, "FLAP_SYM", st_res, prox_price, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0)
+        self.assertEqual(_SUPERTREND_STATES["flap_sym"]["state"], "EARLY_WARNING_SENT")
+
+        # Price rallies away -> expires
+        st_res_away = analyze_supertrend_hit(candles, current_price=st_val + 15.0, period=10, multiplier=3.0, proximity_points=2.0)
+        st_res_away["candles"] = candles
+        st_res_away["candle_timestamp"] = c_ts
+        _process_supertrend_state_transition("flap_sym", None, "FLAP_SYM", st_res_away, st_val + 15.0, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0)
+        self.assertEqual(_SUPERTREND_STATES["flap_sym"]["state"], "MONITORING")
+
+        # Price fluctuates back into proximity on the EXACT SAME candle timestamp
+        with patch("app.services.alert_engine.notification_manager.emit_supertrend_approaching") as mock_emit:
+            res_flap = _process_supertrend_state_transition(
+                "flap_sym", None, "FLAP_SYM", st_res, prox_price, mock_db, 1, datetime.utcnow(), True, "LIVE", 2.0
+            )
+            self.assertIsNone(res_flap, "Flapping on the same candle after expiration must be suppressed!")
+            mock_emit.assert_not_called()
 
 
 if __name__ == "__main__":

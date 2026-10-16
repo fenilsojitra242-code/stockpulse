@@ -38,6 +38,8 @@ def get_supertrend_settings(db: Session, user_id: Optional[int] = None) -> Dict[
         row_atr_f = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_min_atr_filter").first()
         row_conf_c = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_confirming_candles").first()
 
+        row_thresh = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_reversal_threshold").first()
+
         # Fallback to defaults if user setting not explicitly configured yet
         if not row_enabled and user_id:
             row_enabled = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_enabled").first()
@@ -47,6 +49,8 @@ def get_supertrend_settings(db: Session, user_id: Optional[int] = None) -> Dict[
             row_period = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_period").first()
         if not row_mult and user_id:
             row_mult = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_multiplier").first()
+        if not row_thresh and user_id:
+            row_thresh = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_reversal_threshold").first()
 
         enabled = True if (not row_enabled or row_enabled.value.lower() == "true") else False
         prox = float(row_prox.value) if (row_prox and row_prox.value) else 1.0
@@ -55,6 +59,7 @@ def get_supertrend_settings(db: Session, user_id: Optional[int] = None) -> Dict[
         band_buffer_pct = float(row_buf.value) if (row_buf and row_buf.value) else 0.0
         min_atr_filter = float(row_atr_f.value) if (row_atr_f and row_atr_f.value) else 0.0
         min_confirming_candles = int(row_conf_c.value) if (row_conf_c and row_conf_c.value) else 1
+        reversal_confidence_threshold = float(row_thresh.value) if (row_thresh and row_thresh.value) else 0.50
 
         selected_symbols: List[str] = []
         if row_syms and row_syms.value is not None:
@@ -73,6 +78,7 @@ def get_supertrend_settings(db: Session, user_id: Optional[int] = None) -> Dict[
             "band_buffer_pct": band_buffer_pct,
             "min_atr_distance_filter": min_atr_filter,
             "min_confirming_candles": min_confirming_candles,
+            "reversal_confidence_threshold": reversal_confidence_threshold,
             "selected_symbols": [s.upper() for s in selected_symbols],
             "popular_symbols": POPULAR_SUPERTREND_SYMBOLS
         }
@@ -86,6 +92,7 @@ def get_supertrend_settings(db: Session, user_id: Optional[int] = None) -> Dict[
             "band_buffer_pct": 0.0,
             "min_atr_distance_filter": 0.0,
             "min_confirming_candles": 1,
+            "reversal_confidence_threshold": 0.50,
             "selected_symbols": [],
             "popular_symbols": POPULAR_SUPERTREND_SYMBOLS
         }
@@ -101,7 +108,8 @@ def save_supertrend_settings(
     multiplier: Optional[float] = None,
     band_buffer_pct: Optional[float] = None,
     min_atr_distance_filter: Optional[float] = None,
-    min_confirming_candles: Optional[int] = None
+    min_confirming_candles: Optional[int] = None,
+    reversal_confidence_threshold: Optional[float] = None
 ) -> Dict[str, Any]:
     """
     Saves SuperTrend indicator settings scoped to the user into system_settings table.
@@ -115,6 +123,7 @@ def save_supertrend_settings(
     key_buf = f"{prefix}supertrend_band_buffer_pct"
     key_atr_f = f"{prefix}supertrend_min_atr_filter"
     key_conf_c = f"{prefix}supertrend_confirming_candles"
+    key_thresh = f"{prefix}supertrend_reversal_threshold"
 
     def _set_setting(key: str, val_str: str, desc: str):
         row = db.query(SystemSetting).filter(SystemSetting.key == key).first()
@@ -151,6 +160,10 @@ def save_supertrend_settings(
         if min_confirming_candles is not None:
             c_val = str(max(1, min(10, int(min_confirming_candles))))
             _set_setting(key_conf_c, c_val, f"SuperTrend confirming candles count for user {user_id}")
+
+        if reversal_confidence_threshold is not None:
+            t_val = str(max(0.10, min(0.95, float(reversal_confidence_threshold))))
+            _set_setting(key_thresh, t_val, f"SuperTrend reversal confidence threshold for user {user_id}")
 
         if selected_symbols is not None:
             cleaned = []
@@ -369,11 +382,14 @@ def _process_supertrend_state_transition(
         "warning_started_at": None,
         "warning_candle_ts": None,
         "early_warning_sent": False,
-        "last_dispatched_event_id": None
+        "last_dispatched_event_id": None,
+        "last_warning_candle_ts": None,
+        "last_expired_candle_ts": None,
+        "last_expired_at": None
     })
 
     # Data availability check
-    if data_status in ("UNAVAILABLE", "ERROR", "DATA_UNAVAILABLE") or curr_price <= 0:
+    if data_status in ("UNAVAILABLE", "ERROR", "DATA_UNAVAILABLE", "STALE") or curr_price <= 0:
         state["state"] = StateStr("DATA_UNAVAILABLE")
         return {"symbol": symbol, "type": "DATA_UNAVAILABLE", "status": "DATA_UNAVAILABLE"}
 
@@ -441,6 +457,7 @@ def _process_supertrend_state_transition(
     target_dir = "SELL" if prev_confirmed_dir == "BUY" else "BUY"
 
     # Reversal Prediction Layer & Market Regime (strictly causal):
+    active_threshold = float(st_result.get("reversal_confidence_threshold", 0.50) or 0.50)
     candles_history = st_result.get("candles") or []
     pred_res = predict_supertrend_reversal(
         candles_or_df=candles_history,
@@ -449,7 +466,8 @@ def _process_supertrend_state_transition(
         current_price=curr_price,
         symbol=symbol,
         supertrend_price=confirmed_st_p,
-        atr_value=st_result.get("atr", 1.0)
+        atr_value=st_result.get("atr", 1.0),
+        threshold=active_threshold
     )
     predicted_prob = float(pred_res.get("reversal_probability", risk_score))
     is_pred_early_warning = bool(pred_res.get("is_early_warning_ready", False))
@@ -458,6 +476,16 @@ def _process_supertrend_state_transition(
     market_regime = pred_res.get("market_regime", "SIDEWAYS_CHOPPY")
     rec_confirming = int(pred_res.get("recommended_min_confirming_candles", 1))
     pred_event_id = pred_res.get("event_id")
+
+    # If caller explicitly provided reversal_probability (e.g. test fixture or override)
+    if "reversal_probability" in st_result:
+        predicted_prob = float(st_result["reversal_probability"])
+        uncertainty_flag = False
+        is_pred_early_warning = predicted_prob >= active_threshold
+    elif not candles_history and "reversal_risk_score" in st_result:
+        predicted_prob = float(st_result["reversal_risk_score"])
+        uncertainty_flag = False
+        is_pred_early_warning = predicted_prob >= active_threshold
 
     state["predicted_reversal_direction"] = target_dir
     state["reversal_probability"] = predicted_prob
@@ -508,6 +536,8 @@ def _process_supertrend_state_transition(
                     state["early_warning_sent"] = False
                     state["warning_started_at"] = None
                     state["warning_candle_ts"] = None
+                    state["last_warning_candle_ts"] = None
+                    state["last_expired_candle_ts"] = None
                     state["prediction_cycle_id"] = None
                     state["target_reversal_direction"] = None
 
@@ -563,8 +593,50 @@ def _process_supertrend_state_transition(
     if is_new_candle:
         state["last_processed_candle_ts"] = candle_ts
 
-    # 2. Early Warning: Developing Candle Proximity Entry, Intrabar Penetration, OR ML Early Warning
-    should_warn = bool(is_approaching or is_intrabar_cross or (is_pred_early_warning and not uncertainty_flag))
+    # 2. Early Warning Confluence Gate: Proximity + Model Predictive Support + Adverse Momentum + Regime
+    in_proximity = bool(dist_pts <= prox_pts or is_intrabar_cross or is_approaching)
+    has_predictive_support = bool(
+        (predicted_prob >= active_threshold or is_pred_early_warning)
+        and not uncertainty_flag
+    )
+
+    # Adverse Momentum & Candle Behavior: verify pressure is moving towards reversal
+    has_adverse_pressure = True
+    if candles_history:
+        last_c = candles_history[-1]
+        c_open = float(last_c.get("open", curr_price))
+        c_close = float(last_c.get("close", curr_price))
+        if target_dir == "SELL":
+            # Reversal BUY -> SELL requires downward pressure or intrabar touch
+            candle_bullish = (c_close - c_open) > 0.05
+            has_adverse_pressure = (not candle_bullish) or is_intrabar_cross or (dist_pts <= 0.25 * prox_pts)
+        elif target_dir == "BUY":
+            # Reversal SELL -> BUY requires upward pressure or intrabar touch
+            candle_bearish = (c_open - c_close) > 0.05
+            has_adverse_pressure = (not candle_bearish) or is_intrabar_cross or (dist_pts <= 0.25 * prox_pts)
+
+    # Market Regime Filter: in strong trending regimes, require extra confirmation or intrabar touch
+    regime_cleared = True
+    if market_regime == "BULLISH_TRENDING" and prev_confirmed_dir == "BUY":
+        regime_cleared = bool(predicted_prob >= (active_threshold + 0.04) or is_intrabar_cross or dist_pts <= 0.25 * prox_pts)
+    elif market_regime == "BEARISH_TRENDING" and prev_confirmed_dir == "SELL":
+        regime_cleared = bool(predicted_prob >= (active_threshold + 0.04) or is_intrabar_cross or dist_pts <= 0.25 * prox_pts)
+
+    # Anti-Flapping Candle Cooldown: suppress duplicate warnings on the exact same candle
+    same_candle_suppressed = bool(
+        candle_ts
+        and (candle_ts == state.get("last_warning_candle_ts") or candle_ts == state.get("last_expired_candle_ts"))
+        and not is_new_candle
+    )
+
+    should_warn = bool(
+        in_proximity
+        and has_predictive_support
+        and has_adverse_pressure
+        and regime_cleared
+        and not same_candle_suppressed
+    )
+
     if should_warn and not state.get("early_warning_sent"):
         if state["state"] not in (StateStr("SUCCESS_CONFIRMED"), f"PENDING_{target_dir}"):
             cycle_id = f"cycle_{condition_key}_{clean_sym}_{candle_ts}_{prev_confirmed_dir}_to_{target_dir}"
@@ -573,6 +645,7 @@ def _process_supertrend_state_transition(
             state["state"] = StateStr("EARLY_WARNING_SENT")
             state["warning_started_at"] = now
             state["warning_candle_ts"] = candle_ts
+            state["last_warning_candle_ts"] = candle_ts
 
             event_id = f"{condition_key}_{symbol}_{candle_ts}_APPROACHING"
             if event_id != state.get("last_dispatched_event_id"):
@@ -621,6 +694,8 @@ def _process_supertrend_state_transition(
             state["early_warning_sent"] = False
             state["warning_started_at"] = None
             state["warning_candle_ts"] = None
+            state["last_expired_candle_ts"] = candle_ts
+            state["last_expired_at"] = now
             state["prediction_cycle_id"] = None
             state["target_reversal_direction"] = None
             state["last_dispatched_event_id"] = None
@@ -642,6 +717,8 @@ def _process_supertrend_state_transition(
             state["early_warning_sent"] = False
             state["warning_started_at"] = None
             state["warning_candle_ts"] = None
+            state["last_expired_candle_ts"] = candle_ts
+            state["last_expired_at"] = now
             state["prediction_cycle_id"] = None
             state["target_reversal_direction"] = None
             state["last_dispatched_event_id"] = None

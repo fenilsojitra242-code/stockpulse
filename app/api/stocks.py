@@ -232,6 +232,7 @@ class SuperTrendSettingsPayload(BaseModel):
     band_buffer_pct: Optional[float] = None
     min_atr_distance_filter: Optional[float] = None
     min_confirming_candles: Optional[int] = None
+    reversal_confidence_threshold: Optional[float] = None
 
 
 @router.get("/supertrend/settings")
@@ -262,6 +263,7 @@ def save_supertrend_settings_endpoint(
     - band_buffer_pct (float, default 0.0)
     - min_atr_distance_filter (float, default 0.0)
     - min_confirming_candles (int, default 1)
+    - reversal_confidence_threshold (float, default 0.50)
     """
     from app.services.alert_engine import save_supertrend_settings
     return save_supertrend_settings(
@@ -274,7 +276,8 @@ def save_supertrend_settings_endpoint(
         multiplier=payload.multiplier,
         band_buffer_pct=payload.band_buffer_pct,
         min_atr_distance_filter=payload.min_atr_distance_filter,
-        min_confirming_candles=payload.min_confirming_candles
+        min_confirming_candles=payload.min_confirming_candles,
+        reversal_confidence_threshold=payload.reversal_confidence_threshold
     )
 
 
