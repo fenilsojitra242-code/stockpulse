@@ -3,6 +3,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.database.database import SessionLocal
 from app.database.models import Notification, Alert
@@ -57,6 +58,26 @@ class NotificationService:
             should_close_db = True
 
         try:
+            event_key = data.get("event_key")
+            # Persistent deduplication check before external dispatch
+            if event_key and db:
+                try:
+                    existing = db.query(Notification).filter(Notification.event_key == event_key).first()
+                    if existing:
+                        print(f"[NotificationService] Suppressed duplicate notification by event_key: {event_key}")
+                        return [{
+                            "channel": existing.channel,
+                            "status": existing.status,
+                            "attempts": existing.retry_count,
+                            "error": existing.error,
+                            "title": existing.title,
+                            "notification_id": existing.id,
+                            "duplicate": True
+                        }]
+                except Exception as q_err:
+                    safe_q_err = str(q_err).encode('ascii', 'replace').decode('ascii')
+                    print(f"[NotificationService] Existing event query error: {safe_q_err}")
+
             built_message = MessageBuilder.build(event_type, data)
             priority = data.get("priority") or get_default_priority(event_type)
             symbol = data.get("symbol", "N/A").upper()
@@ -127,6 +148,7 @@ class NotificationService:
             notif_id = None
             try:
                 primary_channel = "popup" if "popup" in resolved_channels else (resolved_channels[0] if resolved_channels else "dashboard")
+                any_success = any(r.get("status") == "SENT" for r in delivery_results)
                 notif_record = Notification(
                     user_id=user_id,
                     alert_id=alert_id,
@@ -136,12 +158,17 @@ class NotificationService:
                     title=built_message["title"],
                     message=built_message["plain_text"],
                     channel=primary_channel,
-                    status="SENT",
-                    retry_count=0,
-                    error=None,
+                    status="SENT" if any_success else "FAILED",
+                    retry_count=max(
+                        [int(r.get("attempts", 0) or 0) for r in delivery_results] or [0]
+                    ),
+                    error=None if any_success else "; ".join(
+                        str(r.get("error")) for r in delivery_results if r.get("error")
+                    ) or "No notification provider delivered the event.",
                     created_at=now,
-                    sent_at=now,
+                    sent_at=now if any_success else None,
                     is_read=False,
+                    event_key=event_key,
                     extra_data=json.dumps({
                         "target_percent": data.get("target_percent"),
                         "warning_minutes": data.get("warning_minutes"),
@@ -156,25 +183,36 @@ class NotificationService:
                         "channels": resolved_channels
                     })
                 )
-                # Dashboard is the persistent in-app transport. Mark the
-                # record SENT when at least one requested provider delivered it;
-                # otherwise retain FAILED so transport problems are visible.
-                any_success = any(r.get("status") == "SENT" for r in delivery_results)
-                notif_record.status = "SENT" if any_success else "FAILED"
-                notif_record.error = None if any_success else "; ".join(
-                    str(r.get("error")) for r in delivery_results if r.get("error")
-                ) or "No notification provider delivered the event."
-                notif_record.retry_count = max(
-                    [int(r.get("attempts", 0) or 0) for r in delivery_results] or [0]
-                )
                 db.add(notif_record)
                 db.commit()
-                db.refresh(notif_record)
                 notif_id = notif_record.id
+                try:
+                    db.refresh(notif_record)
+                except Exception:
+                    pass
                 for r in delivery_results:
                     r["notification_id"] = notif_id
+            except IntegrityError:
+                db.rollback()
+                if event_key:
+                    existing = db.query(Notification).filter(Notification.event_key == event_key).first()
+                    if existing:
+                        notif_id = existing.id
+                        for r in delivery_results:
+                            r["notification_id"] = notif_id
             except Exception as db_err:
-                print(f"[NotificationService] DB save error: {db_err}")
+                db.rollback()
+                if event_key:
+                    try:
+                        existing = db.query(Notification).filter(Notification.event_key == event_key).first()
+                        if existing:
+                            notif_id = existing.id
+                            for r in delivery_results:
+                                r["notification_id"] = notif_id
+                    except Exception:
+                        pass
+                safe_err = str(db_err).encode('ascii', 'replace').decode('ascii')
+                print(f"[NotificationService] DB save error: {safe_err}")
 
             return delivery_results
 

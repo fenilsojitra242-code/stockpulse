@@ -244,31 +244,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
     if cache_id in _RANGE_CACHE:
         entry = _RANGE_CACHE[cache_id]
         if now_ts - entry["timestamp"] < ttl:
-            cached_data = entry["data"].copy()
-            if range_key == "1D" and is_market_open:
-                # Apply dynamic live tick progression even within short cache window
-                tick_window = int(now_ts // 3)
-                seed = (hash((clean_sym, tick_window)) % 15) - 7
-                multiplier = max(1, int(cached_data.get("price", 100) // 500))
-                delta = round(seed * 0.05 * multiplier, 2)
-                base_p = entry.get("base_price", cached_data.get("price", 100))
-                new_p = round(base_p + delta, 2)
-                prev_c = cached_data.get("previous_close", base_p)
-                p_chg = round(new_p - prev_c, 2)
-                p_pct = round((p_chg / prev_c) * 100.0 if prev_c else 0.0, 2)
-                cached_data["price"] = new_p
-                cached_data["price_change"] = p_chg
-                cached_data["change_pct"] = p_pct
-                cached_data["last_updated"] = datetime.now(IST).strftime("%I:%M:%S %p")
-                if cached_data.get("candles"):
-                    candles_copy = [dict(c) for c in cached_data["candles"]]
-                    candles_copy[-1]["price"] = new_p
-                    candles_copy[-1]["close"] = new_p
-                    candles_copy[-1]["high"] = max(candles_copy[-1]["high"], new_p)
-                    candles_copy[-1]["low"] = min(candles_copy[-1]["low"], new_p)
-                    cached_data["candles"] = candles_copy
-                    cached_data["chart_points"] = candles_copy
-            return cached_data
+            return entry["data"].copy()
 
     # In-flight request deduplication: if another thread is currently fetching this exact item, wait for it
     event_to_wait = None
@@ -342,12 +318,50 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         norm_sym = best_chosen_sym
 
         if df.empty or len(df) < 1:
-            print(f"[MarketData] Symbol: {clean_sym} | Provider empty, synthesizing realistic live market simulation.")
-            df = generate_fallback_candles(clean_sym, range_key)
-            norm_sym = f"{clean_sym}.NS"
+            print(f"[MarketData] Symbol: {clean_sym} | Provider empty, no market data available.")
+            meta = STOCK_METADATA.get(clean_sym, {})
+            currency_symbol = "₹" if (".NS" in norm_sym or ".BO" in norm_sym) else "$"
+            exchange_label = "NSE" if ".NS" in norm_sym else ("BSE" if ".BO" in norm_sym else "NASDAQ")
+            display_name = meta.get("name", f"{clean_sym} Equity")
+            return {
+                "status": "DATA_UNAVAILABLE",
+                "data_status": "DATA_UNAVAILABLE",
+                "data_interval": cfg["interval"],
+                "data_age_seconds": None,
+                "latest_market_timestamp": None,
+                "data_received_at": server_time.isoformat(),
+                "provider": "yfinance",
+                "symbol": clean_sym,
+                "full_symbol": norm_sym,
+                "name": display_name,
+                "currency_symbol": currency_symbol,
+                "exchange": exchange_label,
+                "price": 0.0,
+                "previous_close": 0.0,
+                "price_change": 0.0,
+                "change_pct": 0.0,
+                "day_high": 0.0,
+                "day_low": 0.0,
+                "open": 0.0,
+                "volume": "N/A",
+                "raw_volume": 0,
+                "fifty_two_week_high": None,
+                "fifty_two_week_low": None,
+                "market_cap": "N/A",
+                "avg_volume": "N/A",
+                "trading_status": "Data Unavailable",
+                "market_status": market_status_val,
+                "last_updated": server_time.strftime("%I:%M:%S %p"),
+                "market_last_traded": "N/A",
+                "time_range": range_key,
+                "candles": [],
+                "chart_points": [],
+                "supertrend": None
+            }
 
         df.columns = [c.lower() for c in df.columns]
         df = df.sort_index()
+        df = df[~df.index.duplicated(keep='last')]
 
         # Fast info & metadata extraction with local 2-hour caching (static fields only, NEVER cache price for 2 hours)
         fi_cached = _FAST_INFO_CACHE.get(clean_sym)
@@ -412,71 +426,20 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         market_close_today = server_time.replace(hour=15, minute=30, second=0, microsecond=0)
         is_market_currently_open = is_weekday and (market_open_today <= server_time <= market_close_today)
 
-        # Apply continuous real-time micro-ticks during active market hours
-        if is_market_currently_open and range_key == "1D":
-            tick_window = int(now_ts // 3)
-            seed = (hash((clean_sym, tick_window)) % 15) - 7
-            tick_step = 0.05
-            multiplier = max(1, int(curr_price // 500))
-            delta = round(seed * tick_step * multiplier, 2)
-            curr_price = round(curr_price + delta, 2)
-
         day_open = float(df['open'].iloc[0])
 
-        # Localize latest candle timestamp to IST (Section 4 & 5)
+        # Localize latest candle timestamp to IST
         latest_idx = df.index[-1]
         latest_market_dt = latest_idx.astimezone(IST) if hasattr(latest_idx, 'astimezone') else pd.Timestamp(latest_idx, tz=IST)
-
-        # Bridge intraday 1m gap between delayed provider feed and actual current minute / market close
-        synthesized_candles = []
-        if range_key == "1D" and latest_market_dt.date() == server_time.date():
-            if server_time >= market_close_today:
-                target_dt = market_close_today
-            elif is_market_currently_open:
-                target_dt = server_time.replace(second=0, microsecond=0)
-            else:
-                target_dt = latest_market_dt
-
-            if target_dt > latest_market_dt:
-                gap_minutes = int((target_dt - latest_market_dt).total_seconds() // 60)
-                if 1 <= gap_minutes <= 120:
-                    start_p = float(df['close'].iloc[-1])
-                    end_p = curr_price
-                    last_c = start_p
-                    median_vol = max(100, int(df['volume'].median() if 'volume' in df and not df['volume'].empty else 1000))
-
-                    for step in range(1, gap_minutes + 1):
-                        cand_dt = latest_market_dt + timedelta(minutes=step)
-                        prog = float(step) / float(gap_minutes)
-                        base_p = start_p + (end_p - start_p) * prog
-                        # Deterministic micro-variance based on symbol and time
-                        seed = (hash((clean_sym, cand_dt.hour, cand_dt.minute)) % 100) / 100.0 - 0.5
-                        var = (seed * 0.0006 * base_p) if step < gap_minutes else 0.0
-                        c_close = round(end_p if step == gap_minutes else (base_p + var), 2)
-                        c_open = round(last_c, 2)
-                        c_high = round(max(c_open, c_close) + abs(var) * 0.4, 2)
-                        c_low = round(min(c_open, c_close) - abs(var) * 0.4, 2)
-
-                        synthesized_candles.append({
-                            "dt": cand_dt,
-                            "open": c_open,
-                            "high": c_high,
-                            "low": c_low,
-                            "close": c_close,
-                            "volume": median_vol
-                        })
-                        last_c = c_close
-
-                    latest_market_dt = target_dt
 
         latest_market_timestamp = latest_market_dt.isoformat()
         data_received_at = server_time.isoformat()
 
-        # Calculate data age & freshness status
+        # Calculate data age & freshness status from genuine provider candle
         data_age_seconds = max(0, int((server_time - latest_market_dt).total_seconds()))
 
         if is_market_currently_open:
-            if data_age_seconds <= 180 or len(synthesized_candles) > 0:
+            if data_age_seconds <= 180:
                 data_status = "LIVE"
             elif data_age_seconds <= 900:  # <= 15 minutes
                 data_status = "DELAYED"
@@ -486,7 +449,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
             data_status = "CLOSED"
 
         # Validate & log market data strictly as specified (Section 2)
-        print(f"[MarketData] Symbol: {clean_sym} | Requested interval: {cfg['interval']} | Server time: {server_time.strftime('%I:%M:%S %p')} | Latest market candle: {latest_market_dt.strftime('%I:%M:%S %p')} | Candles received: {len(df) + len(synthesized_candles)} | Status: {data_status} | Feed: {norm_sym}")
+        print(f"[MarketData] Symbol: {clean_sym} | Requested interval: {cfg['interval']} | Server time: {server_time.strftime('%I:%M:%S %p')} | Latest market candle: {latest_market_dt.strftime('%I:%M:%S %p')} | Candles received: {len(df)} | Status: {data_status} | Feed: {norm_sym}")
 
         currency_symbol = "₹" if fi_currency == "INR" else ("$" if fi_currency == "USD" else f"{fi_currency} ")
 
@@ -508,13 +471,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
 
         day_high = float(df['high'].max())
         day_low = float(df['low'].min())
-        if synthesized_candles:
-            day_high = max(day_high, *(c['high'] for c in synthesized_candles))
-            day_low = min(day_low, *(c['low'] for c in synthesized_candles))
-
         curr_vol = float(df['volume'].sum()) if range_key == "1D" else float(df['volume'].iloc[-1])
-        if synthesized_candles:
-            curr_vol += sum(c['volume'] for c in synthesized_candles)
 
         meta = STOCK_METADATA.get(clean_sym, {
             "name": f"{clean_sym}",
@@ -573,24 +530,6 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                 "volume": int(row['volume']) if 'volume' in row else 0
             })
 
-        for sc in synthesized_candles:
-            dt_ist = sc["dt"]
-            time_label = dt_ist.strftime("%I:%M %p")
-            iso_key = dt_ist.isoformat()
-            if iso_key in seen_stamps:
-                continue
-            seen_stamps.add(iso_key)
-
-            chart_points.append({
-                "time": time_label,
-                "full_time": iso_key,
-                "price": sc["close"],
-                "open": sc["open"],
-                "high": sc["high"],
-                "low": sc["low"],
-                "volume": sc["volume"]
-            })
-
         exchange_label = "NSE" if ".NS" in norm_sym else ("BSE" if ".BO" in norm_sym else "NASDAQ")
         # Real-time server sync timestamp for active frontend polling clock
         last_updated_str = server_time.strftime("%I:%M:%S %p")
@@ -601,7 +540,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         display_name = meta.get("name") or (STOCK_METADATA.get(requested_sym, {}).get("name") if requested_sym in STOCK_METADATA else f"{display_sym} Equity")
 
         result = {
-            "status": "LIVE" if data_status in ("LIVE", "CLOSED") else data_status,
+            "status": data_status,
             "data_status": data_status,
             "data_interval": cfg["interval"],
             "data_age_seconds": data_age_seconds,
@@ -643,7 +582,11 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                 current_price=round(curr_price, 2),
                 period=10,
                 multiplier=3.0,
-                proximity_points=1.0
+                proximity_points=1.0,
+                candle_interval=cfg["interval"],
+                now=server_time,
+                is_market_open=is_market_currently_open,
+                data_status=data_status
             )
             result["supertrend"] = {
                 "symbol": display_sym,
@@ -676,11 +619,10 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         except Exception:
             result["supertrend"] = None
 
-        # Cache result with base_price for dynamic live ticking
+        # Cache result
         _RANGE_CACHE[cache_id] = {
             "data": result,
-            "timestamp": now_ts,
-            "base_price": curr_price
+            "timestamp": now_ts
         }
         return result
 

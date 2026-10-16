@@ -1,7 +1,8 @@
 import os
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Set
 from sqlalchemy.orm import Session
 
 from app.database.models import Alert, AlertHistory
@@ -429,6 +430,8 @@ class NotificationManager:
             db=db
         )
 
+    _DEDUPLICATED_EVENT_KEYS: Set[str] = set()
+
     @classmethod
     def emit_supertrend_approaching(
         cls,
@@ -443,7 +446,11 @@ class NotificationManager:
         user_id: Optional[int] = None,
         target_direction: Optional[str] = None,
         model_probability: Optional[float] = None,
-        horizon_minutes: int = 5
+        horizon_minutes: int = 5,
+        candle_ts: Optional[str] = None,
+        timeframe: Optional[str] = "1m",
+        prediction_cycle_id: Optional[str] = None,
+        is_simulation: bool = False
     ) -> List[Dict[str, Any]]:
         """Triggered when price is within user points AND model predicts SuperIndicator hit."""
         if supertrend_price <= 0.01 or current_price <= 0.01 or abs(supertrend_price - current_price) > (current_price * 0.25):
@@ -451,13 +458,26 @@ class NotificationManager:
             return []
 
         channels = cls._resolve_channels(alert)
-        if alert:
+        if alert and not is_simulation:
             alert.last_event = NotificationEventType.SUPERTREND_APPROACHING.value
             db.commit()
             if not user_id and getattr(alert, "user_id", None):
                 user_id = alert.user_id
 
         resolved_target = target_direction or ("BUY" if current_direction.upper() == "SELL" else "SELL")
+
+        # Stable, deterministic event key construction
+        if is_simulation:
+            event_key = f"sim:st_early:{user_id or 'all'}:{symbol.upper()}:{uuid.uuid4().hex[:8]}"
+        else:
+            event_key = f"st_early:{user_id or 'all'}:{symbol.upper()}:{timeframe or '1m'}:{candle_ts or 'latest'}:{current_direction.upper()}->{resolved_target}"
+            if prediction_cycle_id:
+                event_key += f":{prediction_cycle_id}"
+
+            if event_key in cls._DEDUPLICATED_EVENT_KEYS:
+                print(f"[NotificationManager] Suppressed duplicate SuperTrend approaching alert: {event_key}")
+                return []
+            cls._DEDUPLICATED_EVENT_KEYS.add(event_key)
 
         data = {
             "user_id": user_id,
@@ -472,6 +492,10 @@ class NotificationManager:
             "direction": current_direction,
             "model_probability": model_probability,
             "horizon_minutes": horizon_minutes,
+            "event_key": event_key,
+            "prediction_cycle_id": prediction_cycle_id,
+            "candle_timestamp": candle_ts,
+            "is_simulation": is_simulation,
             "timestamp": _ist_str(),
             "extra_data": json.dumps({
                 "symbol": symbol.upper(),
@@ -484,6 +508,9 @@ class NotificationManager:
                 "direction": current_direction,
                 "model_probability": model_probability,
                 "horizon_minutes": horizon_minutes,
+                "event_key": event_key,
+                "prediction_cycle_id": prediction_cycle_id,
+                "candle_timestamp": candle_ts,
                 "event": NotificationEventType.SUPERTREND_APPROACHING.value
             })
         }
@@ -603,8 +630,6 @@ class NotificationManager:
             db=db
         )
 
-    _LAST_ST_SIGNAL: Dict[str, Tuple[str, float]] = {}
-
     @classmethod
     def emit_supertrend_signal(
         cls,
@@ -617,33 +642,39 @@ class NotificationManager:
         db: Session,
         user_id: Optional[int] = None,
         model_probability: Optional[float] = None,
-        points_distance: Optional[float] = None
+        points_distance: Optional[float] = None,
+        candle_ts: Optional[str] = None,
+        timeframe: Optional[str] = "1m",
+        prediction_cycle_id: Optional[str] = None,
+        is_simulation: bool = False
     ) -> List[Dict[str, Any]]:
         """Triggered when SuperTrend flips direction (SuperIndicator Hit — Model Prediction is TRUE)."""
         if supertrend_price <= 0.01 or current_price <= 0.01 or abs(supertrend_price - current_price) > (current_price * 0.25):
             print(f"[NotificationManager] Suppressed invalid SuperTrend signal for {symbol}: price={current_price}, ST={supertrend_price}. Values outside physical limits.")
             return []
 
-        now_ts = datetime.utcnow().timestamp()
-        dedup_key = f"{user_id or 'all'}_{symbol.upper()}"
-        last_sig, last_ts = cls._LAST_ST_SIGNAL.get(dedup_key, (None, 0.0))
-
-        # Deduplication guard: suppress identical duplicate signals within 15 seconds
-        if last_sig == signal.upper() and (now_ts - last_ts) < 15.0:
-            print(f"[NotificationManager] Suppressed duplicate SuperTrend signal for {symbol} ({signal} within 15s).")
-            return []
-
-        cls._LAST_ST_SIGNAL[dedup_key] = (signal.upper(), now_ts)
-
         channels = cls._resolve_channels(alert)
         is_buy = signal.upper() == "BUY"
         ev_type = NotificationEventType.SUPERTREND_BUY.value if is_buy else NotificationEventType.SUPERTREND_SELL.value
 
-        if alert:
+        if alert and not is_simulation:
             alert.last_event = ev_type
             db.commit()
             if not user_id and getattr(alert, "user_id", None):
                 user_id = alert.user_id
+
+        # Deterministic event key replaces 15-second cooldown
+        if is_simulation:
+            event_key = f"sim:st_signal:{user_id or 'all'}:{symbol.upper()}:{uuid.uuid4().hex[:8]}"
+        else:
+            event_key = f"st_signal:{user_id or 'all'}:{symbol.upper()}:{timeframe or '1m'}:{candle_ts or 'latest'}:{prev_direction or 'NONE'}->{signal.upper()}"
+            if prediction_cycle_id:
+                event_key += f":{prediction_cycle_id}"
+
+            if event_key in cls._DEDUPLICATED_EVENT_KEYS:
+                print(f"[NotificationManager] Suppressed duplicate SuperTrend signal by event_key: {event_key}")
+                return []
+            cls._DEDUPLICATED_EVENT_KEYS.add(event_key)
 
         data = {
             "user_id": user_id,
@@ -656,6 +687,10 @@ class NotificationManager:
             "prev_direction": prev_direction,
             "model_probability": model_probability,
             "points_distance": points_distance,
+            "event_key": event_key,
+            "prediction_cycle_id": prediction_cycle_id,
+            "candle_timestamp": candle_ts,
+            "is_simulation": is_simulation,
             "timestamp": _ist_str(),
             "extra_data": json.dumps({
                 "symbol": symbol.upper(),
@@ -666,6 +701,9 @@ class NotificationManager:
                 "prev_direction": prev_direction,
                 "model_probability": model_probability,
                 "points_distance": points_distance,
+                "event_key": event_key,
+                "prediction_cycle_id": prediction_cycle_id,
+                "candle_timestamp": candle_ts,
                 "event": ev_type
             })
         }

@@ -51,6 +51,7 @@ def run_db_migrations(db_engine):
             ],
             "notifications": [
                 ("user_id", "INTEGER"),
+                ("event_key", "VARCHAR(190)"),
             ],
             "alert_history": [
                 ("user_id", "INTEGER"),
@@ -66,6 +67,14 @@ def run_db_migrations(db_engine):
                             conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN {col_name} {col_type}"))
                             conn.commit()
                             print(f"[DB Migration] Added missing column {tbl}.{col_name}")
+
+            # Ensure unique index on event_key in notifications safely ignoring NULLs
+            if "notifications" in table_names:
+                try:
+                    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_notifications_event_key ON notifications (event_key) WHERE event_key IS NOT NULL"))
+                    conn.commit()
+                except Exception as idx_err:
+                    print(f"[DB Migration] Index migration note: {idx_err}")
 
             # Backfill any missing usernames from email prefix
             if "users" in table_names:

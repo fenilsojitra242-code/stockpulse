@@ -145,6 +145,7 @@ class Notification(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     sent_at = Column(DateTime, nullable=True)
     is_read = Column(Boolean, default=False, index=True)
+    event_key = Column(String(190), unique=True, index=True, nullable=True)
     extra_data = Column(Text, nullable=True)
 
     alert = relationship("Alert", back_populates="notifications")

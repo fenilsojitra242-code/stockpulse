@@ -15,6 +15,7 @@ class NotificationBase(BaseModel):
     retry_count: int = 0
     error: Optional[str] = None
     is_read: bool = False
+    event_key: Optional[str] = None
     extra_data: Optional[str] = None
 
 

@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Tuple, List
 
 
@@ -334,24 +335,119 @@ def calculate_reversal_risk_score(
     return round(float(np.clip(total, 0.10, 0.95)), 2)
 
 
+def get_interval_timedelta(interval: str = "1m") -> timedelta:
+    inv = (interval or "1m").lower().strip()
+    if inv.endswith("m"):
+        try:
+            return timedelta(minutes=int(inv[:-1]))
+        except ValueError:
+            return timedelta(minutes=1)
+    elif inv.endswith("h"):
+        try:
+            return timedelta(hours=int(inv[:-1]))
+        except ValueError:
+            return timedelta(hours=1)
+    elif inv.endswith("d"):
+        try:
+            return timedelta(days=int(inv[:-1]))
+        except ValueError:
+            return timedelta(days=1)
+    return timedelta(minutes=1)
+
+
+def parse_candle_timestamp(ts_val: Any) -> Optional[datetime]:
+    if ts_val is None:
+        return None
+    if isinstance(ts_val, datetime):
+        return ts_val
+    if isinstance(ts_val, pd.Timestamp):
+        return ts_val.to_pydatetime()
+    s = str(ts_val).strip()
+    if not s:
+        return None
+    # Try ISO format
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        pass
+    # Try time formats with current date
+    for fmt in ("%H:%M:%S", "%H:%M", "%I:%M %p"):
+        try:
+            t = datetime.strptime(s, fmt).time()
+            return datetime.combine(datetime.now().date(), t)
+        except Exception:
+            pass
+    # Try pandas to_datetime
+    try:
+        pdt = pd.to_datetime(s)
+        if hasattr(pdt, "to_pydatetime"):
+            return pdt.to_pydatetime()
+    except Exception:
+        pass
+    return None
+
+
+def is_candle_complete(
+    candle: Any,
+    interval: str = "1m",
+    now: Optional[datetime] = None,
+    is_market_open: Optional[bool] = None
+) -> bool:
+    """
+    Determines whether a candle is fully completed based on its timestamp,
+    the timeframe interval, and market status.
+    """
+    if is_market_open is False:
+        return True
+
+    delta = get_interval_timedelta(interval)
+
+    ts = None
+    if isinstance(candle, dict):
+        ts = candle.get("full_time") or candle.get("time") or candle.get("dt") or candle.get("timestamp")
+    elif isinstance(candle, pd.Series):
+        ts = candle.get("full_time") if "full_time" in candle else (candle.get("time") if "time" in candle else None)
+    elif hasattr(candle, "get"):
+        ts = candle.get("full_time") or candle.get("time")
+
+    cand_dt = parse_candle_timestamp(ts)
+    if cand_dt is None:
+        return True
+
+    ref_now = now
+    if ref_now is None:
+        ref_now = datetime.now(cand_dt.tzinfo) if cand_dt.tzinfo else datetime.now()
+
+    if cand_dt.tzinfo is not None and ref_now.tzinfo is None:
+        ref_now = ref_now.replace(tzinfo=cand_dt.tzinfo)
+    elif cand_dt.tzinfo is None and ref_now.tzinfo is not None:
+        cand_dt = cand_dt.replace(tzinfo=ref_now.tzinfo)
+
+    return ref_now >= (cand_dt + delta)
+
+
 def analyze_supertrend_hit(
     candles_or_df: Any,
     current_price: Optional[float] = None,
+    previous_direction: Optional[str] = None,
     period: int = 10,
     multiplier: float = 3.0,
     proximity_points: float = 1.0,
-    previous_direction: Optional[str] = None,
     band_buffer_pct: float = 0.0,
-    min_atr_distance_filter: float = 0.0
+    min_atr_distance_filter: float = 0.0,
+    candle_interval: str = "1m",
+    now: Optional[datetime] = None,
+    is_market_open: Optional[bool] = None,
+    data_status: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Standard, reliable SuperTrend calculation and hit/proximity detector:
     - Sorts chronologically, deduplicates, and sanitizes candle OHLC.
-    - Separates completed candles (for confirmed Supertrend signals) from
-      the developing candle (for provisional early warnings).
-    - Calculates True Range & Wilder's RMA SuperTrend.
-    - Proximity early warning (is_approaching) with calibrated reversal risk score.
-    - Confirmed trend transition (is_confirmed_flip / is_flipped) on candle close.
+    - Preserves historical candle OHLC without overwriting with live ticks.
+    - Determines completed candles based on candle timestamp, timeframe, and market status.
+    - Computes confirmed Supertrend direction strictly using completed candles.
+    - Uses live/developing prices strictly for provisional analysis and intrabar cross detection.
+    - Reversal risk scoring based on proximity, momentum, and regime.
     """
     clean_df = sanitize_candles(candles_or_df)
     prox_limit = max(0.01, float(proximity_points))
@@ -391,46 +487,43 @@ def analyze_supertrend_hit(
     df = clean_df.copy()
     cp = float(current_price if current_price is not None else df.iloc[-1]['close'])
 
-    last_idx = df.index[-1]
-    df.loc[last_idx, 'close'] = cp
-    if 'high' in df.columns:
-        df.loc[last_idx, 'high'] = max(float(df.loc[last_idx, 'high']), cp)
-    if 'low' in df.columns:
-        cur_low = float(df.loc[last_idx, 'low'])
-        df.loc[last_idx, 'low'] = min(cur_low, cp) if cur_low > 0 else cp
+    last_row = df.iloc[-1]
 
-    # Run Supertrend on full series (with developing candle for live chart overlay)
-    st_df = compute_supertrend(df, period=period, multiplier=multiplier, band_buffer_pct=band_buffer_pct)
-    last_row = st_df.iloc[-1]
-    last_ts_str = str(last_row.get('full_time') or last_row.get('time') or '')
-
-    # Separate completed candle series from live developing candle:
-    # In live streaming/polling, df.iloc[-1] is the developing bar, df.iloc[-2] is the last completed bar.
-    # If the caller passes explicit completed candles (e.g. historical backtest), len >= 2 provides the reference.
-    if len(st_df) >= 2:
-        completed_row = st_df.iloc[-2]
-        completed_ts_str = str(completed_row.get('full_time') or completed_row.get('time') or '')
-        raw_completed_dir_code = int(completed_row['supertrend_direction'])
-        raw_completed_dir = "BUY" if raw_completed_dir_code == 1 else "SELL"
-        raw_completed_st_p = float(completed_row['supertrend'])
-        raw_completed_signal = completed_row['supertrend_signal']
-        completed_atr = float(completed_row.get('atr', 1.0))
-        completed_close = float(completed_row.get('close', cp))
+    # Determine completion of latest candle without blindly assuming iloc[-2]
+    if is_market_open is False or data_status == "CLOSED":
+        last_is_complete = True
     else:
-        completed_row = last_row
-        completed_ts_str = last_ts_str
-        raw_completed_dir_code = int(last_row['supertrend_direction'])
-        raw_completed_dir = "BUY" if raw_completed_dir_code == 1 else "SELL"
-        raw_completed_st_p = float(last_row['supertrend'])
-        raw_completed_signal = None
-        completed_atr = float(last_row.get('atr', 1.0))
-        completed_close = cp
+        ts_val = last_row.get("full_time") or last_row.get("time") or last_row.get("dt")
+        parsed_dt = parse_candle_timestamp(ts_val)
+        if parsed_dt is not None:
+            last_is_complete = is_candle_complete(last_row, interval=candle_interval, now=now, is_market_open=is_market_open)
+        else:
+            if current_price is not None and abs(cp - float(last_row['close'])) > 1e-4:
+                last_is_complete = False
+            else:
+                last_is_complete = True
 
-    # Developing bar (provisional state)
-    developing_dir_code = int(last_row['supertrend_direction'])
-    provisional_dir = "BUY" if developing_dir_code == 1 else "SELL"
-    provisional_st_p = float(last_row['supertrend'])
-    atr_val = float(last_row.get('atr', completed_atr))
+    if last_is_complete:
+        completed_df = df
+        developing_row = None
+    else:
+        if len(df) >= 2:
+            completed_df = df.iloc[:-1]
+            developing_row = df.iloc[-1]
+        else:
+            completed_df = df
+            developing_row = df.iloc[-1]
+
+    # Compute confirmed Supertrend strictly on completed candles
+    completed_st_df = compute_supertrend(completed_df, period=period, multiplier=multiplier, band_buffer_pct=band_buffer_pct)
+    last_completed_row = completed_st_df.iloc[-1]
+    completed_ts_str = str(last_completed_row.get('full_time') or last_completed_row.get('time') or '')
+    raw_completed_dir_code = int(last_completed_row['supertrend_direction'])
+    raw_completed_dir = "BUY" if raw_completed_dir_code == 1 else "SELL"
+    raw_completed_st_p = float(last_completed_row['supertrend'])
+    raw_completed_signal = last_completed_row.get('supertrend_signal')
+    completed_atr = float(last_completed_row.get('atr', 1.0))
+    completed_close = float(last_completed_row.get('close', cp))
 
     # The confirmed Supertrend indicator values are strictly derived from completed candles
     confirmed_dir = raw_completed_dir
@@ -439,22 +532,21 @@ def analyze_supertrend_hit(
 
     target_dir = "SELL" if confirmed_dir == "BUY" else "BUY"
     distance_points = round(abs(cp - confirmed_st_p), 2)
-    atr_norm_dist = round(distance_points / max(0.01, atr_val), 2)
+    atr_norm_dist = round(distance_points / max(0.01, completed_atr), 2)
 
     # Detect raw completed trend reversal
     resolved_prev_dir = previous_direction if previous_direction in ("BUY", "SELL") else None
-    if resolved_prev_dir is not None:
+    if data_status in ("STALE", "DATA_UNAVAILABLE", "ERROR"):
+        is_confirmed_flip = False
+    elif resolved_prev_dir is not None:
         is_confirmed_flip = bool(confirmed_dir != resolved_prev_dir and confirmed_st_p > 0.01)
     else:
         is_confirmed_flip = bool(confirmed_signal in ("BUY", "SELL"))
 
-    # Reversal penetration quality metrics
-    # ATR penetration distance: how far the completed bar breached beyond the prior band
+    # Reversal penetration quality metrics on completed bar
     if confirmed_dir == "SELL":
-        # Price dropped below lower support band
         penetration_distance = max(0.0, confirmed_st_p - completed_close)
     else:
-        # Price rose above upper resistance band
         penetration_distance = max(0.0, completed_close - confirmed_st_p)
     penetration_atr_ratio = round(penetration_distance / max(0.01, completed_atr), 2)
 
@@ -465,16 +557,24 @@ def analyze_supertrend_hit(
     elif confirmed_dir == "SELL" and cp > confirmed_st_p:
         is_intrabar_cross = True
 
-    # Provisional flip signal (strictly provisional, NEVER overwrites confirmed trend)
+    # Provisional state (strictly provisional, NEVER overwrites confirmed trend)
+    provisional_dir = ("SELL" if confirmed_dir == "BUY" else "BUY") if is_intrabar_cross else confirmed_dir
+    provisional_st_p = confirmed_st_p
+
     is_flipped = is_confirmed_flip or is_intrabar_cross
     flip_signal = ("SELL" if confirmed_dir == "BUY" else "BUY") if is_intrabar_cross else (confirmed_dir if is_confirmed_flip else None)
 
     # Early Warning: live price enters configured proximity zone
-    is_approaching = bool(distance_points <= prox_limit and not is_confirmed_flip and confirmed_st_p > 0.01)
-    if min_atr_distance_filter > 0 and is_approaching:
-        is_approaching = bool(distance_points <= (min_atr_distance_filter * atr_val))
+    if data_status in ("STALE", "DATA_UNAVAILABLE", "ERROR"):
+        is_approaching = False
+        is_prediction_ready = False
+    else:
+        is_approaching = bool(distance_points <= prox_limit and not is_confirmed_flip and confirmed_st_p > 0.01)
+        if min_atr_distance_filter > 0 and is_approaching:
+            is_approaching = bool(distance_points <= (min_atr_distance_filter * completed_atr))
+        is_prediction_ready = is_approaching
 
-    c_open = float(last_row.get('open', cp))
+    c_open = float(developing_row.get('open', last_completed_row.get('open', cp))) if developing_row is not None else float(last_completed_row.get('open', cp))
     c_close = cp
     candle_points = round(c_close - c_open, 2)
     candle_color = "GREEN" if candle_points >= 0 else "RED"
@@ -482,8 +582,8 @@ def analyze_supertrend_hit(
 
     # Calculate adverse momentum, delta RSI, and trend duration for risk scoring
     trend_dur_bars = 1
-    if len(st_df) >= 2:
-        rev_dirs = st_df['supertrend_direction'].values
+    if len(completed_st_df) >= 2:
+        rev_dirs = completed_st_df['supertrend_direction'].values
         for d_idx in range(len(rev_dirs) - 1, -1, -1):
             if rev_dirs[d_idx] == raw_completed_dir_code:
                 trend_dur_bars += 1
@@ -491,21 +591,21 @@ def analyze_supertrend_hit(
                 break
 
     mom_adv = 0.0
-    if len(st_df) >= 4:
-        past_c = float(st_df.iloc[-4]['close'])
+    if len(completed_st_df) >= 4:
+        past_c = float(completed_st_df.iloc[-4]['close'])
         if confirmed_dir == "BUY":
             mom_adv = max(0.0, past_c - cp)
         else:
             mom_adv = max(0.0, cp - past_c)
 
     delta_rsi_val = 0.0
-    if len(st_df) >= 5:
-        rsi_series = compute_rsi(st_df['close'], period=14)
+    if len(completed_st_df) >= 5:
+        rsi_series = compute_rsi(completed_st_df['close'], period=14)
         delta_rsi_val = float(rsi_series.iloc[-1] - rsi_series.iloc[-4])
 
     risk_score = calculate_reversal_risk_score(
         distance_points=distance_points,
-        atr_value=atr_val,
+        atr_value=completed_atr,
         proximity_points=prox_limit,
         target_direction=target_dir,
         candle_color=candle_color,
@@ -516,7 +616,7 @@ def analyze_supertrend_hit(
     )
 
     series_points = []
-    for idx, row in st_df.iterrows():
+    for idx, row in completed_st_df.iterrows():
         t_val = row.get('time') or row.get('full_time') or str(idx)
         raw_price = row.get('close', row.get('price', 0.0))
         p_val = round(float(raw_price), 2) if pd.notna(raw_price) else round(cp, 2)
@@ -533,6 +633,18 @@ def analyze_supertrend_hit(
             "signal": sig_clean
         })
 
+    if developing_row is not None:
+        dev_t = developing_row.get('time') or developing_row.get('full_time') or "live"
+        series_points.append({
+            "time": str(dev_t),
+            "price": round(cp, 2),
+            "supertrend": max(0.01, round(provisional_st_p, 2)),
+            "direction": provisional_dir,
+            "signal": None
+        })
+
+    dev_ts_str = str(developing_row.get('full_time') or developing_row.get('time') or '') if developing_row is not None else completed_ts_str
+
     return {
         "current_price": round(cp, 2),
         "supertrend_price": round(confirmed_st_p, 2),
@@ -548,7 +660,7 @@ def analyze_supertrend_hit(
         "is_intrabar_cross": is_intrabar_cross,
         "flip_signal": flip_signal,
         "reversal_risk_score": risk_score,
-        "atr": round(atr_val, 2),
+        "atr": round(completed_atr, 2),
         "atr_normalized_distance": atr_norm_dist,
         "penetration_atr_ratio": penetration_atr_ratio,
         "provisional_direction": provisional_dir,
@@ -563,8 +675,8 @@ def analyze_supertrend_hit(
         "candle_age_seconds": 60.0,
         "prev_candle_points": 0.0,
         "prev_candle_color": "GREEN",
-        "candle_timestamp": completed_ts_str or last_ts_str,
-        "developing_candle_timestamp": last_ts_str,
+        "candle_timestamp": completed_ts_str,
+        "developing_candle_timestamp": dev_ts_str,
         "series": series_points
     }
 

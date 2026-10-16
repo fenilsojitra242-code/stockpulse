@@ -356,14 +356,14 @@ def test_supertrend_notification(
     curr_price = float(vis.get("price", 4120.0))
     clean_sym = vis.get("symbol", symbol).upper()
 
-    # Find or use existing alert owned by current user
-    alert = db.query(Alert).filter(Alert.symbol == clean_sym, Alert.user_id == current_user.id).first()
+    # Isolate test notifications: do not query or mutate production alerts
+    alert = None
 
     sig = signal_type.strip().upper()
     if sig == "BUY":
         st_price = round(curr_price - 1.20, 2)
         res = notification_manager.emit_supertrend_signal(
-            alert=alert,
+            alert=None,
             symbol=clean_sym,
             signal="BUY",
             current_price=curr_price,
@@ -371,12 +371,13 @@ def test_supertrend_notification(
             prev_direction="SELL",
             db=db,
             user_id=current_user.id,
-            model_probability=0.88
+            model_probability=0.88,
+            is_simulation=True
         )
     elif sig == "SELL":
         st_price = round(curr_price + 1.20, 2)
         res = notification_manager.emit_supertrend_signal(
-            alert=alert,
+            alert=None,
             symbol=clean_sym,
             signal="SELL",
             current_price=curr_price,
@@ -384,12 +385,13 @@ def test_supertrend_notification(
             prev_direction="BUY",
             db=db,
             user_id=current_user.id,
-            model_probability=0.84
+            model_probability=0.84,
+            is_simulation=True
         )
     elif sig == "FALSE":
         st_price = round(curr_price + 1.80, 2)
         res = notification_manager.emit_supertrend_prediction_false(
-            alert=alert,
+            alert=None,
             symbol=clean_sym,
             current_price=curr_price,
             supertrend_price=st_price,
@@ -400,7 +402,7 @@ def test_supertrend_notification(
     elif sig == "CHANGED":
         st_price = round(curr_price + 1.10, 2)
         res = notification_manager.emit_supertrend_changed(
-            alert=alert,
+            alert=None,
             symbol=clean_sym,
             current_price=curr_price,
             supertrend_price=st_price,
@@ -417,7 +419,7 @@ def test_supertrend_notification(
     else:  # APPROACHING
         st_price = round(curr_price + 0.65, 2)
         res = notification_manager.emit_supertrend_approaching(
-            alert=alert,
+            alert=None,
             symbol=clean_sym,
             current_price=curr_price,
             supertrend_price=st_price,
@@ -427,13 +429,15 @@ def test_supertrend_notification(
             db=db,
             user_id=current_user.id,
             target_direction="BUY",
-            model_probability=0.85
+            model_probability=0.85,
+            is_simulation=True
         )
 
     return {
         "status": "success",
         "symbol": clean_sym,
         "event_triggered": sig,
+        "is_simulation": True,
         "results": res
     }
 
