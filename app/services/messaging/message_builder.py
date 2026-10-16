@@ -284,40 +284,45 @@ class MessageBuilder:
             st_str = f"₹{st_price:,.2f}" if st_price is not None else "N/A"
             dist_pts = float(data.get("distance_points") or 0.0)
             prox_limit = float(data.get("proximity_threshold") or 1.0)
+            curr_price_val = float(data.get("current_price") or 0.0)
+            prox_pct = float(data.get("proximity_percent") or 0.50)
+            dist_pct = float(data.get("distance_percent") if data.get("distance_percent") is not None else ((dist_pts / max(0.01, curr_price_val)) * 100.0))
             curr_dir = str(data.get("current_direction") or "ACTIVE").upper()
             target_dir = str(data.get("target_direction") or ("BUY" if curr_dir == "SELL" else "SELL")).upper()
             prob_val = data.get("model_probability")
             prob_str = f"{float(prob_val) * 100:.1f}%" if prob_val is not None else "High Risk"
             horizon_min = int(data.get("horizon_minutes") or 5)
 
-            title = f"⚡ EARLY {target_dir} WARNING: {symbol} (Prob: {prob_str}, Horizon: {horizon_min}m)"
+            early_warning_phrase = f"Early warning: {symbol} may change from {curr_dir} to {target_dir} within the selected {prox_pct:.2f}% prediction distance."
+
+            title = f"⚡ EARLY {target_dir} WARNING: {symbol} (within {prox_pct:.2f}% distance)"
             plain_text = (
-                f"EARLY {target_dir} WARNING — {symbol}\n\n"
+                f"{early_warning_phrase}\n\n"
                 f"Stock: {symbol}\n"
                 f"Live Price: {curr_price_str}\n"
                 f"SuperIndicator Band: {st_str}\n"
-                f"Distance to Band: {dist_pts:.2f} points (Proximity limit: {prox_limit:.1f} pts)\n"
+                f"Distance to Band: {dist_pct:.2f}% (₹{dist_pts:.2f}) [Selected distance limit: {prox_pct:.2f}%]\n"
                 f"Confirmed Direction: {curr_dir}\n"
                 f"Predicted Reversal Direction: {target_dir}\n"
                 f"Estimated Reversal Horizon: {horizon_min} minutes\n"
                 f"Reversal Risk Probability: {prob_str}\n\n"
-                f"Status: EARLY WARNING ACTIVE (Provisional risk warning only — confirmed Supertrend remains {curr_dir} until confirmed on completed candle close)\n"
+                f"Status: EARLY WARNING ACTIVE (The selected {prox_pct:.2f}% is the maximum permitted price movement distance used by the prediction logic, not a guarantee of reversal. Confirmed Supertrend remains {curr_dir} until confirmed on completed candle close)\n"
                 f"Time: {time_str}"
             )
             html_text = (
-                f"⚡ <b>EARLY {target_dir} WARNING: {symbol}</b>\n\n"
+                f"⚡ <b>Early warning: {symbol} may change from {curr_dir} to {target_dir} within the selected {prox_pct:.2f}% prediction distance.</b>\n\n"
                 f"<b>Stock:</b> <b>{symbol}</b>\n"
                 f"<b>Live Price:</b> <b>{curr_price_str}</b>\n"
                 f"<b>SuperIndicator Band:</b> <b>{st_str}</b>\n"
-                f"<b>Gap to Band:</b> <span style='color: #f59e0b; font-weight: 700;'>{dist_pts:.2f} points</span>\n"
+                f"<b>Distance to Band:</b> <span style='color: #f59e0b; font-weight: 700;'>{dist_pct:.2f}% (₹{dist_pts:.2f}) [Selected limit: {prox_pct:.2f}%]</span>\n"
                 f"<b>Confirmed Direction:</b> <b>{curr_dir}</b> (Remains unchanged until confirmed)\n"
                 f"<b>Predicted Reversal:</b> <b style='color: {'#16a34a' if target_dir == 'BUY' else '#dc2626'};'>{target_dir}</b>\n"
                 f"<b>Estimated Horizon:</b> <b>{horizon_min} minutes</b>\n"
                 f"<b>Reversal Risk Probability:</b> <b>{prob_str}</b>\n\n"
-                f"⚠️ <i>Provisional risk warning only; confirmed Supertrend direction remains {curr_dir} until completed candle confirmation.</i>\n"
+                f"⚠️ <i>Note: The selected {prox_pct:.2f}% is the maximum permitted prediction distance, not a guarantee of reversal. Confirmed Supertrend direction remains {curr_dir} until completed candle confirmation.</i>\n"
                 f"<b>Time:</b> {time_str}"
             )
-            short_summary = f"EARLY {target_dir} WARNING: {symbol} predicted reversal within {horizon_min}m (Prob: {prob_str})"
+            short_summary = early_warning_phrase
 
         elif ev == NotificationEventType.SUPERTREND_BUY.value:
             st_price = data.get("supertrend_price")

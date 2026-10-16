@@ -1,4 +1,5 @@
 import os
+import copy
 import joblib
 import numpy as np
 from typing import Dict, Any, Optional, Tuple, List
@@ -7,7 +8,8 @@ from app.services.feature_engine import (
     FEATURE_NAMES,
     extract_supertrend_reversal_feature_vector,
     calculate_reversal_risk_score,
-    SUPERTREND_REVERSAL_FEATURE_NAMES
+    SUPERTREND_REVERSAL_FEATURE_NAMES,
+    get_candle_sequence_key
 )
 from app.services.market_data import get_latest_market_snapshot
 from app.services.market_regime import classify_market_regime
@@ -18,6 +20,10 @@ MODEL_PATH = "app/ml/model.joblib"
 
 _REVERSAL_MODEL_CACHE = None
 REVERSAL_MODEL_PATH = "app/ml/reversal_model.joblib"
+
+_PREDICT_ST_REVERSAL_CACHE: Dict[Tuple, Dict[str, Any]] = {}
+_PREDICT_TARGET_PROB_CACHE: Dict[Tuple, Dict[str, Any]] = {}
+
 
 
 def load_model():
@@ -98,9 +104,22 @@ def predict_target_probability(
     current_price = market_snapshot["price"]
     current_change = market_snapshot["change_pct"]
     
-    model_artifact = load_model()
-    
+    clean_sym_upper = symbol.strip().upper()
     abs_target_percent = abs(float(target_percent))
+    dir_upper = direction.upper()
+    cache_key = (
+        clean_sym_upper,
+        round(abs_target_percent, 4),
+        int(warning_minutes),
+        dir_upper,
+        str(market_snapshot.get("latest_market_timestamp")),
+        round(float(current_price), 2)
+    )
+
+    if cache_key in _PREDICT_TARGET_PROB_CACHE:
+        return copy.deepcopy(_PREDICT_TARGET_PROB_CACHE[cache_key])
+
+    model_artifact = load_model()
 
     def evaluate_single_direction(dir_str: str) -> float:
         stat_prob = calculate_statistical_barrier_probability(
@@ -209,7 +228,7 @@ def predict_target_probability(
         f"Model probability: {int(chosen_prob * 100)}% ({prediction_label}). {thresh_note}"
     )
 
-    return {
+    res = {
         "symbol": symbol,
         "current_price": current_price,
         "current_change": current_change,
@@ -241,6 +260,11 @@ def predict_target_probability(
         "explanation": explanation,
         "disclaimer": "⚠️ Model-generated estimate; not a guarantee."
     }
+
+    if len(_PREDICT_TARGET_PROB_CACHE) > 512:
+        _PREDICT_TARGET_PROB_CACHE.pop(next(iter(_PREDICT_TARGET_PROB_CACHE)))
+    _PREDICT_TARGET_PROB_CACHE[cache_key] = res
+    return copy.deepcopy(res)
 
 
 def load_reversal_model() -> Optional[Dict[str, Any]]:
@@ -291,6 +315,22 @@ def predict_supertrend_reversal(
     conf_dir = "BUY" if str(confirmed_direction).upper() == "BUY" else "SELL"
     reversal_target_dir = "SELL" if conf_dir == "BUY" else "BUY"
     horizon = int(horizon_minutes) if horizon_minutes in (1, 2, 5) else 5
+
+    ckey = get_candle_sequence_key(candles_or_df)
+    cache_key = (
+        ckey,
+        symbol.strip().upper(),
+        conf_dir,
+        horizon,
+        round(current_price, 2) if current_price is not None else None,
+        float(threshold) if threshold is not None else None,
+        int(period),
+        float(multiplier),
+        round(supertrend_price, 2) if supertrend_price is not None else None
+    ) if ckey is not None else None
+
+    if cache_key is not None and cache_key in _PREDICT_ST_REVERSAL_CACHE:
+        return _PREDICT_ST_REVERSAL_CACHE[cache_key].copy()
 
     # Extract feature vector
     feat_vec, feat_dict, has_sufficient = extract_supertrend_reversal_feature_vector(
@@ -414,7 +454,7 @@ def predict_supertrend_reversal(
         model_type=model_type
     )
 
-    return {
+    res = {
         "event_id": event_rec.get("event_id"),
         "symbol": symbol,
         "current_direction": conf_dir,
@@ -446,5 +486,13 @@ def predict_supertrend_reversal(
         },
         "explanation": explanation
     }
+
+    if cache_key is not None:
+        if len(_PREDICT_ST_REVERSAL_CACHE) > 256:
+            _PREDICT_ST_REVERSAL_CACHE.pop(next(iter(_PREDICT_ST_REVERSAL_CACHE)))
+        _PREDICT_ST_REVERSAL_CACHE[cache_key] = res.copy()
+
+    return res
+
 
 

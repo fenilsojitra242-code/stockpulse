@@ -1351,12 +1351,24 @@ window.StockPulse = (function () {
   }
 
   // --- REAL-TIME NOTIFICATION POLLER ---
+  let isNotifPollInFlight = false;
   async function checkRealtimeNotifications() {
+    if (isNotifPollInFlight) return;
+    isNotifPollInFlight = true;
     try {
       const res = await fetch('/api/notifications?limit=10');
       if (!res.ok) return;
       const data = await res.json();
       const notifs = data.notifications || [];
+
+      if (typeof data.unread_count !== 'undefined') {
+        const badge1 = document.getElementById('notif-unread-badge');
+        if (badge1) {
+          badge1.textContent = data.unread_count;
+          badge1.style.display = data.unread_count > 0 ? 'inline-block' : 'none';
+        }
+      }
+
 
       if (isFirstNotifCheck) {
         isFirstNotifCheck = false;
@@ -1397,6 +1409,8 @@ window.StockPulse = (function () {
       }
     } catch (e) {
       // quiet fallback
+    } finally {
+      isNotifPollInFlight = false;
     }
   }
 
@@ -1498,7 +1512,10 @@ window.StockPulse = (function () {
   }
 
   // --- MARKET STATUS & NOTIFICATION BADGE POLLING ---
+  let isSystemStatusInFlight = false;
   async function updateSystemStatus() {
+    if (isSystemStatusInFlight) return;
+    isSystemStatusInFlight = true;
     try {
       const sym = getSelectedStock();
       const res = await fetch(`/api/stocks/${sym}/live`);
@@ -1514,22 +1531,8 @@ window.StockPulse = (function () {
       }
     } catch (e) {
       // quiet fallback
-    }
-
-    try {
-      const notifRes = await fetch('/api/notifications');
-      if (notifRes.ok) {
-        const notifData = await notifRes.json();
-        const unreadCount = notifData.unread_count || 0;
-        
-        const badge1 = document.getElementById('notif-unread-badge');
-        if (badge1) {
-          badge1.textContent = unreadCount;
-          badge1.style.display = unreadCount > 0 ? 'inline-block' : 'none';
-        }
-      }
-    } catch (e) {
-      // quiet fallback
+    } finally {
+      isSystemStatusInFlight = false;
     }
 
     // Check for newly arriving real-time notifications to trigger sound & popup
@@ -1860,7 +1863,7 @@ window.StockPulse = (function () {
            self.onmessage = function(e) {
              if (e.data === 'start') {
                if (timer) clearInterval(timer);
-               timer = setInterval(() => { self.postMessage('tick'); }, 1200);
+               timer = setInterval(() => { self.postMessage('tick'); }, 3000);
              } else if (e.data === 'stop') {
                if (timer) clearInterval(timer);
              }
@@ -1876,7 +1879,7 @@ window.StockPulse = (function () {
     } catch (e) {
       console.warn('[StockPulse] Web Worker timer fallback note:', e);
     }
-    setInterval(checkRealtimeNotifications, 1200);
+    setInterval(checkRealtimeNotifications, 3000);
   }
 
   return {

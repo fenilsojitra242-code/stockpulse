@@ -226,6 +226,7 @@ from pydantic import BaseModel
 class SuperTrendSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
     proximity_points: Optional[float] = None
+    proximity_percent: Optional[float] = None
     selected_symbols: Optional[List[str]] = None
     period: Optional[int] = None
     multiplier: Optional[float] = None
@@ -256,6 +257,7 @@ def save_supertrend_settings_endpoint(
     """
     Saves SuperTrend settings for the current user:
     - enabled (bool)
+    - proximity_percent (float: 0.25, 0.50, 0.75, 1.00)
     - proximity_points (float)
     - selected_symbols (list of stock symbols)
     - period (int, default 10)
@@ -270,6 +272,7 @@ def save_supertrend_settings_endpoint(
         db=db,
         enabled=payload.enabled,
         proximity_points=payload.proximity_points,
+        proximity_percent=payload.proximity_percent,
         selected_symbols=payload.selected_symbols,
         user_id=current_user.id,
         period=payload.period,
@@ -286,22 +289,19 @@ def get_stock_supertrend(
     symbol: str,
     period: int = Query(10, ge=3, le=50, description="ATR period for SuperTrend"),
     multiplier: float = Query(3.0, ge=0.5, le=10.0, description="ATR multiplier"),
-    proximity: float = Query(1.0, ge=0.1, le=50.0, description="Hit proximity threshold in points"),
+    proximity: float = Query(1.0, ge=0.1, le=50.0, description="Hit proximity threshold in points (legacy)"),
+    proximity_percent: Optional[float] = Query(None, description="Prediction distance percentage (0.25, 0.50, 0.75, 1.00)"),
     range: str = Query("1D", description="Time range for candles (1D, 5D, 1M, etc.)")
 ):
     """
     Returns calculated SuperTrend status and chart series for any stock.
-    Indicates whether price is within proximity limit of hitting SuperTrend or flipped BUY/SELL.
+    Indicates whether price is within percentage proximity limit of hitting SuperTrend or flipped BUY/SELL.
     """
     from app.services.market_data import get_stock_visualization_data
     from app.services.feature_engine import analyze_supertrend_hit
 
     time_range_val = range.strip().upper() if range else "1D"
     vis = get_stock_visualization_data(symbol, time_range=time_range_val)
-
-    # Use pre-computed supertrend from visualization data if standard parameters match
-    if period == 10 and multiplier == 3.0 and proximity == 1.0 and vis.get("supertrend"):
-        return vis["supertrend"]
 
     candles = vis.get("candles", [])
     curr_price = float(vis.get("price", 100.0))
@@ -311,7 +311,8 @@ def get_stock_supertrend(
         current_price=curr_price,
         period=period,
         multiplier=multiplier,
-        proximity_points=proximity
+        proximity_points=proximity,
+        proximity_percent=proximity_percent
     )
 
     return {
@@ -323,8 +324,15 @@ def get_stock_supertrend(
         "previous_direction": st_analysis.get("previous_direction"),
         "target_direction": st_analysis.get("target_direction"),
         "distance_points": st_analysis.get("distance_points", 0.0),
+        "distance_percent": st_analysis.get("distance_percent", 0.0),
         "proximity_threshold": st_analysis.get("proximity_threshold", proximity),
+        "proximity_percent": st_analysis.get("proximity_percent", 0.50),
+        "permitted_distance_points": st_analysis.get("permitted_distance_points", round(curr_price * 0.005, 2)),
+        "upper_boundary": st_analysis.get("upper_boundary", round(curr_price * 1.005, 2)),
+        "lower_boundary": st_analysis.get("lower_boundary", round(curr_price * 0.995, 2)),
+        "reference_price": st_analysis.get("reference_price", curr_price),
         "is_approaching": st_analysis.get("is_approaching", False),
+        "is_within_pct": st_analysis.get("is_within_pct", False),
         "is_prediction_ready": st_analysis.get("is_prediction_ready", False),
         "is_flipped": st_analysis.get("is_flipped", False),
         "flip_signal": st_analysis.get("flip_signal"),
@@ -420,14 +428,19 @@ def test_supertrend_notification(
             user_id=current_user.id
         )
     else:  # APPROACHING
-        st_price = round(curr_price + 0.65, 2)
+        prox_pct = 0.50
+        st_price = round(curr_price + (curr_price * (prox_pct / 100.0) * 0.70), 2)
+        dist_pts = round(abs(st_price - curr_price), 2)
+        dist_pct = round((dist_pts / curr_price) * 100.0, 4)
         res = notification_manager.emit_supertrend_approaching(
             alert=None,
             symbol=clean_sym,
             current_price=curr_price,
             supertrend_price=st_price,
-            distance_points=0.65,
-            proximity_threshold=1.0,
+            distance_points=dist_pts,
+            proximity_threshold=dist_pts,
+            distance_percent=dist_pct,
+            proximity_percent=prox_pct,
             current_direction="SELL",
             db=db,
             user_id=current_user.id,

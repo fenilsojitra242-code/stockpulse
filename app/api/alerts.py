@@ -103,6 +103,7 @@ def create_alert(
         created_at=now,
         started_at=now,
         enable_supertrend=alert_in.enable_supertrend if alert_in.enable_supertrend is not None else True,
+        supertrend_proximity_percent=alert_in.supertrend_proximity_percent or 0.50,
         supertrend_proximity_points=alert_in.supertrend_proximity_points or 1.0
     )
     
@@ -202,8 +203,10 @@ def get_active_monitoring_sessions(
             if getattr(a, "enable_supertrend", True):
                 st_p = getattr(a, "last_supertrend_price", None)
                 st_dir = getattr(a, "last_supertrend_direction", None)
+                prox_pct = getattr(a, "supertrend_proximity_percent", 0.50) or 0.50
                 prox_pts = getattr(a, "supertrend_proximity_points", 1.0) or 1.0
                 resp.enable_supertrend = True
+                resp.supertrend_proximity_percent = prox_pct
                 resp.supertrend_proximity_points = prox_pts
                 resp.last_supertrend_direction = st_dir
                 resp.last_supertrend_price = st_p
@@ -211,8 +214,10 @@ def get_active_monitoring_sessions(
                 resp.supertrend_direction = st_dir
                 if st_p and curr_p:
                     gap_pts = round(abs(curr_p - st_p), 2)
+                    gap_pct = round((gap_pts / max(0.01, curr_p)) * 100.0, 2)
                     resp.supertrend_gap_points = gap_pts
-                    resp.supertrend_is_approaching = bool(gap_pts <= prox_pts)
+                    resp.supertrend_gap_percent = gap_pct
+                    resp.supertrend_is_approaching = bool(gap_pct <= prox_pct or gap_pts <= prox_pts)
 
             results.append(resp)
         except Exception:

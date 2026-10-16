@@ -450,9 +450,11 @@ class NotificationManager:
         candle_ts: Optional[str] = None,
         timeframe: Optional[str] = "1m",
         prediction_cycle_id: Optional[str] = None,
-        is_simulation: bool = False
+        is_simulation: bool = False,
+        distance_percent: Optional[float] = None,
+        proximity_percent: Optional[float] = None
     ) -> List[Dict[str, Any]]:
-        """Triggered when price is within user points AND model predicts SuperIndicator hit."""
+        """Triggered when price is within user percentage/points AND model predicts SuperIndicator hit."""
         if supertrend_price <= 0.01 or current_price <= 0.01 or abs(supertrend_price - current_price) > (current_price * 0.25):
             print(f"[NotificationManager] Rejected invalid SuperTrend approaching alert for {symbol}: price={current_price}, ST={supertrend_price}")
             return []
@@ -479,6 +481,9 @@ class NotificationManager:
                 return []
             cls._DEDUPLICATED_EVENT_KEYS.add(event_key)
 
+        calc_dist_pct = distance_percent if distance_percent is not None else round((distance_points / max(0.01, current_price)) * 100.0, 4)
+        calc_prox_pct = proximity_percent if proximity_percent is not None else 0.50
+
         data = {
             "user_id": user_id,
             "alert_id": alert.id if alert else None,
@@ -487,6 +492,8 @@ class NotificationManager:
             "supertrend_price": supertrend_price,
             "distance_points": distance_points,
             "proximity_threshold": proximity_threshold,
+            "distance_percent": calc_dist_pct,
+            "proximity_percent": calc_prox_pct,
             "current_direction": current_direction,
             "target_direction": resolved_target,
             "direction": current_direction,
@@ -503,6 +510,8 @@ class NotificationManager:
                 "supertrend_price": supertrend_price,
                 "distance_points": distance_points,
                 "proximity_threshold": proximity_threshold,
+                "distance_percent": calc_dist_pct,
+                "proximity_percent": calc_prox_pct,
                 "current_direction": current_direction,
                 "target_direction": resolved_target,
                 "direction": current_direction,

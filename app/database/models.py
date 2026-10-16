@@ -72,6 +72,7 @@ class Alert(Base):
 
     # SuperTrend Hit Notifier fields
     enable_supertrend = Column(Boolean, default=True)
+    supertrend_proximity_percent = Column(Float, default=0.50)
     supertrend_proximity_points = Column(Float, default=1.0)
     last_supertrend_direction = Column(String(10), nullable=True)  # 'BUY' or 'SELL'
     last_supertrend_price = Column(Float, nullable=True)

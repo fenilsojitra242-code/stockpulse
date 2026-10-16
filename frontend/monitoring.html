@@ -342,25 +342,25 @@
               </div>
             </div>
 
-            <!-- Early Warning Points Selector & Real-Time Conversion Simulator -->
+            <!-- Early Warning Percentage Selector & Real-Time Conversion Simulator -->
             <div class="st-points-controls-grid">
               <div class="st-points-input-card">
-                <label class="st-input-label" for="cfg-st-proximity">
-                  <span><i class="fa-solid fa-clock-rotate-left"></i> Early Alert Distance (Points Before Hit):</span>
-                  <span class="st-helper-badge">Presets or Custom</span>
+                <label class="st-input-label" for="cfg-st-proximity-percent">
+                  <span><i class="fa-solid fa-clock-rotate-left"></i> Early Alert Distance (% from Reference Price):</span>
+                  <span class="st-helper-badge">Reversal Prediction Distance</span>
                 </label>
-                <div class="st-input-row">
-                  <div class="input-with-suffix" style="width: 100%;">
-                    <input type="number" id="cfg-st-proximity" class="control-input st-proximity-input" value="1.0" step="0.5" min="0.1" max="100.0" placeholder="e.g. 10.0">
-                    <span class="input-suffix">pts</span>
+                <div class="st-input-row" style="flex-direction: column; align-items: stretch; gap: 10px;">
+                  <!-- Four Percentage Options -->
+                  <div class="st-point-presets" id="st-percentage-options" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; width: 100%;">
+                    <button type="button" class="st-preset-chip" data-percent="0.25" style="text-align: center; padding: 7px 4px; font-weight: 700;">0.25%</button>
+                    <button type="button" class="st-preset-chip active" data-percent="0.50" style="text-align: center; padding: 7px 4px; font-weight: 700;">0.50%</button>
+                    <button type="button" class="st-preset-chip" data-percent="0.75" style="text-align: center; padding: 7px 4px; font-weight: 700;">0.75%</button>
+                    <button type="button" class="st-preset-chip" data-percent="1.00" style="text-align: center; padding: 7px 4px; font-weight: 700;">1.00%</button>
                   </div>
-                  <!-- Quick Preset Chips -->
-                  <div class="st-point-presets" id="st-point-presets">
-                    <button type="button" class="st-preset-chip" data-points="0.5">0.5 pt</button>
-                    <button type="button" class="st-preset-chip active" data-points="1.0">1.0 pt</button>
-                    <button type="button" class="st-preset-chip" data-points="2.0">2.0 pts</button>
-                    <button type="button" class="st-preset-chip" data-points="5.0">5.0 pts</button>
-                    <button type="button" class="st-preset-chip" data-points="10.0">10.0 pts</button>
+                  <input type="hidden" id="cfg-st-proximity-percent" value="0.50">
+                  <input type="hidden" id="cfg-st-proximity" value="1.0">
+                  <div style="font-size: 11px; color: #64748b; line-height: 1.5; background: #f8fafc; padding: 6px 10px; border-radius: 6px; border: 1px solid #e2e8f0;">
+                    Boundaries: Upper <span id="st-prev-boundary-upper" style="font-weight: 700; color: #0f172a;">₹--.--</span> | Lower <span id="st-prev-boundary-lower" style="font-weight: 700; color: #0f172a;">₹--.--</span> (<span id="st-selected-pct-display" style="color: #2563eb; font-weight: 700;">0.50%</span> limit)
                   </div>
                 </div>
               </div>

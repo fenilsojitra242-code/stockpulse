@@ -2,11 +2,13 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+from sqlalchemy import event
+
 # Default to local SQLite database in data/ directory, with support for PostgreSQL
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/stockpulse.db")
 
 # For SQLite, check_same_thread=False allows multi-threaded access across FastAPI and APScheduler
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+connect_args = {"check_same_thread": False, "timeout": 15} if DATABASE_URL.startswith("sqlite") else {}
 
 engine = create_engine(
     DATABASE_URL,
@@ -14,7 +16,18 @@ engine = create_engine(
     echo=False
 )
 
+if DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA cache_size=-64000")  # 64MB cache
+        cursor.execute("PRAGMA temp_store=MEMORY")
+        cursor.close()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 
 Base = declarative_base()
 
@@ -38,6 +51,7 @@ def run_db_migrations(db_engine):
         table_migrations = {
             "alerts": [
                 ("enable_supertrend", "BOOLEAN DEFAULT 1"),
+                ("supertrend_proximity_percent", "FLOAT DEFAULT 0.50"),
                 ("supertrend_proximity_points", "FLOAT DEFAULT 1.0"),
                 ("last_supertrend_direction", "VARCHAR(10)"),
                 ("last_supertrend_price", "FLOAT"),
@@ -72,9 +86,25 @@ def run_db_migrations(db_engine):
             if "notifications" in table_names:
                 try:
                     conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_notifications_event_key ON notifications (event_key) WHERE event_key IS NOT NULL"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notifications_user_created ON notifications (user_id, created_at DESC)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_notifications_user_read ON notifications (user_id, is_read)"))
                     conn.commit()
                 except Exception as idx_err:
-                    print(f"[DB Migration] Index migration note: {idx_err}")
+                    print(f"[DB Migration] Notification index migration note: {idx_err}")
+
+            if "alerts" in table_names:
+                try:
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_alerts_user_status ON alerts (user_id, status)"))
+                    conn.commit()
+                except Exception as idx_err:
+                    print(f"[DB Migration] Alerts index migration note: {idx_err}")
+
+            if "alert_history" in table_names:
+                try:
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_alert_history_user_triggered ON alert_history (user_id, triggered_at DESC)"))
+                    conn.commit()
+                except Exception as idx_err:
+                    print(f"[DB Migration] History index migration note: {idx_err}")
 
             # Backfill any missing usernames from email prefix
             if "users" in table_names:

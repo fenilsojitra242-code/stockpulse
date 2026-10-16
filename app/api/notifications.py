@@ -48,15 +48,22 @@ def list_notifications(
     if unread_only is True:
         query = query.filter(Notification.is_read == False)
 
-    total = query.count()
-    unread_count = db.query(Notification).filter(
-        or_(
-            Notification.user_id == current_user.id,
-            Notification.user_id.is_(None)
-        ),
-        Notification.is_read == False
-    ).count()
     items = query.order_by(desc(Notification.created_at)).limit(limit).all()
+    if len(items) < limit:
+        total = len(items)
+    else:
+        total = query.count()
+
+    if unread_only is True:
+        unread_count = total
+    else:
+        unread_count = db.query(Notification.id).filter(
+            or_(
+                Notification.user_id == current_user.id,
+                Notification.user_id.is_(None)
+            ),
+            Notification.is_read == False
+        ).count()
 
     return {
         "total": total,

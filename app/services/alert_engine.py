@@ -1,8 +1,10 @@
+import time
+import copy
+import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
 
-import json
 from app.database.models import Alert, AlertHistory, SystemSetting
 from app.services.market_data import get_latest_market_snapshot
 from app.services.prediction import predict_target_probability, predict_supertrend_reversal
@@ -13,6 +15,9 @@ from app.services.market_regime import classify_market_regime
 
 
 POPULAR_SUPERTREND_SYMBOLS = ["TCS", "INFY", "RELIANCE", "HDFCBANK", "TATAMOTORS", "SBIN", "ICICIBANK", "BHARTIARTL", "ITC", "WIPRO"]
+
+_SETTINGS_CACHE: Dict[Optional[int], Tuple[float, Dict[str, Any]]] = {}
+_SETTINGS_CACHE_TTL = 5.0
 
 
 def get_supertrend_settings(db: Session, user_id: Optional[int] = None) -> Dict[str, Any]:
@@ -27,51 +32,85 @@ def get_supertrend_settings(db: Session, user_id: Optional[int] = None) -> Dict[
     - min_confirming_candles: int (closed candles required to confirm reversal, default 1)
     - selected_symbols: list of stock symbols to monitor (exclusively!)
     """
+    now_ts = time.time()
+    if user_id in _SETTINGS_CACHE:
+        cached_ts, cached_val = _SETTINGS_CACHE[user_id]
+        if now_ts - cached_ts < _SETTINGS_CACHE_TTL:
+            return copy.deepcopy(cached_val)
+
     try:
         prefix = f"u{user_id}_" if user_id else ""
-        row_enabled = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_enabled").first()
-        row_prox = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_proximity_points").first()
-        row_syms = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_watchlist_symbols").first()
-        row_period = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_period").first()
-        row_mult = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_multiplier").first()
-        row_buf = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_band_buffer_pct").first()
-        row_atr_f = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_min_atr_filter").first()
-        row_conf_c = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_confirming_candles").first()
+        target_keys = {
+            f"{prefix}supertrend_enabled",
+            f"{prefix}supertrend_proximity_points",
+            f"{prefix}supertrend_proximity_percent",
+            f"{prefix}supertrend_watchlist_symbols",
+            f"{prefix}supertrend_period",
+            f"{prefix}supertrend_multiplier",
+            f"{prefix}supertrend_band_buffer_pct",
+            f"{prefix}supertrend_min_atr_filter",
+            f"{prefix}supertrend_confirming_candles",
+            f"{prefix}supertrend_reversal_threshold",
+            "supertrend_enabled",
+            "supertrend_proximity_points",
+            "supertrend_proximity_percent",
+            "supertrend_watchlist_symbols",
+            "supertrend_period",
+            "supertrend_multiplier",
+            "supertrend_band_buffer_pct",
+            "supertrend_min_atr_filter",
+            "supertrend_confirming_candles",
+            "supertrend_reversal_threshold"
+        }
+        rows = db.query(SystemSetting).filter(SystemSetting.key.in_(target_keys)).all()
+        settings_map = {r.key: r.value for r in rows if r.value is not None}
 
-        row_thresh = db.query(SystemSetting).filter(SystemSetting.key == f"{prefix}supertrend_reversal_threshold").first()
+        val_enabled = settings_map.get(f"{prefix}supertrend_enabled", settings_map.get("supertrend_enabled"))
+        val_prox = settings_map.get(f"{prefix}supertrend_proximity_points", settings_map.get("supertrend_proximity_points"))
+        val_prox_pct = settings_map.get(f"{prefix}supertrend_proximity_percent", settings_map.get("supertrend_proximity_percent"))
+        val_syms = settings_map.get(f"{prefix}supertrend_watchlist_symbols", settings_map.get("supertrend_watchlist_symbols"))
+        val_period = settings_map.get(f"{prefix}supertrend_period", settings_map.get("supertrend_period"))
+        val_mult = settings_map.get(f"{prefix}supertrend_multiplier", settings_map.get("supertrend_multiplier"))
+        val_buf = settings_map.get(f"{prefix}supertrend_band_buffer_pct", settings_map.get("supertrend_band_buffer_pct"))
+        val_atr_f = settings_map.get(f"{prefix}supertrend_min_atr_filter", settings_map.get("supertrend_min_atr_filter"))
+        val_conf_c = settings_map.get(f"{prefix}supertrend_confirming_candles", settings_map.get("supertrend_confirming_candles"))
+        val_thresh = settings_map.get(f"{prefix}supertrend_reversal_threshold", settings_map.get("supertrend_reversal_threshold"))
 
-        # Fallback to defaults if user setting not explicitly configured yet
-        if not row_enabled and user_id:
-            row_enabled = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_enabled").first()
-        if not row_prox and user_id:
-            row_prox = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_proximity_points").first()
-        if not row_period and user_id:
-            row_period = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_period").first()
-        if not row_mult and user_id:
-            row_mult = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_multiplier").first()
-        if not row_thresh and user_id:
-            row_thresh = db.query(SystemSetting).filter(SystemSetting.key == "supertrend_reversal_threshold").first()
+        enabled = True if (val_enabled is None or str(val_enabled).lower() == "true") else False
+        
+        # SuperTrend Percentage Setting: [0.25%, 0.50%, 0.75%, 1.00%], default 0.50%
+        valid_percentages = [0.25, 0.50, 0.75, 1.00]
+        if val_prox_pct:
+            try:
+                parsed_pct = float(val_prox_pct)
+                # Snap to closest allowed option
+                prox_pct = min(valid_percentages, key=lambda x: abs(x - parsed_pct))
+            except Exception:
+                prox_pct = 0.50
+        else:
+            prox_pct = 0.50
 
-        enabled = True if (not row_enabled or row_enabled.value.lower() == "true") else False
-        prox = float(row_prox.value) if (row_prox and row_prox.value) else 1.0
-        period = int(row_period.value) if (row_period and row_period.value) else 10
-        multiplier = float(row_mult.value) if (row_mult and row_mult.value) else 3.0
-        band_buffer_pct = float(row_buf.value) if (row_buf and row_buf.value) else 0.0
-        min_atr_filter = float(row_atr_f.value) if (row_atr_f and row_atr_f.value) else 0.0
-        min_confirming_candles = int(row_conf_c.value) if (row_conf_c and row_conf_c.value) else 1
-        reversal_confidence_threshold = float(row_thresh.value) if (row_thresh and row_thresh.value) else 0.50
+        prox = float(val_prox) if val_prox else 1.0
+        period = int(val_period) if val_period else 10
+        multiplier = float(val_mult) if val_mult else 3.0
+        band_buffer_pct = float(val_buf) if val_buf else 0.0
+        min_atr_filter = float(val_atr_f) if val_atr_f else 0.0
+        min_confirming_candles = int(val_conf_c) if val_conf_c else 1
+        reversal_confidence_threshold = float(val_thresh) if val_thresh else 0.50
 
         selected_symbols: List[str] = []
-        if row_syms and row_syms.value is not None:
+        if val_syms is not None:
             try:
-                decoded = json.loads(row_syms.value)
+                decoded = json.loads(val_syms)
                 if isinstance(decoded, list):
                     selected_symbols = [str(s).strip().upper() for s in decoded if s and isinstance(s, (str, int))]
             except Exception:
                 selected_symbols = []
 
-        return {
+        res = {
             "enabled": enabled,
+            "proximity_percent": prox_pct,
+            "available_proximity_percentages": valid_percentages,
             "proximity_points": prox,
             "period": period,
             "multiplier": multiplier,
@@ -82,10 +121,14 @@ def get_supertrend_settings(db: Session, user_id: Optional[int] = None) -> Dict[
             "selected_symbols": [s.upper() for s in selected_symbols],
             "popular_symbols": POPULAR_SUPERTREND_SYMBOLS
         }
+        _SETTINGS_CACHE[user_id] = (now_ts, copy.deepcopy(res))
+        return res
     except Exception as e:
         print(f"[SuperTrend] Error fetching settings: {e}")
         return {
             "enabled": True,
+            "proximity_percent": 0.50,
+            "available_proximity_percentages": [0.25, 0.50, 0.75, 1.00],
             "proximity_points": 1.0,
             "period": 10,
             "multiplier": 3.0,
@@ -102,6 +145,7 @@ def save_supertrend_settings(
     db: Session,
     enabled: Optional[bool] = None,
     proximity_points: Optional[float] = None,
+    proximity_percent: Optional[float] = None,
     selected_symbols: Optional[List[str]] = None,
     user_id: Optional[int] = None,
     period: Optional[int] = None,
@@ -113,10 +157,12 @@ def save_supertrend_settings(
 ) -> Dict[str, Any]:
     """
     Saves SuperTrend indicator settings scoped to the user into system_settings table.
+    Supports percentage-based prediction distance [0.25%, 0.50%, 0.75%, 1.00%].
     """
     prefix = f"u{user_id}_" if user_id else ""
     key_enabled = f"{prefix}supertrend_enabled"
     key_prox = f"{prefix}supertrend_proximity_points"
+    key_prox_pct = f"{prefix}supertrend_proximity_percent"
     key_syms = f"{prefix}supertrend_watchlist_symbols"
     key_period = f"{prefix}supertrend_period"
     key_mult = f"{prefix}supertrend_multiplier"
@@ -137,9 +183,24 @@ def save_supertrend_settings(
         if enabled is not None:
             _set_setting(key_enabled, "true" if enabled else "false", f"SuperTrend enabled for user {user_id}")
 
+        valid_percentages = [0.25, 0.50, 0.75, 1.00]
+        if proximity_percent is not None:
+            parsed_pct = float(proximity_percent)
+            snapped_pct = min(valid_percentages, key=lambda x: abs(x - parsed_pct))
+            _set_setting(key_prox_pct, str(snapped_pct), f"SuperTrend percentage prediction distance for user {user_id}")
+            # Also keep key_prox synchronized for legacy callers
+            if proximity_points is None:
+                legacy_pts = round(1000.0 * (snapped_pct / 100.0), 2)
+                _set_setting(key_prox, str(legacy_pts), f"Points before SuperTrend hit (derived from {snapped_pct}%) for user {user_id}")
+
         if proximity_points is not None:
             prox_val = str(max(0.1, min(100.0, float(proximity_points))))
             _set_setting(key_prox, prox_val, f"Points before SuperTrend hit for user {user_id}")
+            if proximity_percent is None:
+                # If percentage wasn't explicitly saved yet, preserve default or map
+                existing_pct = db.query(SystemSetting).filter(SystemSetting.key == key_prox_pct).first()
+                if not existing_pct:
+                    _set_setting(key_prox_pct, "0.50", f"Default 0.50% prediction distance for user {user_id}")
 
         if period is not None:
             p_val = str(max(2, min(100, int(period))))
@@ -176,10 +237,12 @@ def save_supertrend_settings(
             _set_setting(key_syms, json.dumps(cleaned), f"List of shares monitored for SuperTrend for user {user_id}")
 
         db.commit()
+        _SETTINGS_CACHE.pop(user_id, None)
     except Exception as e:
         print(f"[SuperTrend] Error saving settings: {e}")
         db.rollback()
 
+    _SETTINGS_CACHE.pop(user_id, None)
     return get_supertrend_settings(db, user_id=user_id)
 
 
@@ -351,13 +414,14 @@ def _process_supertrend_state_transition(
     now: datetime,
     is_market_open: bool,
     data_status: str,
-    prox_pts: float
+    prox_pts: float,
+    prox_pct: Optional[float] = None
 ) -> Optional[Dict[str, Any]]:
     """
     Robust 4-State Machine for SuperTrend monitoring conditions:
     States:
       - MONITORING: Default tracking state.
-      - EARLY_WARNING_SENT: Live price entered proximity limit or intrabar penetration.
+      - EARLY_WARNING_SENT: Live price entered percentage proximity limit or intrabar penetration.
       - SUCCESS_CONFIRMED: Predicted reversal validated on genuine new completed candle.
       - WARNING_EXPIRED: Early warning window expired or price pulled safely away -> resumes MONITORING.
       - DATA_UNAVAILABLE: Feed offline or stale; pauses transitions without wiping state.
@@ -408,6 +472,22 @@ def _process_supertrend_state_transition(
     is_confirmed_flip = st_result["is_confirmed_flip"]
     is_intrabar_cross = st_result["is_intrabar_cross"]
     is_approaching = st_result["is_approaching"]
+
+    # Percentage-based metrics
+    ref_p = float(st_result.get("reference_price") or curr_price)
+    if prox_pct is not None:
+        effective_prox_pct = float(prox_pct)
+    elif "proximity_percent" in st_result and st_result["proximity_percent"] is not None:
+        effective_prox_pct = float(st_result["proximity_percent"])
+    elif prox_pts is not None and prox_pts > 0:
+        effective_prox_pct = round((prox_pts / max(0.01, ref_p)) * 100.0, 4)
+    else:
+        effective_prox_pct = 0.50
+
+    dist_pct = float(st_result.get("distance_percent") if st_result.get("distance_percent") is not None else ((dist_pts / max(0.01, ref_p)) * 100.0))
+    permitted_dist_pts = float(st_result.get("permitted_distance_points") or (ref_p * (effective_prox_pct / 100.0)))
+    upper_b = float(st_result.get("upper_boundary") or (ref_p * (1.0 + effective_prox_pct / 100.0)))
+    lower_b = float(st_result.get("lower_boundary") or (ref_p * (1.0 - effective_prox_pct / 100.0)))
 
     # Candle timestamp extraction: NEVER substitute current system time
     candle_ts = st_result.get("candle_timestamp")
@@ -593,8 +673,9 @@ def _process_supertrend_state_transition(
     if is_new_candle:
         state["last_processed_candle_ts"] = candle_ts
 
-    # 2. Early Warning Confluence Gate: Proximity + Model Predictive Support + Adverse Momentum + Regime
-    in_proximity = bool(dist_pts <= prox_pts or is_intrabar_cross or is_approaching)
+    # 2. Early Warning Confluence Gate: Percentage Distance + Model Predictive Support + Adverse Momentum + Regime
+    is_within_pct = bool(st_result.get("is_within_pct", dist_pct <= effective_prox_pct or dist_pts <= prox_pts or is_intrabar_cross))
+    in_proximity = bool(dist_pct <= effective_prox_pct or dist_pts <= prox_pts or is_intrabar_cross or is_approaching or is_within_pct)
     has_predictive_support = bool(
         (predicted_prob >= active_threshold or is_pred_early_warning)
         and not uncertainty_flag
@@ -609,18 +690,18 @@ def _process_supertrend_state_transition(
         if target_dir == "SELL":
             # Reversal BUY -> SELL requires downward pressure or intrabar touch
             candle_bullish = (c_close - c_open) > 0.05
-            has_adverse_pressure = (not candle_bullish) or is_intrabar_cross or (dist_pts <= 0.25 * prox_pts)
+            has_adverse_pressure = (not candle_bullish) or is_intrabar_cross or (dist_pct <= 0.25 * effective_prox_pct) or (dist_pts <= 0.25 * prox_pts)
         elif target_dir == "BUY":
             # Reversal SELL -> BUY requires upward pressure or intrabar touch
             candle_bearish = (c_open - c_close) > 0.05
-            has_adverse_pressure = (not candle_bearish) or is_intrabar_cross or (dist_pts <= 0.25 * prox_pts)
+            has_adverse_pressure = (not candle_bearish) or is_intrabar_cross or (dist_pct <= 0.25 * effective_prox_pct) or (dist_pts <= 0.25 * prox_pts)
 
     # Market Regime Filter: in strong trending regimes, require extra confirmation or intrabar touch
     regime_cleared = True
     if market_regime == "BULLISH_TRENDING" and prev_confirmed_dir == "BUY":
-        regime_cleared = bool(predicted_prob >= (active_threshold + 0.04) or is_intrabar_cross or dist_pts <= 0.25 * prox_pts)
+        regime_cleared = bool(predicted_prob >= (active_threshold + 0.04) or is_intrabar_cross or dist_pct <= 0.25 * effective_prox_pct or dist_pts <= 0.25 * prox_pts)
     elif market_regime == "BEARISH_TRENDING" and prev_confirmed_dir == "SELL":
-        regime_cleared = bool(predicted_prob >= (active_threshold + 0.04) or is_intrabar_cross or dist_pts <= 0.25 * prox_pts)
+        regime_cleared = bool(predicted_prob >= (active_threshold + 0.04) or is_intrabar_cross or dist_pct <= 0.25 * effective_prox_pct or dist_pts <= 0.25 * prox_pts)
 
     # Anti-Flapping Candle Cooldown: suppress duplicate warnings on the exact same candle
     same_candle_suppressed = bool(
@@ -652,7 +733,7 @@ def _process_supertrend_state_transition(
                 state["last_dispatched_event_id"] = event_id
                 state["early_warning_sent"] = True
 
-                print(f"[SuperTrend] {condition_key} ({symbol}): Early Warning Triggered! Distance: {dist_pts:.2f} <= {prox_pts:.2f} pts to {target_dir}. Model ({model_type}): {predicted_prob * 100:.1f}%, Regime: {market_regime}")
+                print(f"[SuperTrend] {condition_key} ({symbol}): Early Warning Triggered! Distance: {dist_pct:.2f}% ({dist_pts:.2f} pts) <= {effective_prox_pct:.2f}% to {target_dir}. Model ({model_type}): {predicted_prob * 100:.1f}%, Regime: {market_regime}")
                 notification_manager.emit_supertrend_approaching(
                     alert=alert,
                     symbol=symbol,
@@ -660,6 +741,8 @@ def _process_supertrend_state_transition(
                     supertrend_price=confirmed_st_p,
                     distance_points=dist_pts,
                     proximity_threshold=prox_pts,
+                    distance_percent=dist_pct,
+                    proximity_percent=effective_prox_pct,
                     current_direction=prev_confirmed_dir,
                     db=db,
                     user_id=user_id,
@@ -678,6 +761,9 @@ def _process_supertrend_state_transition(
                     "symbol": symbol,
                     "type": "EARLY_WARNING",
                     "distance": dist_pts,
+                    "distance_percent": dist_pct,
+                    "proximity_percent": effective_prox_pct,
+                    "permitted_distance_points": permitted_dist_pts,
                     "target_direction": target_dir,
                     "model_probability": predicted_prob,
                     "model_type": model_type,
@@ -688,8 +774,14 @@ def _process_supertrend_state_transition(
 
     # 3. Early Warning Expiration / Invalidation
     if state["state"] in (StateStr("EARLY_WARNING_SENT"), "EARLY_WARNING") or state.get("early_warning_sent"):
-        # Case A: Price pulls safely away
-        if dist_pts > (prox_pts * 1.5):
+        # Case A: Price pulls safely away (exceeds 1.5x permitted prediction distance)
+        is_pulled_away = False
+        if prox_pct is not None or ("proximity_percent" in st_result and st_result["proximity_percent"] is not None):
+            is_pulled_away = bool(dist_pct > (effective_prox_pct * 1.5))
+        else:
+            is_pulled_away = bool(dist_pts > (prox_pts * 1.5))
+
+        if is_pulled_away:
             state["state"] = StateStr("WARNING_EXPIRED")
             state["early_warning_sent"] = False
             state["warning_started_at"] = None
@@ -768,8 +860,9 @@ def _evaluate_supertrend_for_alert(alert: Alert, snap: Dict[str, Any], db: Sessi
 
     try:
         from app.services.feature_engine import analyze_supertrend_hit
-        prox_pts = float(getattr(alert, "supertrend_proximity_points", 1.0) or 1.0)
         settings = get_supertrend_settings(db, user_id=alert.user_id)
+        prox_pts = float(getattr(alert, "supertrend_proximity_points", None) or settings.get("proximity_points", 1.0) or 1.0)
+        prox_pct = float(getattr(alert, "supertrend_proximity_percent", None) or settings.get("proximity_percent", 0.50) or 0.50)
         period = int(settings.get("period", 10))
         multiplier = float(settings.get("multiplier", 3.0))
         buffer_pct = float(settings.get("band_buffer_pct", 0.0))
@@ -783,6 +876,7 @@ def _evaluate_supertrend_for_alert(alert: Alert, snap: Dict[str, Any], db: Sessi
             period=period,
             multiplier=multiplier,
             proximity_points=prox_pts,
+            proximity_percent=prox_pct,
             previous_direction=getattr(alert, "last_supertrend_direction", None),
             band_buffer_pct=buffer_pct,
             min_atr_distance_filter=atr_filter
@@ -803,7 +897,8 @@ def _evaluate_supertrend_for_alert(alert: Alert, snap: Dict[str, Any], db: Sessi
             now=now,
             is_market_open=is_market_open,
             data_status=data_status,
-            prox_pts=prox_pts
+            prox_pts=prox_pts,
+            prox_pct=prox_pct
         )
 
     except Exception as st_err:
@@ -813,7 +908,8 @@ def _evaluate_supertrend_for_alert(alert: Alert, snap: Dict[str, Any], db: Sessi
 def scan_default_watchlist_supertrend(
     db: Session,
     watchlist_symbols: Optional[List[str]] = None,
-    user_id: Optional[int] = None
+    user_id: Optional[int] = None,
+    preloaded_snapshots: Optional[Dict[str, Any]] = None
 ) -> List[Dict[str, Any]]:
     """
     SuperTrend watchlist scanner for selected stocks using the independent state machine:
@@ -832,6 +928,7 @@ def scan_default_watchlist_supertrend(
         return []
 
     prox_pts = float(settings.get("proximity_points", 1.0))
+    prox_pct = float(settings.get("proximity_percent", 0.50))
     period = int(settings.get("period", 10))
     multiplier = float(settings.get("multiplier", 3.0))
     buffer_pct = float(settings.get("band_buffer_pct", 0.0))
@@ -854,7 +951,11 @@ def scan_default_watchlist_supertrend(
             if alert_query.first():
                 continue
 
-            snap = get_latest_market_snapshot(clean_sym)
+            if preloaded_snapshots is not None and clean_sym in preloaded_snapshots:
+                snap = preloaded_snapshots[clean_sym]
+            else:
+                snap = get_latest_market_snapshot(clean_sym)
+
             if not snap or not snap.get("price"):
                 continue
 
@@ -883,6 +984,7 @@ def scan_default_watchlist_supertrend(
                 period=period,
                 multiplier=multiplier,
                 proximity_points=prox_pts,
+                proximity_percent=prox_pct,
                 previous_direction=prev_dir,
                 band_buffer_pct=buffer_pct,
                 min_atr_distance_filter=atr_filter
@@ -902,7 +1004,8 @@ def scan_default_watchlist_supertrend(
                 now=now,
                 is_market_open=is_market_open,
                 data_status=data_status,
-                prox_pts=prox_pts
+                prox_pts=prox_pts,
+                prox_pct=prox_pct
             )
             if res:
                 results.append(res)
@@ -915,31 +1018,73 @@ def scan_default_watchlist_supertrend(
 
 def evaluate_active_alerts(db: Session) -> List[Dict[str, Any]]:
     """
-    Continuous per-alert state machine.
+    Continuous per-alert state machine with concurrent market-data prefetching,
+    per-symbol isolation, and unified snapshot sharing across watchlist and active alerts.
     """
-    # Auto-scan watchlist stocks per active user
     from app.database.models import User
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from app.services.market_data import get_latest_market_snapshot
+    import app.services.scheduler as scheduler_mod
+
+    # 1. Determine all unique symbols needed across all user watchlists and active alerts
     users = db.query(User).all()
+    user_watchlist_map = {}
+    symbols_to_fetch = set()
+
     if users:
         for u in users:
-            scan_default_watchlist_supertrend(db, user_id=u.id)
+            s_set = get_supertrend_settings(db, user_id=u.id)
+            if s_set.get("enabled", True):
+                w_syms = [s.strip().upper() for s in s_set.get("selected_symbols", []) if s]
+                user_watchlist_map[u.id] = w_syms
+                symbols_to_fetch.update(w_syms)
     else:
-        scan_default_watchlist_supertrend(db, user_id=None)
+        s_set = get_supertrend_settings(db, user_id=None)
+        if s_set.get("enabled", True):
+            w_syms = [s.strip().upper() for s in s_set.get("selected_symbols", []) if s]
+            user_watchlist_map[None] = w_syms
+            symbols_to_fetch.update(w_syms)
 
     active_alerts = db.query(Alert).filter(Alert.status.in_(ACTIVE_STATES)).all()
+    for a in active_alerts:
+        if a.symbol:
+            symbols_to_fetch.add(a.symbol.strip().upper())
+
+    # 2. Fetch all unique snapshots concurrently with bounded concurrency (max_workers=4) and per-symbol isolation
+    snapshots: Dict[str, Any] = {}
+    symbol_timings = {}
+
+    def _fetch_one_symbol(s: str):
+        t_start = time.perf_counter()
+        try:
+            sn = get_latest_market_snapshot(s)
+            dur = (time.perf_counter() - t_start) * 1000.0
+            return s, (sn if sn and sn.get("price", 0) > 0 else None), dur, None
+        except Exception as ex:
+            dur = (time.perf_counter() - t_start) * 1000.0
+            return s, None, dur, str(ex)
+
+    if symbols_to_fetch:
+        workers = min(4, len(symbols_to_fetch))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_fetch_one_symbol, sym) for sym in symbols_to_fetch]
+            for f in as_completed(futures):
+                sym, snap, dur, err = f.result()
+                snapshots[sym] = snap
+                symbol_timings[sym] = {"duration_ms": round(dur, 2), "error": err}
+
+    if hasattr(scheduler_mod, "_LAST_PER_SYMBOL_STATS"):
+        scheduler_mod._LAST_PER_SYMBOL_STATS = symbol_timings
+
+    # 3. Auto-scan watchlist stocks per active user using the shared preloaded snapshots
+    if users:
+        for u in users:
+            scan_default_watchlist_supertrend(db, watchlist_symbols=user_watchlist_map.get(u.id), user_id=u.id, preloaded_snapshots=snapshots)
+    else:
+        scan_default_watchlist_supertrend(db, watchlist_symbols=user_watchlist_map.get(None), user_id=None, preloaded_snapshots=snapshots)
+
     if not active_alerts:
         return []
-
-    symbols = list({a.symbol for a in active_alerts})
-    snapshots: Dict[str, Any] = {}
-
-    for sym in symbols:
-        try:
-            snap = get_latest_market_snapshot(sym)
-            snapshots[sym] = snap if snap and snap.get("price", 0) > 0 else None
-        except Exception as exc:
-            print(f"[AlertEngine] Error fetching snapshot for {sym}: {exc}")
-            snapshots[sym] = None
 
     now = datetime.utcnow()
     evaluated_results: List[Dict[str, Any]] = []

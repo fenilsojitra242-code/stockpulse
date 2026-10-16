@@ -15,14 +15,17 @@ IST = ZoneInfo("Asia/Kolkata")
 # In-memory cache: (clean_sym, time_range) -> {"data": dict, "timestamp": float}
 _RANGE_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _FAST_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
+_SNAPSHOT_FEATURES_CACHE: Dict[Tuple, Dict[str, float]] = {}
+_NEGATIVE_LOOKUP_CACHE: Dict[str, float] = {}
 
 CACHE_TTL_INTRADAY = 5      # seconds during open market (frequent fresh updates)
-CACHE_TTL_HISTORICAL = 120  # seconds for 5D, 1M, etc.
-CACHE_TTL_CLOSED = 600      # 10 minutes when market is closed (data doesn't change!)
+CACHE_TTL_HISTORICAL = 180  # 3 minutes for 5D, 1M, etc.
+CACHE_TTL_CLOSED = 1800     # 30 minutes when market is closed (data doesn't change!)
 FAST_INFO_CACHE_TTL = 7200  # 2 hours for static stats (market cap, 52w high/low)
 
 # In-flight request deduplication to prevent redundant concurrent fetches
 _IN_FLIGHT_LOCK = threading.Lock()
+
 _IN_FLIGHT_EVENTS: Dict[Tuple[str, str], threading.Event] = {}
 
 # Known company metadata for Indian & global stocks
@@ -271,6 +274,44 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
     }
     cfg = range_config[range_key]
     server_time = datetime.now(IST)
+    if clean_sym in _NEGATIVE_LOOKUP_CACHE and (now_ts - _NEGATIVE_LOOKUP_CACHE[clean_sym] < 120):
+        meta = STOCK_METADATA.get(clean_sym, {})
+        display_name = meta.get("name", f"{clean_sym} Equity")
+        return {
+            "status": "DATA_UNAVAILABLE",
+            "data_status": "DATA_UNAVAILABLE",
+            "data_interval": cfg["interval"],
+            "data_age_seconds": None,
+            "latest_market_timestamp": None,
+            "data_received_at": server_time.isoformat(),
+            "provider": "yfinance",
+            "symbol": clean_sym,
+            "full_symbol": f"{clean_sym}.NS",
+            "name": display_name,
+            "currency_symbol": "₹",
+            "exchange": "NSE",
+            "price": 0.0,
+            "previous_close": 0.0,
+            "price_change": 0.0,
+            "change_pct": 0.0,
+            "day_high": 0.0,
+            "day_low": 0.0,
+            "open": 0.0,
+            "volume": "N/A",
+            "raw_volume": 0,
+            "fifty_two_week_high": None,
+            "fifty_two_week_low": None,
+            "market_cap": "N/A",
+            "avg_volume": "N/A",
+            "trading_status": "Data Unavailable",
+            "market_status": market_status_val,
+            "last_updated": server_time.strftime("%I:%M:%S %p"),
+            "market_last_traded": "N/A",
+            "time_range": range_key,
+            "candles": [],
+            "chart_points": [],
+            "supertrend": None
+        }
 
     try:
         # Determine candidate tickers to fetch (deduplicated):
@@ -318,6 +359,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         norm_sym = best_chosen_sym
 
         if df.empty or len(df) < 1:
+            _NEGATIVE_LOOKUP_CACHE[clean_sym] = now_ts
             print(f"[MarketData] Symbol: {clean_sym} | Provider empty, no market data available.")
             meta = STOCK_METADATA.get(clean_sym, {})
             currency_symbol = "₹" if (".NS" in norm_sym or ".BO" in norm_sym) else "$"
@@ -649,18 +691,27 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                 _IN_FLIGHT_EVENTS.pop(cache_id, None)
 
 
+_WARMER_STARTED = False
+
 def warmup_popular_stocks():
-    """Asynchronously pre-warms cache for popular symbols in a background thread."""
+    """Asynchronously pre-warms cache for popular symbols in a background thread pool."""
+    global _WARMER_STARTED
+    if _WARMER_STARTED:
+        return
+    _WARMER_STARTED = True
+
     def _warmup_worker():
-        time.sleep(1.2)  # Wait for uvicorn to finish startup
-        popular = ["TCS", "INFY", "RELIANCE", "HDFCBANK", "TATAMOTORS", "SBIN", "ICICIBANK"]
-        for sym in popular:
-            try:
-                get_stock_visualization_data(sym, "1D")
-            except Exception:
-                pass
+        time.sleep(2.5)
+        from concurrent.futures import ThreadPoolExecutor
+        popular = ["TCS", "INFY", "RELIANCE", "HDFCBANK", "SBIN", "ICICIBANK"]
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            for sym in popular:
+                if (sym, "1D") not in _RANGE_CACHE:
+                    executor.submit(get_stock_visualization_data, sym, "1D")
+
     t = threading.Thread(target=_warmup_worker, daemon=True, name="StockPulseCacheWarmer")
     t.start()
+
 
 
 def get_stock_data_status(symbol: str) -> Dict[str, Any]:
@@ -792,15 +843,30 @@ def get_latest_market_snapshot(symbol: str) -> Dict[str, Any]:
     data = get_stock_visualization_data(symbol, time_range="1D")
     candles = data.get("candles", [])
     features = {}
-    if candles and len(candles) >= 5 and compute_market_features is not None:
+    
+    clean_sym_upper = symbol.strip().upper()
+    feat_key = (
+        clean_sym_upper,
+        str(data.get("latest_market_timestamp")),
+        len(candles),
+        round(float(data.get("price", 0.0)), 2)
+    )
+
+    if feat_key in _SNAPSHOT_FEATURES_CACHE:
+        features = _SNAPSHOT_FEATURES_CACHE[feat_key].copy()
+    elif candles and len(candles) >= 5 and compute_market_features is not None:
         try:
             df = pd.DataFrame(candles)
             features_df = compute_market_features(df)
             if not features_df.empty:
                 last_row = features_df.iloc[-1].to_dict()
                 features = {k: float(v) for k, v in last_row.items() if isinstance(v, (int, float, np.floating, np.integer)) and not np.isnan(v)}
+                if len(_SNAPSHOT_FEATURES_CACHE) > 256:
+                    _SNAPSHOT_FEATURES_CACHE.pop(next(iter(_SNAPSHOT_FEATURES_CACHE)))
+                _SNAPSHOT_FEATURES_CACHE[feat_key] = features.copy()
         except Exception as fe_err:
             print(f"[MarketData] Error computing features for {symbol}: {fe_err}")
+
 
     return {
         "symbol": data.get("symbol", symbol),

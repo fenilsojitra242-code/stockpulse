@@ -573,6 +573,8 @@
 
     const stEnableEl = document.getElementById('cfg-st-enable');
     const stEnable = stEnableEl ? stEnableEl.checked : true;
+    const stProxPctEl = document.getElementById('cfg-st-proximity-percent');
+    const stProxPct = stProxPctEl ? (parseFloat(stProxPctEl.value) || 0.50) : 0.50;
     const stProxEl = document.getElementById('cfg-st-proximity');
     const stProx = stProxEl ? (parseFloat(stProxEl.value) || 1.0) : 1.0;
 
@@ -586,6 +588,7 @@
       channels: ['dashboard', 'popup'],
       monitoring_interval: 1,
       enable_supertrend: stEnable,
+      supertrend_proximity_percent: stProxPct,
       supertrend_proximity_points: stProx
     };
 
@@ -910,14 +913,14 @@
         const stDir = alert.supertrend_direction || alert.last_supertrend_direction || 'BUY';
         const isStBuy = stDir === 'BUY';
         const isApp = Boolean(alert.supertrend_is_approaching);
-        const gapPts = alert.supertrend_gap_points != null ? `${alert.supertrend_gap_points} pts` : '';
-        const proxPts = alert.supertrend_proximity_points != null ? alert.supertrend_proximity_points : 1.0;
+        const proxPct = alert.supertrend_proximity_percent != null ? Number(alert.supertrend_proximity_percent).toFixed(2) : '0.50';
+        const gapPct = alert.supertrend_gap_percent != null ? `${Number(alert.supertrend_gap_percent).toFixed(2)}%` : (alert.supertrend_gap_points != null ? `${alert.supertrend_gap_points} pts` : '');
         const badgeCls = isApp ? 'approaching' : (isStBuy ? 'buy' : 'sell');
         const badgeIcon = isApp ? 'fa-bolt' : (isStBuy ? 'fa-arrow-trend-up' : 'fa-arrow-trend-down');
         const badgeLabel = isApp
-          ? `⚡ ST Within ${gapPts || (proxPts + ' pts')} (Early ≤ ${proxPts} pts)`
-          : `ST: ${stP || stDir} (Early ≤ ${proxPts} pts)`;
-        stBadge = `<span class="supertrend-badge-pill ${badgeCls}" title="SuperTrend: ${stP || ''} (${stDir})"><i class="fa-solid ${badgeIcon}"></i> ${badgeLabel}</span>`;
+          ? `⚡ ST Within ${gapPct || (proxPct + '%')} (Early ≤ ${proxPct}%)`
+          : `ST: ${stP || stDir} (Early ≤ ${proxPct}%)`;
+        stBadge = `<span class="supertrend-badge-pill ${badgeCls}" title="SuperTrend: ${stP || ''} (${stDir}) — Prediction distance: ≤ ${proxPct}%"><i class="fa-solid ${badgeIcon}"></i> ${badgeLabel}</span>`;
       }
 
       card.innerHTML = `
@@ -1225,6 +1228,8 @@
         const toggleText = document.getElementById('cfg-st-toggle-text');
         const statusBadge = document.getElementById('cfg-st-status-badge');
         const proxInput = document.getElementById('cfg-st-proximity');
+        const proxPctInput = document.getElementById('cfg-st-proximity-percent');
+        const pctDisplay = document.getElementById('st-selected-pct-display');
 
         if (toggle && data.enabled !== undefined) {
           toggle.checked = Boolean(data.enabled);
@@ -1235,17 +1240,21 @@
           }
         }
 
+        const activePct = (data.proximity_percent != null) ? parseFloat(data.proximity_percent) : 0.50;
+        if (proxPctInput) proxPctInput.value = activePct;
+        if (pctDisplay) pctDisplay.textContent = `${activePct.toFixed(2)}%`;
         if (proxInput && data.proximity_points) {
           proxInput.value = data.proximity_points;
-          const chips = document.querySelectorAll('.st-preset-chip');
-          chips.forEach(c => {
-            if (parseFloat(c.getAttribute('data-points')) === parseFloat(data.proximity_points)) {
-              c.classList.add('active');
-            } else {
-              c.classList.remove('active');
-            }
-          });
         }
+
+        const chips = document.querySelectorAll('#st-percentage-options .st-preset-chip');
+        chips.forEach(c => {
+          if (parseFloat(c.getAttribute('data-percent')) === activePct) {
+            c.classList.add('active');
+          } else {
+            c.classList.remove('active');
+          }
+        });
       }
     } catch (e) {
       console.warn('[Monitoring] Failed to load ST settings:', e);
@@ -1263,9 +1272,12 @@
     isSavingSTSettings = true;
     try {
       const toggle = document.getElementById('cfg-st-enable');
+      const proxPctInput = document.getElementById('cfg-st-proximity-percent');
       const proxInput = document.getElementById('cfg-st-proximity');
+      const selectedPct = proxPctInput ? (parseFloat(proxPctInput.value) || 0.50) : 0.50;
       const payload = {
         enabled: toggle ? toggle.checked : true,
+        proximity_percent: selectedPct,
         proximity_points: proxInput ? (parseFloat(proxInput.value) || 1.0) : 1.0,
         selected_symbols: stSelectedSymbols
       };
@@ -1382,7 +1394,9 @@
   }
 
   function setupSuperTrendSection() {
-    const chips = document.querySelectorAll('.st-preset-chip');
+    const chips = document.querySelectorAll('#st-percentage-options .st-preset-chip');
+    const proxPctInput = document.getElementById('cfg-st-proximity-percent');
+    const pctDisplay = document.getElementById('st-selected-pct-display');
     const proxInput = document.getElementById('cfg-st-proximity');
     const toggle = document.getElementById('cfg-st-enable');
     const toggleText = document.getElementById('cfg-st-toggle-text');
@@ -1394,29 +1408,17 @@
     const btnSelectPopular = document.getElementById('btn-st-select-popular');
     const btnClearAll = document.getElementById('btn-st-clear-all');
 
-    if (chips && proxInput) {
+    if (chips && chips.length > 0) {
       chips.forEach(chip => {
         chip.addEventListener('click', () => {
           chips.forEach(c => c.classList.remove('active'));
           chip.classList.add('active');
-          const val = chip.getAttribute('data-points');
-          proxInput.value = val;
+          const val = parseFloat(chip.getAttribute('data-percent')) || 0.50;
+          if (proxPctInput) proxPctInput.value = val;
+          if (pctDisplay) pctDisplay.textContent = `${val.toFixed(2)}%`;
           persistSuperTrendSettings();
           refreshSuperTrendPreview();
         });
-      });
-
-      proxInput.addEventListener('input', () => {
-        const curVal = parseFloat(proxInput.value);
-        chips.forEach(c => {
-          if (parseFloat(c.getAttribute('data-points')) === curVal) {
-            c.classList.add('active');
-          } else {
-            c.classList.remove('active');
-          }
-        });
-        persistSuperTrendSettings();
-        refreshSuperTrendPreview();
       });
     }
 
@@ -1560,11 +1562,11 @@
       return;
     }
 
-    const proxInput = document.getElementById('cfg-st-proximity');
-    const earlyPts = parseFloat(proxInput ? proxInput.value : 1.0) || 1.0;
+    const proxPctInput = document.getElementById('cfg-st-proximity-percent');
+    const earlyPct = parseFloat(proxPctInput ? proxPctInput.value : 0.50) || 0.50;
 
     try {
-      const res = await fetch(`/api/stocks/${encodeURIComponent(sym)}/supertrend?proximity=${earlyPts}`);
+      const res = await fetch(`/api/stocks/${encodeURIComponent(sym)}/supertrend?proximity_percent=${earlyPct}`);
       if (!res.ok) return;
       const data = await res.json();
       cachedSTPreview = data;
@@ -1573,6 +1575,15 @@
       const stP = Number(data.supertrend_price || 0);
       const isBuy = data.direction === 'BUY';
       const gap = Number(data.distance_points || Math.abs(liveP - stP)).toFixed(2);
+      const gapPct = (data.distance_percent != null) ? Number(data.distance_percent).toFixed(2) : ((Math.abs(liveP - stP) / Math.max(0.01, liveP)) * 100).toFixed(2);
+
+      // Update boundaries
+      const upperBoundary = Number(data.upper_boundary || (liveP * (1 + earlyPct / 100.0))).toFixed(2);
+      const lowerBoundary = Number(data.lower_boundary || (liveP * (1 - earlyPct / 100.0))).toFixed(2);
+      const boundaryUpperEl = document.getElementById('st-prev-boundary-upper');
+      const boundaryLowerEl = document.getElementById('st-prev-boundary-lower');
+      if (boundaryUpperEl) boundaryUpperEl.textContent = `₹${upperBoundary}`;
+      if (boundaryLowerEl) boundaryLowerEl.textContent = `₹${lowerBoundary}`;
 
       // Update badge on tag if rendered
       const tagBadge = document.getElementById(`st-tag-badge-${sym}`);
@@ -1599,12 +1610,8 @@
           : `<i class="fa-solid fa-arrow-trend-down"></i> ${sym}: SELL (BEARISH)`) + candleBadge;
       }
 
-      const earlyAlertPrice = isBuy
-        ? Math.max(0, stP + earlyPts)
-        : Math.max(0, stP - earlyPts);
-
       if (prevTriggerPrice) {
-        prevTriggerPrice.textContent = `₹${earlyAlertPrice.toFixed(2)}`;
+        prevTriggerPrice.textContent = `${earlyPct.toFixed(2)}% (Gap: ${gapPct}%)`;
       }
     } catch (e) {
       console.warn('[Monitoring] ST preview error:', e);

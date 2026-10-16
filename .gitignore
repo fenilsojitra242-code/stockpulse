@@ -15,7 +15,11 @@ __pycache__/
 # Local SQLite databases & data logs
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
 data/*.db
+data/*.db-shm
+data/*.db-wal
 data/stockpulse.db
 data/logs/
 

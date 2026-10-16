@@ -3,6 +3,41 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Tuple, List
 
+# High-performance in-memory calculation caches for deterministic indicator series
+_COMPUTE_ST_CACHE: Dict[Tuple, pd.DataFrame] = {}
+_ANALYZE_ST_CACHE: Dict[Tuple, Dict[str, Any]] = {}
+_REVERSAL_FEAT_CACHE: Dict[Tuple, Tuple] = {}
+_MARKET_FEATURES_CACHE: Dict[Tuple, pd.DataFrame] = {}
+
+
+def get_candle_sequence_key(candles_or_df: Any) -> Optional[Tuple]:
+    """Generates a low-overhead, deterministic fingerprint for a candle sequence."""
+    if candles_or_df is None:
+        return None
+    try:
+        if isinstance(candles_or_df, pd.DataFrame):
+            n = len(candles_or_df)
+            if n == 0:
+                return (0,)
+            idx_last = str(candles_or_df.index[-1]) if hasattr(candles_or_df, "index") else ""
+            c_last = float(candles_or_df['close'].iloc[-1]) if 'close' in candles_or_df else 0.0
+            c_first = float(candles_or_df['close'].iloc[0]) if 'close' in candles_or_df else 0.0
+            return (n, idx_last, round(c_last, 2), round(c_first, 2))
+        elif isinstance(candles_or_df, list):
+            n = len(candles_or_df)
+            if n == 0:
+                return (0,)
+            last = candles_or_df[-1]
+            first = candles_or_df[0]
+            t_last = str(last.get("full_time") or last.get("time") or "")
+            c_last = float(last.get("close") or last.get("price") or 0.0)
+            c_first = float(first.get("close") or first.get("price") or 0.0)
+            return (n, t_last, round(c_last, 2), round(c_first, 2))
+    except Exception:
+        return None
+    return None
+
+
 
 def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     """Calculate Relative Strength Index (RSI)."""
@@ -173,7 +208,13 @@ def compute_supertrend(
     if df.empty:
         return df
 
+    ckey = get_candle_sequence_key(df)
+    cache_key = (ckey, int(period), float(multiplier), float(band_buffer_pct)) if ckey is not None else None
+    if cache_key is not None and cache_key in _COMPUTE_ST_CACHE:
+        return _COMPUTE_ST_CACHE[cache_key].copy()
+
     data = df.copy()
+
     data.columns = [c.lower() for c in data.columns]
     if 'close' not in data.columns and 'price' in data.columns:
         data['close'] = data['price']
@@ -269,7 +310,14 @@ def compute_supertrend(
     data['supertrend_upper'] = [round(float(x), 2) for x in final_upper]
     data['supertrend_lower'] = [round(float(x), 2) for x in final_lower]
     data['atr'] = [round(float(x), 2) for x in atr]
+
+    if cache_key is not None:
+        if len(_COMPUTE_ST_CACHE) > 256:
+            _COMPUTE_ST_CACHE.pop(next(iter(_COMPUTE_ST_CACHE)))
+        _COMPUTE_ST_CACHE[cache_key] = data.copy()
+
     return data
+
 
 
 def calculate_reversal_risk_score(
@@ -432,7 +480,8 @@ def analyze_supertrend_hit(
     previous_direction: Optional[str] = None,
     period: int = 10,
     multiplier: float = 3.0,
-    proximity_points: float = 1.0,
+    proximity_points: Optional[float] = None,
+    proximity_percent: Optional[float] = None,
     band_buffer_pct: float = 0.0,
     min_atr_distance_filter: float = 0.0,
     candle_interval: str = "1m",
@@ -448,12 +497,26 @@ def analyze_supertrend_hit(
     - Computes confirmed Supertrend direction strictly using completed candles.
     - Uses live/developing prices strictly for provisional analysis and intrabar cross detection.
     - Reversal risk scoring based on proximity, momentum, and regime.
+    - Supports percentage-based prediction distance:
+      P_ref = current live price
+      Upper boundary = P_ref * (1 + p / 100)
+      Lower boundary = P_ref * (1 - p / 100)
     """
     clean_df = sanitize_candles(candles_or_df)
-    prox_limit = max(0.01, float(proximity_points))
+    ref_p = float(current_price or 100.0)
+
+    if proximity_percent is not None:
+        prox_pct = max(0.01, float(proximity_percent))
+        prox_limit = round(ref_p * (prox_pct / 100.0), 2)
+    elif proximity_points is not None:
+        prox_limit = max(0.01, float(proximity_points))
+        prox_pct = round((prox_limit / max(0.01, ref_p)) * 100.0, 4)
+    else:
+        prox_pct = 0.50
+        prox_limit = round(ref_p * (prox_pct / 100.0), 2)
 
     if clean_df.empty or len(clean_df) < 2:
-        p = float(current_price or 100.0)
+        p = ref_p
         return {
             "current_price": p,
             "supertrend_price": p,
@@ -461,28 +524,60 @@ def analyze_supertrend_hit(
             "previous_direction": previous_direction or "BUY",
             "target_direction": "SELL",
             "distance_points": 0.0,
+            "distance_percent": 0.0,
+            "proximity_percent": round(prox_pct, 2),
             "proximity_threshold": prox_limit,
+            "permitted_distance_points": prox_limit,
+            "upper_boundary": round(p * (1.0 + prox_pct / 100.0), 2),
+            "lower_boundary": round(p * (1.0 - prox_pct / 100.0), 2),
+            "reference_price": round(p, 2),
             "is_approaching": False,
             "is_prediction_ready": False,
             "is_flipped": False,
             "is_confirmed_flip": False,
             "is_intrabar_cross": False,
             "flip_signal": None,
-            "reversal_risk_score": 0.50,
+            "reversal_risk_score": 0.0,
             "atr": 1.0,
             "atr_normalized_distance": 0.0,
+            "penetration_atr_ratio": 0.0,
+            "provisional_direction": previous_direction or "BUY",
+            "provisional_supertrend_price": p,
             "candle_open": p,
             "candle_close": p,
             "candle_points": 0.0,
-            "candle_color": "GREEN",
+            "candle_color": "NEUTRAL",
             "candle_body_size": 0.0,
-            "is_candle_stable": True,
-            "candle_matches_target": True,
-            "candle_age_seconds": 60.0,
+            "is_candle_stable": False,
+            "candle_matches_target": False,
+            "candle_age_seconds": 0.0,
             "prev_candle_points": 0.0,
             "prev_candle_color": "GREEN",
+            "candle_timestamp": "",
+            "developing_candle_timestamp": "",
             "series": []
         }
+
+    ckey = get_candle_sequence_key(clean_df)
+    now_round = now.strftime("%Y-%m-%d %H:%M") if now else None
+    cache_key = (
+        ckey,
+        round(ref_p, 2),
+        previous_direction,
+        int(period),
+        float(multiplier),
+        round(prox_pct, 4),
+        round(prox_limit, 2),
+        float(band_buffer_pct),
+        float(min_atr_distance_filter),
+        candle_interval,
+        is_market_open,
+        data_status,
+        now_round
+    ) if ckey is not None else None
+
+    if cache_key is not None and cache_key in _ANALYZE_ST_CACHE:
+        return _ANALYZE_ST_CACHE[cache_key].copy()
 
     df = clean_df.copy()
     cp = float(current_price if current_price is not None else df.iloc[-1]['close'])
@@ -564,12 +659,21 @@ def analyze_supertrend_hit(
     is_flipped = is_confirmed_flip or is_intrabar_cross
     flip_signal = ("SELL" if confirmed_dir == "BUY" else "BUY") if is_intrabar_cross else (confirmed_dir if is_confirmed_flip else None)
 
-    # Early Warning: live price enters configured proximity zone
+    # Early Warning: live price enters configured percentage proximity zone
+    # Reference price convention: P_ref = cp
+    # Lower boundary = cp * (1 - prox_pct / 100), Upper boundary = cp * (1 + prox_pct / 100)
+    distance_percent = round((distance_points / max(0.01, cp)) * 100.0, 4)
+    upper_boundary = round(cp * (1.0 + prox_pct / 100.0), 2)
+    lower_boundary = round(cp * (1.0 - prox_pct / 100.0), 2)
+
     if data_status in ("STALE", "DATA_UNAVAILABLE", "ERROR"):
         is_approaching = False
         is_prediction_ready = False
     else:
-        is_approaching = bool(distance_points <= prox_limit and not is_confirmed_flip and confirmed_st_p > 0.01)
+        # BUY trend: reversal occurs if price drops to ST (downside distance <= permitted movement)
+        # SELL trend: reversal occurs if price rises to ST (upside distance <= permitted movement)
+        is_within_pct = bool(distance_percent <= prox_pct or distance_points <= prox_limit or is_intrabar_cross)
+        is_approaching = bool(is_within_pct and not is_confirmed_flip and confirmed_st_p > 0.01)
         if min_atr_distance_filter > 0 and is_approaching:
             is_approaching = bool(distance_points <= (min_atr_distance_filter * completed_atr))
         is_prediction_ready = is_approaching
@@ -615,21 +719,24 @@ def analyze_supertrend_hit(
         trend_duration_bars=trend_dur_bars
     )
 
+    # Vectorized conversion of series_points instead of slow iterrows()
+    t_vals = completed_st_df['full_time'].values if 'full_time' in completed_st_df.columns else (completed_st_df['time'].values if 'time' in completed_st_df.columns else completed_st_df.index.values)
+    raw_prices = completed_st_df['close'].values if 'close' in completed_st_df.columns else (completed_st_df['price'].values if 'price' in completed_st_df.columns else [cp] * len(completed_st_df))
+    raw_sts = completed_st_df['supertrend'].values
+    st_dirs = completed_st_df['supertrend_direction'].values
+    raw_sigs = completed_st_df['supertrend_signal'].values if 'supertrend_signal' in completed_st_df.columns else [None] * len(completed_st_df)
+
     series_points = []
-    for idx, row in completed_st_df.iterrows():
-        t_val = row.get('time') or row.get('full_time') or str(idx)
-        raw_price = row.get('close', row.get('price', 0.0))
-        p_val = round(float(raw_price), 2) if pd.notna(raw_price) else round(cp, 2)
-        raw_st = row.get('supertrend')
-        st_val = round(float(raw_st), 2) if pd.notna(raw_st) else round(cp, 2)
-        raw_sig = row.get('supertrend_signal')
-        sig_clean = str(raw_sig) if (pd.notna(raw_sig) and str(raw_sig) in ("BUY", "SELL")) else None
+    for t_val, raw_price, raw_st, st_dir, raw_sig in zip(t_vals, raw_prices, raw_sts, st_dirs, raw_sigs):
+        p_val = round(float(raw_price), 2) if (raw_price is not None and not np.isnan(raw_price)) else round(cp, 2)
+        st_val = round(float(raw_st), 2) if (raw_st is not None and not np.isnan(raw_st)) else round(cp, 2)
+        sig_clean = str(raw_sig) if (raw_sig is not None and str(raw_sig) in ("BUY", "SELL")) else None
 
         series_points.append({
             "time": str(t_val),
             "price": p_val,
             "supertrend": max(0.01, st_val),
-            "direction": "BUY" if row['supertrend_direction'] == 1 else "SELL",
+            "direction": "BUY" if st_dir == 1 else "SELL",
             "signal": sig_clean
         })
 
@@ -645,14 +752,20 @@ def analyze_supertrend_hit(
 
     dev_ts_str = str(developing_row.get('full_time') or developing_row.get('time') or '') if developing_row is not None else completed_ts_str
 
-    return {
+    res = {
         "current_price": round(cp, 2),
         "supertrend_price": round(confirmed_st_p, 2),
         "direction": confirmed_dir,
         "previous_direction": resolved_prev_dir or confirmed_dir,
         "target_direction": target_dir,
         "distance_points": distance_points,
+        "distance_percent": distance_percent,
+        "proximity_percent": round(prox_pct, 2),
         "proximity_threshold": prox_limit,
+        "permitted_distance_points": prox_limit,
+        "upper_boundary": upper_boundary,
+        "lower_boundary": lower_boundary,
+        "reference_price": round(cp, 2),
         "is_approaching": is_approaching,
         "is_prediction_ready": is_approaching,
         "is_flipped": is_flipped,
@@ -680,6 +793,14 @@ def analyze_supertrend_hit(
         "series": series_points
     }
 
+    if cache_key is not None:
+        if len(_ANALYZE_ST_CACHE) > 256:
+            _ANALYZE_ST_CACHE.pop(next(iter(_ANALYZE_ST_CACHE)))
+        _ANALYZE_ST_CACHE[cache_key] = res.copy()
+
+    return res
+
+
 
 
 def compute_market_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -690,6 +811,10 @@ def compute_market_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     if df.empty or len(df) < 5:
         return df
+
+    ckey = get_candle_sequence_key(df)
+    if ckey is not None and ckey in _MARKET_FEATURES_CACHE:
+        return _MARKET_FEATURES_CACHE[ckey].copy()
 
     data = df.copy()
     # Normalize column names to lowercase
@@ -784,6 +909,11 @@ def compute_market_features(df: pd.DataFrame) -> pd.DataFrame:
     # Clean any remaining NaNs or Infs
     data = data.replace([np.inf, -np.inf], 0.0).fillna(0.0)
     
+    if ckey is not None:
+        if len(_MARKET_FEATURES_CACHE) > 256:
+            _MARKET_FEATURES_CACHE.pop(next(iter(_MARKET_FEATURES_CACHE)))
+        _MARKET_FEATURES_CACHE[ckey] = data.copy()
+
     return data
 
 
@@ -1052,6 +1182,20 @@ def extract_supertrend_reversal_feature_vector(
     Returns:
         (feature_vector: np.ndarray, feature_dict: Dict, has_sufficient_history: bool)
     """
+    ckey = get_candle_sequence_key(candles_or_df)
+    cache_key = (
+        ckey,
+        int(horizon_minutes),
+        round(current_price, 2) if current_price is not None else None,
+        int(period),
+        float(multiplier),
+        bool(exclude_incomplete_candle)
+    ) if ckey is not None else None
+
+    if cache_key is not None and cache_key in _REVERSAL_FEAT_CACHE:
+        cached_vec, cached_d, cached_suff = _REVERSAL_FEAT_CACHE[cache_key]
+        return cached_vec.copy(), cached_d.copy(), cached_suff
+
     clean_df = sanitize_candles(candles_or_df)
     has_sufficient = bool(len(clean_df) >= 15)
 
@@ -1088,5 +1232,11 @@ def extract_supertrend_reversal_feature_vector(
         feature_dict[f] = val
         vec.append(val)
 
-    return np.array(vec, dtype=np.float32), feature_dict, has_sufficient
+    res_vec = np.array(vec, dtype=np.float32)
+    if cache_key is not None:
+        if len(_REVERSAL_FEAT_CACHE) > 256:
+            _REVERSAL_FEAT_CACHE.pop(next(iter(_REVERSAL_FEAT_CACHE)))
+        _REVERSAL_FEAT_CACHE[cache_key] = (res_vec.copy(), feature_dict.copy(), has_sufficient)
+
+    return res_vec, feature_dict, has_sufficient
 

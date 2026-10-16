@@ -17,7 +17,8 @@ class AlertCreate(BaseModel):
     recipient_email: Optional[str] = Field(None, description="Unused / Deprecated")
     cooldown_minutes: Optional[int] = Field(10, ge=1, le=120, description="Cooldown minutes between triggers")
     enable_supertrend: Optional[bool] = Field(True, description="Enable SuperTrend Hit Notifier")
-    supertrend_proximity_points: Optional[float] = Field(1.0, ge=0.05, le=100.0, description="Proximity hit threshold in points")
+    supertrend_proximity_percent: Optional[float] = Field(0.50, description="Proximity hit threshold in percent (0.25, 0.50, 0.75, 1.00)")
+    supertrend_proximity_points: Optional[float] = Field(1.0, ge=0.05, le=100.0, description="Legacy proximity hit threshold in points")
 
     @field_validator("target_percent")
     @classmethod
@@ -49,6 +50,7 @@ class AlertUpdate(BaseModel):
     status: Optional[str] = None
     cooldown_minutes: Optional[int] = Field(None, ge=1, le=120)
     enable_supertrend: Optional[bool] = None
+    supertrend_proximity_percent: Optional[float] = None
     supertrend_proximity_points: Optional[float] = None
 
 
@@ -81,11 +83,13 @@ class AlertResponse(BaseModel):
 
     # SuperTrend Notifier status
     enable_supertrend: Optional[bool] = True
+    supertrend_proximity_percent: Optional[float] = 0.50
     supertrend_proximity_points: Optional[float] = 1.0
     last_supertrend_direction: Optional[str] = None
     last_supertrend_price: Optional[float] = None
     supertrend_price: Optional[float] = None
     supertrend_direction: Optional[str] = None
+    supertrend_gap_percent: Optional[float] = None
     supertrend_gap_points: Optional[float] = None
     supertrend_is_approaching: Optional[bool] = None
     
