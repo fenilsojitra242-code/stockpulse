@@ -231,6 +231,29 @@
           });
           if (res.ok) {
             btnTest.innerHTML = `<i class="fa-solid fa-check"></i> ${sig} Sent!`;
+            const evType = sig === 'APPROACHING' ? 'SUPERTREND_APPROACHING' : (sig === 'BUY' ? 'SUPERTREND_BUY' : 'SUPERTREND_SELL');
+            const liveP = (currentQuote && currentQuote.price) ? currentQuote.price : 4120.0;
+            const notifItem = {
+              id: Date.now(),
+              symbol: currentSymbol,
+              event_type: evType,
+              priority: sig === 'APPROACHING' ? 'WARNING' : 'SUCCESS',
+              title: `SuperTrend ${sig}: ${currentSymbol}`,
+              message: `SuperIndicator test signal triggered for ${currentSymbol} (${sig}).`,
+              short_summary: `SuperIndicator test signal ${sig} for ${currentSymbol}.`,
+              extra_data: JSON.stringify({
+                symbol: currentSymbol,
+                current_price: liveP,
+                supertrend_price: sig === 'BUY' ? liveP - 1.2 : liveP + 1.2,
+                direction: sig === 'BUY' ? 'UP' : 'DOWN'
+              })
+            };
+            if (window.StockPulse && StockPulse.showCustomizedPopup) {
+              StockPulse.showCustomizedPopup(notifItem);
+            }
+            if (window.StockPulse && StockPulse.playNotificationSound) {
+              StockPulse.playNotificationSound(evType);
+            }
           } else {
             btnTest.innerHTML = `<i class="fa-solid fa-xmark"></i> Failed`;
           }

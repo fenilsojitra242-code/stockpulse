@@ -133,6 +133,9 @@
           </div>
 
           <div style="display: flex; align-items: center; gap: 8px;">
+            <button type="button" class="btn-preview-popup" title="Preview HUD Popup Card" style="background: rgba(37,99,235,0.08); border: 1px solid rgba(37,99,235,0.2); font-size: 11.5px; font-weight: 600; color: #2563eb; cursor: pointer; padding: 3px 8px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;">
+              <i class="fa-solid fa-bell"></i> Popup
+            </button>
             ${!notif.is_read ? `<button type="button" class="btn-mark-single-read" data-id="${notif.id}" style="background: none; border: none; font-size: 11.5px; color: #2563eb; cursor: pointer; text-decoration: underline;">Mark read</button>` : ''}
             <button type="button" class="btn-delete-single" data-id="${notif.id}" style="background: none; border: none; font-size: 12px; color: #94a3b8; cursor: pointer; padding: 2px 5px; border-radius: 4px;" title="Clear notification">
               <i class="fa-regular fa-trash-can"></i>
@@ -145,6 +148,16 @@
       `;
 
       item.addEventListener('click', (e) => {
+        if (e.target.closest('.btn-preview-popup')) {
+          e.stopPropagation();
+          if (window.StockPulse && StockPulse.showCustomizedPopup) {
+            StockPulse.showCustomizedPopup(notif);
+          }
+          if (window.StockPulse && StockPulse.playNotificationSound) {
+            StockPulse.playNotificationSound(notif.event_type);
+          }
+          return;
+        }
         if (e.target.closest('.btn-delete-single')) {
           e.stopPropagation();
           deleteSingleNotification(notif.id);
@@ -236,9 +249,29 @@
       }
       const res = await fetch('/api/notifications/test-system', { method: 'POST' });
       if (res.ok) {
-        // Play local test chime & popups
-        if (window.StockPulse && StockPulse.testNotificationSound) {
-          StockPulse.testNotificationSound();
+        const resData = await res.json().catch(() => ({}));
+        let notifId = Date.now();
+        if (resData && Array.isArray(resData.result) && resData.result[0] && resData.result[0].notification_id) {
+          notifId = resData.result[0].notification_id;
+        }
+        const notifPayload = {
+          id: notifId,
+          symbol: 'SYSTEM',
+          event_type: 'SYSTEM_STATUS',
+          priority: 'INFO',
+          title: 'System Active: StockPulse Health Check',
+          message: 'StockPulse system monitoring engine is fully operational. Real-time telemetry, predictive barrier evaluation, and multi-channel notifications are running.',
+          short_summary: 'StockPulse system monitoring and notification engine is active and operational.',
+          created_at: new Date().toISOString()
+        };
+        if (window.StockPulse && StockPulse.showCustomizedPopup) {
+          StockPulse.showCustomizedPopup(notifPayload);
+        }
+        if (window.StockPulse && StockPulse.playNotificationSound) {
+          StockPulse.playNotificationSound('SYSTEM_STATUS');
+        }
+        if (window.StockPulse && StockPulse.speakVoiceAlert) {
+          StockPulse.speakVoiceAlert(notifPayload);
         }
         await loadNotifications();
       }

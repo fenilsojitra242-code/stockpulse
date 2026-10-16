@@ -3287,6 +3287,16 @@ body.dark-mode .hud-threshold-item {
   box-shadow: 0 20px 40px -10px rgba(37, 99, 235, 0.35), 0 0 20px rgba(37, 99, 235, 0.2);
 }
 
+.stockpulse-popup-card.system-status {
+  border-left-color: #0ea5e9;
+  box-shadow: 0 20px 40px -10px rgba(14, 165, 233, 0.35), 0 0 20px rgba(14, 165, 233, 0.2);
+}
+
+.popup-icon-badge.system-status {
+  background: #e0f2fe;
+  color: #0284c7;
+}
+
 /* Header */
 .popup-header {
   display: flex;
@@ -3588,6 +3598,10 @@ body.dark-mode .hud-threshold-item {
 
 .stockpulse-popup-card.supertrend-approaching .popup-progress-bar {
   background: #f59e0b;
+}
+
+.stockpulse-popup-card.system-status .popup-progress-bar {
+  background: #0ea5e9;
 }
 
 /* --- LIVE RUPEE PREVIEW STRIP --- */

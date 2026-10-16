@@ -1058,11 +1058,16 @@ window.StockPulse = (function () {
       const isSuperTrendApproaching = eventType === 'SUPERTREND_APPROACHING';
       const isSuperTrendFalse = eventType === 'SUPERTREND_FALSE';
       const isSuperTrendChanged = eventType === 'SUPERTREND_CHANGED';
+      const isSystem = eventType.includes('SYSTEM') || symbol === 'SYSTEM';
 
       let eventClass = 'monitoring-started';
       let iconHtml = '<i class="fa-solid fa-play"></i>';
       let badgeTitle = 'Prediction Active';
-      if (isSuperTrendBuy) {
+      if (isSystem) {
+        eventClass = 'system-status';
+        iconHtml = '<i class="fa-solid fa-server"></i>';
+        badgeTitle = notifData.title || 'System Notification';
+      } else if (isSuperTrendBuy) {
         eventClass = 'supertrend-buy';
         iconHtml = '<i class="fa-solid fa-arrow-trend-up"></i>';
         badgeTitle = 'SuperIndicator HIT: BUY (Prediction TRUE!)';
@@ -1124,7 +1129,9 @@ window.StockPulse = (function () {
       const trendIcon = isDown ? '<i class="fa-solid fa-arrow-trend-down" style="color: #ef4444;"></i>' : '<i class="fa-solid fa-arrow-trend-up" style="color: #22c55e;"></i>';
 
       let moveText = '';
-      if (isSuperTrendBuy) {
+      if (isSystem) {
+        moveText = 'SYSTEM ACTIVE';
+      } else if (isSuperTrendBuy) {
         moveText = 'HIT: BUY CONFIRMED';
       } else if (isSuperTrendSell) {
         moveText = 'HIT: SELL CONFIRMED';
@@ -1146,7 +1153,7 @@ window.StockPulse = (function () {
 
       // Real-time Progress Gauge calculation (for target alerts)
       let gaugeHtml = '';
-      if (targetPct && movement != null && !isSuperTrendBuy && !isSuperTrendSell && !isSuperTrendApproaching && !isSuperTrendFalse) {
+      if (targetPct && movement != null && !isSuperTrendBuy && !isSuperTrendSell && !isSuperTrendApproaching && !isSuperTrendFalse && !isSystem) {
         const progressPct = Math.min(100, Math.max(0, (Math.abs(movement) / Math.abs(targetPct)) * 100));
         let distText = '';
         if (targetPriceNum && currentPriceNum) {
@@ -1171,7 +1178,24 @@ window.StockPulse = (function () {
       }
 
       let metricsGridHtml = '';
-      if (isSuperTrendBuy || isSuperTrendSell || isSuperTrendApproaching || isSuperTrendFalse || isSuperTrendChanged) {
+      if (isSystem) {
+        metricsGridHtml = `
+          <div class="popup-metrics-grid">
+            <div class="popup-metric-item">
+              <span class="popup-metric-label">Telemetry</span>
+              <span class="popup-metric-value" style="color: #0284c7; font-weight: 700;">StockPulse Engine</span>
+            </div>
+            <div class="popup-metric-item">
+              <span class="popup-metric-label">Status</span>
+              <span class="popup-metric-value" style="color: #16a34a; font-weight: 700;">Operational</span>
+            </div>
+            <div class="popup-metric-item">
+              <span class="popup-metric-label">Channel</span>
+              <span class="popup-metric-value" style="color: #64748b;">In-App Popup</span>
+            </div>
+          </div>
+        `;
+      } else if (isSuperTrendBuy || isSuperTrendSell || isSuperTrendApproaching || isSuperTrendFalse || isSuperTrendChanged) {
         const stPriceNum = extra.supertrend_price != null ? Number(extra.supertrend_price) : null;
         const stPriceStr = stPriceNum ? `₹${stPriceNum.toFixed(2)}` : 'Line';
         const distPts = extra.distance_points != null ? Number(extra.distance_points).toFixed(2) : '0.00';
@@ -1243,21 +1267,32 @@ window.StockPulse = (function () {
           <button type="button" class="popup-close-btn" title="Dismiss">&times;</button>
         </div>
         <div class="popup-body">
-          <div class="popup-stock-row">
-            <div class="popup-symbol-badge">
-              ${trendIcon} ${escapeHtml(symbol)}
+          ${isSystem ? `
+            <div class="popup-stock-row">
+              <div class="popup-symbol-badge" style="background: rgba(14, 165, 233, 0.12); color: #0284c7; border-color: rgba(14, 165, 233, 0.3);">
+                <i class="fa-solid fa-shield-halved" style="color: #0284c7;"></i> SYSTEM TELEMETRY
+              </div>
+              <span class="popup-change-pill positive" style="background: rgba(16, 185, 129, 0.12); color: #16a34a; border-color: rgba(16, 185, 129, 0.3);">
+                <i class="fa-solid fa-circle-check"></i> OPERATIONAL
+              </span>
             </div>
-            <span class="popup-change-pill ${moveClass}">
-              ${arrowIcon}
-              ${moveText}
-            </span>
-          </div>
+          ` : `
+            <div class="popup-stock-row">
+              <div class="popup-symbol-badge">
+                ${trendIcon} ${escapeHtml(symbol)}
+              </div>
+              <span class="popup-change-pill ${moveClass}">
+                ${arrowIcon}
+                ${moveText}
+              </span>
+            </div>
+          `}
           ${metricsGridHtml}
           ${gaugeHtml}
           <p class="popup-message-text">${escapeHtml(notifData.short_summary || notifData.message || 'Alert threshold reached.')}</p>
         </div>
         <div class="popup-footer">
-          <a href="/live?symbol=${encodeURIComponent(symbol)}" class="popup-action-btn primary"><i class="fa-solid fa-chart-line"></i> View Chart</a>
+          <a href="/live?symbol=${encodeURIComponent(symbol === 'SYSTEM' ? 'TCS' : symbol)}" class="popup-action-btn primary"><i class="fa-solid fa-chart-line"></i> View Chart</a>
           <a href="/monitoring" class="popup-action-btn primary" style="background: rgba(255,255,255,0.08);"><i class="fa-solid fa-sliders"></i> Monitoring</a>
           <button type="button" class="popup-action-btn secondary btn-popup-dismiss">Dismiss</button>
         </div>
@@ -1307,7 +1342,7 @@ window.StockPulse = (function () {
 
   function parseServerDate(str) {
     if (!str) return 0;
-    let s = String(str).trim();
+    let s = String(str).trim().replace(' ', 'T');
     if (!s.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(s)) {
       s += 'Z';
     }
@@ -1326,11 +1361,11 @@ window.StockPulse = (function () {
       if (isFirstNotifCheck) {
         isFirstNotifCheck = false;
         const now = Date.now();
-        // On initial page load or navigation between pages, mark only OLD notifications (>45s) as known.
-        // Brand new notifications arriving within the last 45s will still alert the user!
+        // On initial page load or navigation between pages, mark only OLD notifications (>5m) as known.
+        // Fresh unread notifications arriving within the last 5 minutes will still alert the user!
         for (const n of notifs) {
           const createdAt = parseServerDate(n.created_at);
-          if (createdAt && (now - createdAt > 45000)) {
+          if (createdAt && (now - createdAt > 300000)) {
             markNotificationAsKnown(n.id);
           }
         }
