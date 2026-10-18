@@ -28,9 +28,9 @@
   let lastTouchDistance = null;
   let lastPinchMidX = 0;
 
-  function getEl(id) {
-    return document.getElementById(id);
-  }
+  // Active fetch abort controller and monotonic request sequence
+  let activeFetchController = null;
+  let activeFetchSeq = 0;
 
   function setLiveBufferingState() {
     const symEl = getEl('stock-symbol');
@@ -43,7 +43,9 @@
     const liveLabel = getEl('live-status-label');
     const updatedEl = getEl('last-updated-time');
     const changeIcon = getEl('price-change-icon');
+    const refreshingBadge = getEl('stock-refreshing-badge');
 
+    // Header & Price Skeletons
     if (symEl) symEl.innerHTML = '<span class="buffering-loader" style="width: 80px; height: 32px;"></span>';
     if (exchEl) exchEl.innerHTML = '<span class="buffering-loader" style="width: 44px; height: 18px;"></span>';
     if (nameEl) nameEl.innerHTML = '<span class="buffering-loader" style="width: 220px; height: 18px;"></span>';
@@ -54,81 +56,151 @@
     if (liveLabel) liveLabel.innerHTML = '<span class="buffering-loader" style="width: 50px; height: 14px;"></span>';
     if (updatedEl) updatedEl.innerHTML = '<span class="buffering-loader" style="width: 70px; height: 14px;"></span>';
     if (changeIcon) changeIcon.style.display = 'none';
+    if (refreshingBadge) refreshingBadge.style.display = 'none';
+
+    // SuperTrend Strip Skeletons
+    const stPill = getEl('live-st-pill');
+    const stPrice = getEl('live-st-price');
+    const stGap = getEl('live-st-gap');
+    const stHitPill = getEl('live-st-hit-pill');
+    if (stPill) stPill.innerHTML = '<span class="buffering-loader" style="width: 110px; height: 20px;"></span>';
+    if (stPrice) stPrice.innerHTML = '<span class="buffering-loader" style="width: 60px; height: 15px;"></span>';
+    if (stGap) stGap.innerHTML = '<span class="buffering-loader" style="width: 50px; height: 15px;"></span>';
+    if (stHitPill) stHitPill.style.display = 'none';
+
+    // OHLC HUD Skeletons
+    ['live-hud-time', 'live-hud-open', 'live-hud-high', 'live-hud-low', 'live-hud-close', 'live-hud-change', 'live-hud-vol', 'live-hud-st'].forEach(id => {
+      const el = getEl(id);
+      if (el) el.innerHTML = '<span class="buffering-loader" style="width: 44px; height: 13px;"></span>';
+    });
+
+    // Chart Skeleton State
+    const skelChart = getEl('skeleton-chart-wrapper');
+    const canvasWrap = getEl('live-candle-wrapper');
+    const unavail = getEl('unavailable-state');
+    if (skelChart) skelChart.style.display = 'flex';
+    if (canvasWrap) canvasWrap.style.display = 'none';
+    if (unavail) unavail.style.display = 'none';
   }
 
-  // Client-side cache for instantaneous 0ms display on stock switch & range toggle
+  function clearLiveBufferingState() {
+    const skelChart = getEl('skeleton-chart-wrapper');
+    const canvasWrap = getEl('live-candle-wrapper');
+    const refreshingBadge = getEl('stock-refreshing-badge');
+    const overlay = getEl('chart-loading-overlay');
+    if (skelChart) skelChart.style.display = 'none';
+    if (canvasWrap) canvasWrap.style.display = 'block';
+    if (refreshingBadge) refreshingBadge.style.display = 'none';
+    if (overlay) {
+      overlay.style.display = 'none';
+      overlay.classList.remove('show');
+    }
+  }
+
+  // Client-side cache for instantaneous display on stock switch & range toggle
+  // cacheKey -> { data: Object, timestamp: number }
   const clientStockCache = new Map();
 
   // --- FETCH STOCK DATA ---
   async function fetchStockData(showLoading = false) {
-    if (isFetching) return;
-
     const cacheKey = `${currentSymbol}_${currentTimeRange}`;
     const cachedEntry = clientStockCache.get(cacheKey);
+    const ttl = currentTimeRange === '1D' ? 10000 : 180000;
+    const isCachedUsable = cachedEntry && (Date.now() - cachedEntry.timestamp < ttl);
 
-    // Instantaneous 0ms render ONLY on explicit stock/range switch, not background poll
-    if (showLoading && cachedEntry) {
-      renderDashboard(cachedEntry);
-      if (cachedEntry.supertrend) {
-        cachedSuperTrendData = cachedEntry.supertrend;
-        cachedSuperTrendSeries = cachedEntry.supertrend.series || [];
-        renderLiveSuperTrendHUD(cachedEntry.supertrend);
-      }
-      showLoading = false; // Never disrupt user with full overlay when data is already displayed
-    }
-
-    isFetching = true;
-    const overlay = getEl('chart-loading-overlay');
     if (showLoading) {
-      if (overlay) overlay.style.display = 'flex';
-      setLiveBufferingState();
+      // User explicitly switched stock or range:
+      // 1. Cancel previous in-flight fetch so old requests cannot overwrite the selection
+      if (activeFetchController) {
+        try { activeFetchController.abort(); } catch (e) {}
+      }
+
+      if (cachedEntry) {
+        // Instantaneous render from valid client cache (Stale-While-Revalidate)
+        renderDashboard(cachedEntry.data);
+        if (cachedEntry.data.supertrend) {
+          cachedSuperTrendData = cachedEntry.data.supertrend;
+          cachedSuperTrendSeries = cachedEntry.data.supertrend.series || [];
+          renderLiveSuperTrendHUD(cachedEntry.data.supertrend);
+        }
+        clearLiveBufferingState();
+
+        // Show subtle refreshing badge if cache is approaching expiration
+        const refBadge = getEl('stock-refreshing-badge');
+        if (refBadge && !isCachedUsable) refBadge.style.display = 'inline-flex';
+      } else {
+        // Cold uncached stock: show matching skeleton immediately
+        setLiveBufferingState();
+      }
+    } else {
+      // Automatic background poll: skip if an active user fetch is already in flight
+      if (isFetching) return;
     }
+
+    const thisSeq = ++activeFetchSeq;
+    activeFetchController = new AbortController();
+    isFetching = true;
 
     try {
-      // Fast fetch with explicit cache-busting timestamp to prevent browser HTTP caching
-      const resStock = await fetch(`/api/stocks/${encodeURIComponent(currentSymbol)}?range=${encodeURIComponent(currentTimeRange)}&_t=${Date.now()}`, {
-        cache: 'no-store'
+      const url = `/api/stocks/${encodeURIComponent(currentSymbol)}?range=${encodeURIComponent(currentTimeRange)}`;
+      const resStock = await fetch(url, {
+        signal: activeFetchController.signal,
+        cache: 'default'
       });
+
       if (!resStock.ok) throw new Error(`HTTP ${resStock.status}`);
       const data = await resStock.json();
 
-      // Process pre-bundled SuperTrend indicator or lazy-load if missing
+      // Guard against race conditions: ignore response if a newer selection occurred
+      if (thisSeq !== activeFetchSeq) return;
+
+      if (data.status === 'DATA_UNAVAILABLE' || data.status === 'UNAVAILABLE' || !data.price) {
+        if (!cachedEntry) {
+          showUnavailableState(data.symbol || currentSymbol, data.error || 'Provider data is currently unavailable.');
+        }
+        return;
+      }
+
+      // Update client cache with fresh payload
+      clientStockCache.set(cacheKey, { data, timestamp: Date.now() });
+
+      // Process pre-bundled SuperTrend indicator directly (zero duplicate roundtrips)
       if (data.supertrend) {
         cachedSuperTrendData = data.supertrend;
         cachedSuperTrendSeries = data.supertrend.series || [];
         renderLiveSuperTrendHUD(data.supertrend);
-      } else {
-        fetch(`/api/stocks/${encodeURIComponent(currentSymbol)}/supertrend?range=${currentTimeRange}`)
-          .then(r => r.ok ? r.json() : null)
-          .then(stData => {
-            if (stData) {
-              cachedSuperTrendData = stData;
-              cachedSuperTrendSeries = stData.series || [];
-              renderLiveSuperTrendHUD(stData);
-              renderCandleChart();
-            }
-          })
-          .catch(() => null);
       }
 
-      // Update client cache with fresh payload
-      clientStockCache.set(cacheKey, data);
       renderDashboard(data);
+      clearLiveBufferingState();
+
     } catch (err) {
+      if (err.name === 'AbortError' || thisSeq !== activeFetchSeq) {
+        // Obsolete request cleanly cancelled; nothing to report
+        return;
+      }
       console.warn('[LiveMarket] Fetch error:', err);
+
       if (!cachedEntry) {
-        const unavail = getEl('unavailable-state');
-        const cContainer = getEl('live-candle-wrapper') || getEl('canvas-container');
-        if (unavail) unavail.style.display = 'block';
-        if (cContainer) cContainer.style.display = 'none';
+        showUnavailableState(currentSymbol, 'Network connection error or market provider timeout. Please check your connection and retry.');
       }
     } finally {
-      isFetching = false;
-      if (overlay) {
-        overlay.style.display = 'none';
-        overlay.classList.remove('show');
+      if (thisSeq === activeFetchSeq) {
+        isFetching = false;
+        const refBadge = getEl('stock-refreshing-badge');
+        if (refBadge) refBadge.style.display = 'none';
       }
     }
+  }
+
+  function showUnavailableState(sym, message) {
+    clearLiveBufferingState();
+    const unavail = getEl('unavailable-state');
+    const cContainer = getEl('live-candle-wrapper');
+    const errText = getEl('unavailable-error-text');
+    if (errText) errText.textContent = message || `Market data for ${sym} is currently unavailable. Please retry.`;
+    if (unavail) unavail.style.display = 'block';
+    if (cContainer) cContainer.style.display = 'none';
   }
 
   // --- SUPERTREND ENGINE & HUD ---
@@ -402,10 +474,24 @@
 
   // --- CHANGE STOCK ---
   function changeStock(sym) {
-    if (!sym || sym === currentSymbol) return;
-    currentSymbol = sym.toUpperCase().replace(/\.(NS|BO)$/, '');
+    if (!sym) return;
+    const clean = sym.toUpperCase().replace(/\.(NS|BO)$/, '');
+    const isUnavail = getEl('unavailable-state') && getEl('unavailable-state').style.display !== 'none';
+    if (clean === currentSymbol && !isUnavail) return; // Prevent duplicate requests for already loaded stock
+    currentSymbol = clean;
     zoomVisibleStart = null;
     zoomVisibleEnd = null;
+
+    // Highlight active popular chip immediately
+    document.querySelectorAll('.ticker-chip-btn').forEach(btn => {
+      const bSym = btn.getAttribute('data-symbol');
+      if (bSym && bSym.toUpperCase().replace(/\.(NS|BO)$/, '') === currentSymbol) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+
     if (window.StockPulse && window.StockPulse.setSelectedStock) {
       StockPulse.setSelectedStock(currentSymbol);
     } else {
@@ -1543,6 +1629,14 @@
     setupSuperTrendControls();
     setupSearch();
     setupTimeRanges();
+
+    const btnRetry = getEl('btn-retry-live');
+    if (btnRetry) {
+      btnRetry.addEventListener('click', () => {
+        fetchStockData(true);
+      });
+    }
+
     fetchStockData(true);
 
     if (pollingTimer) clearInterval(pollingTimer);

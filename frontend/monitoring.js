@@ -234,7 +234,9 @@
         cachedStockSnapshot = await res.json();
         updateTargetInputStyling();
       }
-      fetchMonitoringChartData();
+      if (typeof fetchMonitoringChartData === 'function') {
+        fetchMonitoringChartData();
+      }
     } catch (e) { }
   }
 
@@ -506,7 +508,7 @@
       if (q && q !== currentStock) {
         currentStock = StockPulse.setSelectedStock(q);
         refreshCurrentStockSnapshot();
-        fetchMonitoringChartData(true);
+        if (typeof fetchMonitoringChartData === 'function') fetchMonitoringChartData(true);
         refreshSuperTrendPreview();
       }
     };
@@ -534,11 +536,12 @@
       item.onmouseleave = () => { item.style.background = '#ffffff'; };
       item.innerHTML = `<strong>${stk.symbol}</strong> <span style="font-size: 11px; color: #64748b;">${stk.name}</span>`;
       item.addEventListener('click', () => {
-        currentStock = StockPulse.setSelectedStock(stk.symbol);
         el.stockInput.value = stk.symbol;
         el.stockDropdown.style.display = 'none';
+        if (stk.symbol === currentStock) return; // Prevent duplicate request
+        currentStock = StockPulse.setSelectedStock(stk.symbol);
         refreshCurrentStockSnapshot();
-        fetchMonitoringChartData(true);
+        if (typeof fetchMonitoringChartData === 'function') fetchMonitoringChartData(true);
         refreshSuperTrendPreview();
       });
       el.stockDropdown.appendChild(item);

@@ -35,13 +35,29 @@
     statExchange: document.getElementById('stat-exchange'),
     statCurrency: document.getElementById('stat-currency'),
     statDataStatus: document.getElementById('stat-data-status'),
+    // Skeletons, Refreshing and Error states
+    refreshingBadge: document.getElementById('details-refreshing-badge'),
+    unavailableState: document.getElementById('details-unavailable-state'),
+    detailsErrorText: document.getElementById('details-error-text'),
+    btnRetry: document.getElementById('btn-retry-details'),
+    summaryCard: document.getElementById('details-summary-card'),
+    detailsSection: document.querySelector('.stock-details-section'),
     // Links
     btnGoLive: document.getElementById('btn-go-live'),
     btnGoMonitoring: document.getElementById('btn-go-monitoring')
   };
 
+  const detailsClientCache = new Map();
+  const DETAILS_CACHE_TTL_MS = 6000;
+  let activeDetailsSeq = 0;
+  let activeDetailsAbortController = null;
+
   function setDetailsLoadingState() {
-    const loader = (w, h) => `<span class="buffering-loader" style="width: ${w || '65px'}; height: ${h || '16px'};"></span>`;
+    const loader = (w, h) => `<span class="buffering-loader skeleton-shimmer" style="width: ${w || '65px'}; height: ${h || '16px'};"></span>`;
+    if (el.unavailableState) el.unavailableState.style.display = 'none';
+    if (el.summaryCard) el.summaryCard.style.display = '';
+    if (el.detailsSection) el.detailsSection.style.display = '';
+
     if (el.symbolBadge) el.symbolBadge.innerHTML = loader('80px', '28px');
     if (el.companyName) el.companyName.innerHTML = loader('220px', '18px');
     if (el.exchangeBadge) el.exchangeBadge.innerHTML = loader('44px', '16px');
@@ -70,17 +86,66 @@
   async function loadStockDetails(symbol, isInitial = false) {
     if (!symbol) return;
     currentStock = StockPulse.setSelectedStock(symbol);
-    if (isInitial) {
-      setDetailsLoadingState();
+    const seq = ++activeDetailsSeq;
+
+    // Check client cache for Stale-While-Revalidate
+    const cached = detailsClientCache.get(symbol);
+    const now = Date.now();
+    const hasFreshCache = cached && (now - cached.timestamp < DETAILS_CACHE_TTL_MS);
+
+    if (hasFreshCache && !isInitial) {
+      // Re-use fresh cache directly
+      renderDetails(cached.data);
+      if (el.refreshingBadge) el.refreshingBadge.style.display = 'none';
+      return;
     }
 
+    if (cached) {
+      // Stale-While-Revalidate: render cached data immediately, then background refresh
+      renderDetails(cached.data);
+      if (el.refreshingBadge) el.refreshingBadge.style.display = 'inline-flex';
+    } else {
+      // Uncached: show skeleton buffering state
+      setDetailsLoadingState();
+      if (el.refreshingBadge) el.refreshingBadge.style.display = 'none';
+    }
+
+    if (activeDetailsAbortController) {
+      activeDetailsAbortController.abort();
+    }
+    activeDetailsAbortController = new AbortController();
+
     try {
-      const res = await fetch(`/api/stocks/${currentStock}?range=1D`);
+      const res = await fetch(`/api/stocks/${currentStock}?range=1D`, {
+        signal: activeDetailsAbortController.signal
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+
+      if (seq !== activeDetailsSeq) {
+        return; // Stale request, ignore response
+      }
+
+      detailsClientCache.set(symbol, { data: data, timestamp: Date.now() });
+      if (el.unavailableState) el.unavailableState.style.display = 'none';
+      if (el.refreshingBadge) el.refreshingBadge.style.display = 'none';
       renderDetails(data);
     } catch (err) {
+      if (err.name === 'AbortError') return;
+      if (seq !== activeDetailsSeq) return;
+
       console.warn('[StockDetails] Error loading details:', err);
+      if (el.refreshingBadge) el.refreshingBadge.style.display = 'none';
+
+      // If we don't have cached data displayed, show the error state
+      if (!detailsClientCache.has(symbol)) {
+        if (el.summaryCard) el.summaryCard.style.display = 'none';
+        if (el.detailsSection) el.detailsSection.style.display = 'none';
+        if (el.unavailableState) el.unavailableState.style.display = 'block';
+        if (el.detailsErrorText) {
+          el.detailsErrorText.textContent = `Could not retrieve market quotes for ${symbol}. Please check your connection or retry.`;
+        }
+      }
     }
   }
 
@@ -166,7 +231,16 @@
   document.addEventListener('DOMContentLoaded', () => {
     if (window.StockPulse && window.StockPulse.populateStockDropdown) {
       StockPulse.populateStockDropdown(el.stockSelect, (newSym) => {
+        if (newSym === currentStock && !el.unavailableState || el.unavailableState.style.display !== 'none') {
+          // If already on this stock and not in error, don't refetch unnecessarily
+        }
         loadStockDetails(newSym, true);
+      });
+    }
+
+    if (el.btnRetry) {
+      el.btnRetry.addEventListener('click', () => {
+        loadStockDetails(currentStock, true);
       });
     }
 

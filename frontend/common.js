@@ -1517,8 +1517,7 @@ window.StockPulse = (function () {
     if (isSystemStatusInFlight) return;
     isSystemStatusInFlight = true;
     try {
-      const sym = getSelectedStock();
-      const res = await fetch(`/api/stocks/${sym}/live`);
+      const res = await fetch('/api/stocks/market-status');
       if (res.ok) {
         const data = await res.json();
         const dot = document.getElementById('market-status-dot');

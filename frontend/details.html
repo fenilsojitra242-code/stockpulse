@@ -87,14 +87,25 @@
         </div>
       </div>
 
+      <!-- Details Unavailable State with Retry Action -->
+      <div class="unavailable-state" id="details-unavailable-state" style="display: none; margin-bottom: 24px; padding: 32px; text-align: center; background: #fff; border-radius: 16px; border: 1px solid #e2e8f0;">
+        <i class="fa-solid fa-triangle-exclamation" style="font-size: 32px; color: #f59e0b; margin-bottom: 12px;"></i>
+        <h3 style="font-size: 18px; font-weight: 700; color: #0f172a; margin-bottom: 8px;">Market data unavailable</h3>
+        <p id="details-error-text" style="color: #64748b; font-size: 14px; max-width: 480px; margin: 0 auto 16px auto;">Could not retrieve market quotes for this symbol. Please check the symbol or try again.</p>
+        <button type="button" class="btn-primary-action" id="btn-retry-details" style="display: inline-flex; align-items: center; gap: 8px; margin: 0 auto; padding: 8px 20px; font-size: 13px;">
+          <i class="fa-solid fa-arrows-rotate"></i> <span>Retry</span>
+        </button>
+      </div>
+
       <!-- STOCK IDENTITY & LIVE PRICE SUMMARY CARD -->
-      <section class="card" style="margin-bottom: 24px; padding: 24px;">
+      <section class="card" id="details-summary-card" style="margin-bottom: 24px; padding: 24px;">
         <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;">
           <div>
             <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
               <h2 id="details-symbol" style="font-size: 28px; font-weight: 800; color: #0f172a; margin: 0;"><span class="buffering-loader" style="width: 80px; height: 28px;"></span></h2>
               <span id="details-exchange" style="background: #e2e8f0; color: #334155; font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 6px;"><span class="buffering-loader" style="width: 44px; height: 16px;"></span></span>
               <span id="details-trading-status" style="background: #f1f5f9; color: #64748b; font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 6px;"><span class="buffering-loader" style="width: 75px; height: 16px;"></span></span>
+              <span id="details-refreshing-badge" class="refreshing-indicator-pill" style="display: none;"><i class="fa-solid fa-arrows-rotate fa-spin"></i> Refreshing</span>
             </div>
             <p id="details-company-name" style="font-size: 15px; color: #64748b; margin: 0;"><span class="buffering-loader" style="width: 220px; height: 18px;"></span></p>
           </div>

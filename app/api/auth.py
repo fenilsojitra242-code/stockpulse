@@ -47,6 +47,7 @@ def seed_default_user_if_needed(db: Session) -> User:
     """
     test_user = db.query(User).filter(
         or_(
+            User.username == "user",
             func.lower(User.username) == "user",
             func.lower(User.name) == "user",
             func.lower(User.email) == "user@stockpulse.local"
@@ -68,7 +69,7 @@ def seed_default_user_if_needed(db: Session) -> User:
         print("[StockPulse] Fixed test user 'user' (pass: '123456') initialized.")
     else:
         needs_commit = False
-        if not test_user.password_hash or not verify_password("123456", test_user.password_hash):
+        if not test_user.password_hash:
             test_user.password_hash = hash_password("123456")
             needs_commit = True
         if test_user.username != "user":
@@ -460,7 +461,9 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
         )
 
     # Check if email is already taken
-    existing_by_email = db.query(User).filter(func.lower(User.email) == clean_email).first()
+    existing_by_email = db.query(User).filter(
+        or_(User.email == clean_email, func.lower(User.email) == clean_email)
+    ).first()
     if existing_by_email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -470,7 +473,9 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
     # Process username
     if req.username and req.username.strip():
         clean_username = req.username.strip().lower().replace(" ", "_")
-        existing_by_user = db.query(User).filter(func.lower(User.username) == clean_username).first()
+        existing_by_user = db.query(User).filter(
+            or_(User.username == clean_username, func.lower(User.username) == clean_username)
+        ).first()
         if existing_by_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -481,10 +486,13 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
         base_user = clean_name.lower().replace(" ", "_") if clean_name else clean_email.split("@")[0].lower()
         base_user = re.sub(r'[^a-z0-9_]', '', base_user) or "user"
         candidate = base_user
-        idx = 1
-        while db.query(User).filter(func.lower(User.username) == candidate).first():
+        existing_rows = db.query(User.username).filter(User.username.like(f"{base_user}%")).all()
+        existing_set = {r[0].lower() for r in existing_rows if r[0]}
+        if candidate in existing_set:
+            idx = 1
+            while f"{base_user}_{idx}" in existing_set:
+                idx += 1
             candidate = f"{base_user}_{idx}"
-            idx += 1
         clean_username = candidate
 
     hashed_pw = hash_password(req.password)
@@ -545,7 +553,11 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
 
     # Instant authentication bypass for fixed testing credentials: username="user", pass="123456"
     if ident_lower in ["user", "user@stockpulse.local", "user@example.com", "user@stockpulse.io"] and (plain_pw.strip() == "123456" or plain_pw == "123456"):
-        user = seed_default_user_if_needed(db)
+        user = db.query(User).filter(
+            or_(User.username == "user", func.lower(User.username) == "user")
+        ).first()
+        if not user:
+            user = seed_default_user_if_needed(db)
         token = create_access_token({
             "sub": str(user.id),
             "email": user.email,
@@ -582,49 +594,49 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
 
     # Case A: Identifier contains '@' -> Exact Email lookup
     if "@" in ident_lower:
-        candidates = db.query(User).filter(func.lower(User.email) == ident_lower).all()
+        candidates = db.query(User).filter(
+            or_(User.email == ident_lower, func.lower(User.email) == ident_lower)
+        ).all()
         if not candidates:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"No account found with email '{ident}'. Please check your spelling or create an account."
             )
     else:
-        # Case B: Identifier does not contain '@' -> Username, Email Prefix, or Full Name lookup
-        candidate_dict = {}
+        # Case B: Identifier does not contain '@' -> Prioritized lookup:
+        # 1. Exact Username match (fastest, hits indexed username column)
+        candidates = db.query(User).filter(
+            or_(User.username == ident_lower, func.lower(User.username) == ident_lower)
+        ).all()
 
-        # 1. Exact Username match
-        for u in db.query(User).filter(func.lower(User.username) == ident_lower).all():
-            candidate_dict[u.id] = u
+        if not candidates:
+            # 2. Exact email prefix match (e.g. user entered "fenilsojitra242" for "fenilsojitra242@gmail.com")
+            candidates = db.query(User).filter(
+                func.lower(User.email).like(f"{ident_lower}@%")
+            ).all()
 
-        # 2. Exact Email prefix match (e.g. user entered "fenilsojitra242" for "fenilsojitra242@gmail.com")
-        for u in db.query(User).filter(func.lower(User.email).like(f"{ident_lower}@%")).all():
-            if u.id not in candidate_dict:
-                candidate_dict[u.id] = u
+        if not candidates:
+            # 3. Exact Full Name match (case-insensitive or compact without spaces)
+            candidates = db.query(User).filter(
+                or_(
+                    func.lower(User.name) == ident_lower,
+                    func.replace(func.lower(User.name), " ", "") == ident_compact
+                )
+            ).order_by(User.id.desc()).all()
 
-        # 3. Exact Full Name match (case-insensitive or compact without spaces)
-        for u in db.query(User).filter(
-            or_(
-                func.lower(User.name) == ident_lower,
-                func.replace(func.lower(User.name), " ", "") == ident_compact
-            )
-        ).order_by(User.id.desc()).all():
-            if u.id not in candidate_dict:
-                candidate_dict[u.id] = u
+        if not candidates and len(ident_lower) >= 3:
+            # 4. Partial Name match
+            candidates = db.query(User).filter(
+                func.lower(User.name).like(f"{ident_lower}%")
+            ).order_by(User.id.desc()).all()
 
-        # 4. Partial Name match (e.g. user entered first name "Fenil" for "Fenil Sojitra")
-        if len(ident_lower) >= 3:
-            for u in db.query(User).filter(func.lower(User.name).like(f"{ident_lower}%")).order_by(User.id.desc()).all():
-                if u.id not in candidate_dict:
-                    candidate_dict[u.id] = u
-
-        candidates = list(candidate_dict.values())
         if not candidates:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"No account found matching '{ident}'. Please check your spelling or sign in with your email address."
             )
 
-    # Verify password with whitespace tolerance across matched candidates
+    # Verify password with single-pass and stripped fallback across matched candidates
     plain_pw = req.password
     authenticated_user = None
 
@@ -632,10 +644,8 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
         if not candidate.password_hash:
             continue
         pw_ok = verify_password(plain_pw, candidate.password_hash)
-        if not pw_ok and (plain_pw.startswith(" ") or plain_pw.endswith(" ")):
+        if not pw_ok and plain_pw.strip() != plain_pw:
             pw_ok = verify_password(plain_pw.strip(), candidate.password_hash)
-        if not pw_ok and (" " in plain_pw):
-            pw_ok = verify_password(plain_pw.rstrip(), candidate.password_hash)
         if pw_ok:
             authenticated_user = candidate
             break

@@ -768,9 +768,14 @@
       banner.style.display = 'none';
     }
 
+    // Flag to prevent duplicate submissions
+    let isAuthSubmitting = false;
+
     // Handle Login Submit
     async function handleLoginSubmit(e) {
-      e.preventDefault();
+      if (e) e.preventDefault();
+      if (isAuthSubmitting) return;
+
       hideFeedback();
 
       const identInput = document.getElementById('login-identifier');
@@ -782,11 +787,15 @@
 
       if (!identifier || !password) {
         showFeedback('Please enter both your email/username/name and password.');
+        if (!identifier) identInput.focus();
+        else passInput.focus();
         return;
       }
 
+      isAuthSubmitting = true;
       btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Signing in...</span>';
+      btn.setAttribute('aria-busy', 'true');
+      btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> <span>Signing in...</span>';
 
       try {
         const res = await fetch('/api/auth/login', {
@@ -800,7 +809,9 @@
         if (!res.ok) {
           const detail = data && data.detail ? data.detail : 'Invalid credentials. Please try again.';
           showFeedback(detail, true);
+          isAuthSubmitting = false;
           btn.disabled = false;
+          btn.removeAttribute('aria-busy');
           btn.innerHTML = '<span>Sign In to StockPulse</span> <i class="fa-solid fa-arrow-right"></i>';
           return;
         }
@@ -810,23 +821,26 @@
         localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
         localStorage.setItem('stockpulse_remembered_identifier', identifier);
         localStorage.setItem('stockpulse_last_active_ts', Date.now().toString());
-        showFeedback(`Welcome back, ${data.user.name}! Redirecting...`, false);
+        showFeedback(`Welcome back, ${data.user.name}! Entering dashboard...`, false);
 
-        setTimeout(() => {
-          window.location.href = '/live';
-        }, 400);
+        // Immediate navigation without blocking delay
+        window.location.replace('/live');
 
       } catch (err) {
         console.error('Login error:', err);
         showFeedback('Network connection error. Please try again.', true);
+        isAuthSubmitting = false;
         btn.disabled = false;
+        btn.removeAttribute('aria-busy');
         btn.innerHTML = '<span>Sign In to StockPulse</span> <i class="fa-solid fa-arrow-right"></i>';
       }
     }
 
     // Direct Registration (Testing Stage: OTP Removed)
     async function handleRegisterSubmit(e) {
-      e.preventDefault();
+      if (e) e.preventDefault();
+      if (isAuthSubmitting) return;
+
       hideFeedback();
 
       const nameInput = document.getElementById('register-name');
@@ -847,11 +861,14 @@
 
       if (password.length < 4) {
         showFeedback('Password must be at least 4 characters long.');
+        passInput.focus();
         return;
       }
 
+      isAuthSubmitting = true;
       btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Creating account...</span>';
+      btn.setAttribute('aria-busy', 'true');
+      btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> <span>Creating account...</span>';
 
       try {
         const res = await fetch('/api/auth/register', {
@@ -870,7 +887,9 @@
         if (!res.ok) {
           const detail = data && data.detail ? data.detail : 'Could not create account.';
           showFeedback(detail, true);
+          isAuthSubmitting = false;
           btn.disabled = false;
+          btn.removeAttribute('aria-busy');
           btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
 
           if (detail.includes('already exists')) {
@@ -881,7 +900,7 @@
                 loginIdent.value = email;
                 document.getElementById('login-password').focus();
               }
-            }, 1800);
+            }, 1400);
           }
           return;
         }
@@ -891,16 +910,17 @@
         localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
         localStorage.setItem('stockpulse_remembered_identifier', data.user.email);
         localStorage.setItem('stockpulse_last_active_ts', Date.now().toString());
-        showFeedback(`Welcome, ${data.user.name}! Account created successfully. Redirecting...`, false);
+        showFeedback(`Welcome, ${data.user.name}! Account created. Entering dashboard...`, false);
 
-        setTimeout(() => {
-          window.location.href = '/live';
-        }, 400);
+        // Immediate navigation without blocking delay
+        window.location.replace('/live');
 
       } catch (err) {
         console.error('Registration error:', err);
         showFeedback('Network connection error. Please try again.', true);
+        isAuthSubmitting = false;
         btn.disabled = false;
+        btn.removeAttribute('aria-busy');
         btn.innerHTML = '<span>Create Account & Start Monitoring</span> <i class="fa-solid fa-arrow-right"></i>';
       }
     }

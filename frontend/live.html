@@ -131,6 +131,9 @@
 
           <!-- Live Status Badge -->
           <div class="live-status-block">
+            <span id="stock-refreshing-badge" class="refreshing-indicator-pill" style="display: none;">
+              <i class="fa-solid fa-arrows-rotate fa-spin"></i> <span>Refreshing...</span>
+            </span>
             <div class="live-pill" id="live-status-pill">
               <span class="pulse-dot green" id="live-status-dot"></span>
               <span class="status-label" id="live-status-label"><span class="buffering-loader"
@@ -246,17 +249,48 @@
         <!-- Live Candlestick Chart Container -->
         <div class="chart-wrapper">
           <!-- Loading Overlay -->
-          <div class="chart-loading-overlay" id="chart-loading-overlay">
+          <div class="chart-loading-overlay" id="chart-loading-overlay" style="display: none;">
             <div class="spinner"></div>
             <span>Fetching live market quotes...</span>
+          </div>
+
+          <!-- Professional Skeleton Chart Wireframe -->
+          <div class="skeleton-chart-wrapper" id="skeleton-chart-wrapper" aria-hidden="true">
+            <div class="skeleton-chart-bars">
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 18%;"></div><div class="skeleton-candle-body" style="height: 45%;"></div><div class="skeleton-candle-wick" style="height: 12%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 14%;"></div><div class="skeleton-candle-body" style="height: 38%;"></div><div class="skeleton-candle-wick" style="height: 16%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 22%;"></div><div class="skeleton-candle-body" style="height: 52%;"></div><div class="skeleton-candle-wick" style="height: 10%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 10%;"></div><div class="skeleton-candle-body" style="height: 42%;"></div><div class="skeleton-candle-wick" style="height: 20%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 25%;"></div><div class="skeleton-candle-body" style="height: 60%;"></div><div class="skeleton-candle-wick" style="height: 8%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 15%;"></div><div class="skeleton-candle-body" style="height: 48%;"></div><div class="skeleton-candle-wick" style="height: 14%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 12%;"></div><div class="skeleton-candle-body" style="height: 35%;"></div><div class="skeleton-candle-wick" style="height: 18%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 20%;"></div><div class="skeleton-candle-body" style="height: 55%;"></div><div class="skeleton-candle-wick" style="height: 12%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 16%;"></div><div class="skeleton-candle-body" style="height: 44%;"></div><div class="skeleton-candle-wick" style="height: 15%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 24%;"></div><div class="skeleton-candle-body" style="height: 62%;"></div><div class="skeleton-candle-wick" style="height: 9%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 18%;"></div><div class="skeleton-candle-body" style="height: 50%;"></div><div class="skeleton-candle-wick" style="height: 14%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 12%;"></div><div class="skeleton-candle-body" style="height: 40%;"></div><div class="skeleton-candle-wick" style="height: 22%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 22%;"></div><div class="skeleton-candle-body" style="height: 58%;"></div><div class="skeleton-candle-wick" style="height: 11%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 14%;"></div><div class="skeleton-candle-body" style="height: 46%;"></div><div class="skeleton-candle-wick" style="height: 16%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 19%;"></div><div class="skeleton-candle-body" style="height: 53%;"></div><div class="skeleton-candle-wick" style="height: 13%;"></div></div>
+              <div class="skeleton-candle-col"><div class="skeleton-candle-wick" style="height: 15%;"></div><div class="skeleton-candle-body" style="height: 48%;"></div><div class="skeleton-candle-wick" style="height: 17%;"></div></div>
+            </div>
+            <div class="skeleton-chart-axis">
+              <span class="buffering-loader" style="width: 48px; height: 12px;"></span>
+              <span class="buffering-loader" style="width: 48px; height: 12px;"></span>
+              <span class="buffering-loader" style="width: 48px; height: 12px;"></span>
+              <span class="buffering-loader" style="width: 48px; height: 12px;"></span>
+              <span class="buffering-loader" style="width: 48px; height: 12px;"></span>
+            </div>
           </div>
 
           <!-- Unavailable State Container -->
           <div class="unavailable-state" id="unavailable-state" style="display: none;">
             <i class="fa-solid fa-triangle-exclamation"></i>
             <h3>Market data unavailable</h3>
-            <p>Could not retrieve market quotes from the configured provider for this symbol. Please check the symbol or
-              try again later.</p>
+            <p id="unavailable-error-text">Could not retrieve market quotes from the configured provider for this symbol. Please check the symbol or try again.</p>
+            <button type="button" class="btn-primary-action" id="btn-retry-live" style="margin-top: 14px; padding: 8px 20px; font-size: 13px; display: inline-flex; align-items: center; gap: 8px;">
+              <i class="fa-solid fa-arrows-rotate"></i> <span>Retry</span>
+            </button>
           </div>
 
           <!-- Candlestick Chart Canvas Wrapper -->

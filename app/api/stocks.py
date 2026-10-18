@@ -68,6 +68,14 @@ def search_stocks(q: str = Query("", description="Stock search query"), response
     return matched
 
 
+@router.get("/market-status")
+def get_global_market_status_endpoint(response: Response):
+    """Lightweight market status check without invoking external market data."""
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    status, time_str = get_market_status()
+    return {"market_status": status, "time": time_str}
+
+
 @router.get("/{symbol}")
 def get_stock_data(
     symbol: str,
