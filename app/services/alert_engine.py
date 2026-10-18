@@ -1151,7 +1151,7 @@ def evaluate_active_alerts(db: Session) -> List[Dict[str, Any]]:
         # In MONITORING stage: Check if target has already been reached by current price!
         hit_now, hit_dir_now, target_price_hit = _target_hit(alert, curr_price, curr_change, target_price)
         if hit_now:
-            print(f"[AlertEngine] Alert #{alert.id} ({sym}): Target {alert.target_percent:+.2f}% reached directly at ₹{curr_price:.2f} ({curr_change:+.2f}%)!")
+            print(f"[AlertEngine] Alert #{alert.id} ({sym}): Target {alert.target_percent:+.2f}% reached directly at Rs.{curr_price:.2f} ({curr_change:+.2f}%)!")
             alert.status = "SUCCESS"
             alert.stopped_at = now
             alert.early_warning_sent = False

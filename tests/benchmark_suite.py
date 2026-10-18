@@ -1,8 +1,23 @@
 import os
 import sys
 import time
+import tempfile
+import atexit
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# Set up dedicated isolated temporary SQLite database BEFORE any app or database imports
+_BENCHMARK_TMP_DIR = tempfile.TemporaryDirectory()
+_BENCHMARK_DB_PATH = os.path.join(_BENCHMARK_TMP_DIR.name, "benchmark_stockpulse.db")
+os.environ["DATABASE_URL"] = f"sqlite:///{_BENCHMARK_DB_PATH}"
+
+def _cleanup_bench_db():
+    try:
+        _BENCHMARK_TMP_DIR.cleanup()
+    except Exception:
+        pass
+
+atexit.register(_cleanup_bench_db)
 
 import threading
 import tracemalloc
@@ -23,8 +38,30 @@ print("=" * 70)
 
 # 1. Startup Time Measurement (Imports)
 t0_import = time.perf_counter()
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+import app.database.database as db_mod
+
+# Explicitly create and rebind isolated test engine to handle cases where module was pre-imported
+_isolated_engine = create_engine(
+    f"sqlite:///{_BENCHMARK_DB_PATH}",
+    connect_args={"check_same_thread": False, "timeout": 15}
+)
+_IsolatedSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_isolated_engine)
+db_mod.engine = _isolated_engine
+db_mod.SessionLocal = _IsolatedSessionLocal
+
 from app.main import app
+import app.main as app_main_mod
+app_main_mod.engine = _isolated_engine
+app_main_mod.SessionLocal = _IsolatedSessionLocal
+
 from app.database.database import SessionLocal, engine
+# Verify production database is strictly isolated and never touched
+import urllib.parse
+unquoted_url = urllib.parse.unquote(str(engine.url))
+assert "data/stockpulse.db" not in unquoted_url, f"CRITICAL: Production DB targeted by benchmark engine: {engine.url}"
+assert _BENCHMARK_DB_PATH in unquoted_url or "benchmark_stockpulse.db" in unquoted_url or ":memory:" in unquoted_url, f"Benchmark engine not pointing to isolated database: {engine.url}"
 from app.database.models import User, Alert, Notification, AlertHistory, SystemSetting
 from app.services.market_data import (
     get_stock_visualization_data,
@@ -309,6 +346,8 @@ print(f"[11.2] Sample Per-Symbol Latency (ms): {sample_timings}")
 
 server.should_exit = True
 db.close()
+_cleanup_bench_db()
+print("[Benchmark] Isolated database cleaned up successfully.")
 print("=" * 70)
 print("Benchmark complete.")
 print("=" * 70)

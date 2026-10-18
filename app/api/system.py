@@ -8,12 +8,12 @@ from sqlalchemy.orm import Session
 from app.database.database import get_db
 from app.database.models import Alert, SystemSetting
 from app.services.scheduler import get_scheduler_status, start_scheduler, stop_scheduler, is_scheduler_running
-from app.services.market_data import inject_simulation_tick, reset_simulation
+from app.services.market_data import inject_simulation_tick, reset_simulation, get_negative_cache_status
 from app.services.notification import (
     get_notification_feed,
     format_alert_message
 )
-from app.services.prediction import load_model
+from app.services.prediction import load_model, load_reversal_model, get_model_diagnostics
 
 router = APIRouter(prefix="/system", tags=["System"])
 
@@ -34,7 +34,12 @@ def get_system_telemetry(db: Session = Depends(get_db)):
     model = load_model()
     model_name = model.get("model_name", "Statistical Barrier Engine") if model else "Statistical Barrier Baseline"
     
+    rev_model = load_reversal_model()
+    rev_model_name = rev_model.get("model_name", "Rule-Based Heuristic") if rev_model else "Rule-Based Baseline"
+    
     sched = get_scheduler_status()
+    model_diag = get_model_diagnostics()
+    neg_cache = get_negative_cache_status()
     
     return {
         "status": "HEALTHY",
@@ -44,6 +49,10 @@ def get_system_telemetry(db: Session = Depends(get_db)):
         "total_alerts": total_alerts_count,
         "ml_model_loaded": model is not None,
         "champion_model": model_name,
+        "reversal_model_loaded": rev_model is not None,
+        "reversal_model_name": rev_model_name,
+        "model_diagnostics": model_diag,
+        "negative_cache": neg_cache,
         "environment": "Development / Live Monitoring"
     }
 

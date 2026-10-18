@@ -18,7 +18,7 @@ from app.api.system import router as system_router
 from app.api.notifications import router as notifications_router
 from app.api.auth import router as auth_router, seed_default_user_if_needed
 from app.services.scheduler import start_scheduler, stop_scheduler
-from app.services.prediction import load_model
+from app.services.prediction import load_model, load_reversal_model, prewarm_models
 
 
 @asynccontextmanager
@@ -38,8 +38,12 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
         
-    # Attempt loading ML model
-    load_model()
+    # Pre-warm ML models (both target and Supertrend-reversal) before alert evaluation begins
+    try:
+        diag = prewarm_models()
+        print(f"[StockPulse] Pre-warmed ML models: Target={diag['target_model']['status']} ({diag['target_model']['load_duration_ms']}ms), Reversal={diag['reversal_model']['status']} ({diag['reversal_model']['load_duration_ms']}ms) in {diag['total_prewarm_duration_ms']}ms")
+    except Exception as e:
+        print(f"[StockPulse] Model pre-warming warning: {e}")
     
     # Pre-warm market data cache in background
     try:

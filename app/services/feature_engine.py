@@ -1,3 +1,4 @@
+import hashlib
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
@@ -11,28 +12,93 @@ _MARKET_FEATURES_CACHE: Dict[Tuple, pd.DataFrame] = {}
 
 
 def get_candle_sequence_key(candles_or_df: Any) -> Optional[Tuple]:
-    """Generates a low-overhead, deterministic fingerprint for a candle sequence."""
+    """Generates a deterministic, collision-resistant SHA-256 fingerprint for a candle sequence.
+    Inspects all timestamps and OHLCV columns across the entire sequence.
+    """
     if candles_or_df is None:
         return None
     try:
         if isinstance(candles_or_df, pd.DataFrame):
             n = len(candles_or_df)
             if n == 0:
-                return (0,)
-            idx_last = str(candles_or_df.index[-1]) if hasattr(candles_or_df, "index") else ""
-            c_last = float(candles_or_df['close'].iloc[-1]) if 'close' in candles_or_df else 0.0
-            c_first = float(candles_or_df['close'].iloc[0]) if 'close' in candles_or_df else 0.0
-            return (n, idx_last, round(c_last, 2), round(c_first, 2))
+                return (0, "empty")
+            df = candles_or_df
+
+            # Check if dataframe already has a cached trustworthy fingerprint for this exact shape
+            if hasattr(df, "attrs") and "_candle_fingerprint" in df.attrs:
+                cached = df.attrs["_candle_fingerprint"]
+                if isinstance(cached, tuple) and len(cached) == 2 and cached[0] == n:
+                    return cached
+
+            cols_map = {str(c).lower(): c for c in df.columns}
+            t_col = cols_map.get("full_time") or cols_map.get("time") or cols_map.get("datetime") or cols_map.get("dt")
+            c_col = cols_map.get("close") or cols_map.get("price")
+            o_col = cols_map.get("open") or c_col
+            h_col = cols_map.get("high") or c_col
+            l_col = cols_map.get("low") or c_col
+            v_col = cols_map.get("volume") or cols_map.get("raw_volume")
+
+            h = hashlib.sha256()
+            h.update(f"{n}:".encode("ascii"))
+
+            if t_col:
+                t_vals = df[t_col].astype(str).values
+            elif hasattr(df, "index") and not df.index.empty:
+                t_vals = df.index.astype(str).values
+            else:
+                t_vals = np.array([""] * n)
+
+            def to_clean_arr(col, default=0.0):
+                if col and col in df.columns:
+                    return pd.to_numeric(df[col], errors="coerce").fillna(default).values
+                return np.full(n, default, dtype=np.float64)
+
+            o_arr = to_clean_arr(o_col)
+            h_arr = to_clean_arr(h_col)
+            l_arr = to_clean_arr(l_col)
+            c_arr = to_clean_arr(c_col)
+            v_arr = to_clean_arr(v_col)
+
+            numeric_matrix = np.column_stack([
+                np.round(o_arr, 4),
+                np.round(h_arr, 4),
+                np.round(l_arr, 4),
+                np.round(c_arr, 4),
+                np.round(v_arr, 2)
+            ]).astype(np.float64)
+
+            h.update(numeric_matrix.tobytes())
+            h.update(";".join(t_vals).encode("utf-8", errors="replace"))
+            digest = h.hexdigest()
+            key = (n, digest)
+
+            if hasattr(df, "attrs"):
+                df.attrs["_candle_fingerprint"] = key
+            return key
+
         elif isinstance(candles_or_df, list):
             n = len(candles_or_df)
             if n == 0:
-                return (0,)
-            last = candles_or_df[-1]
-            first = candles_or_df[0]
-            t_last = str(last.get("full_time") or last.get("time") or "")
-            c_last = float(last.get("close") or last.get("price") or 0.0)
-            c_first = float(first.get("close") or first.get("price") or 0.0)
-            return (n, t_last, round(c_last, 2), round(c_first, 2))
+                return (0, "empty")
+            h = hashlib.sha256()
+            h.update(f"{n}:".encode("ascii"))
+            parts = []
+            for c in candles_or_df:
+                if isinstance(c, dict):
+                    t = str(c.get("full_time") or c.get("time") or c.get("datetime") or c.get("dt") or "")
+                    try: o = round(float(c.get("open") if c.get("open") is not None else (c.get("close") or c.get("price") or 0.0)), 4)
+                    except Exception: o = 0.0
+                    try: hi = round(float(c.get("high") if c.get("high") is not None else (c.get("close") or c.get("price") or 0.0)), 4)
+                    except Exception: hi = 0.0
+                    try: lo = round(float(c.get("low") if c.get("low") is not None else (c.get("close") or c.get("price") or 0.0)), 4)
+                    except Exception: lo = 0.0
+                    try: cl = round(float(c.get("close") if c.get("close") is not None else (c.get("price") or 0.0)), 4)
+                    except Exception: cl = 0.0
+                    try: v = round(float(c.get("volume") if c.get("volume") is not None else (c.get("raw_volume") or 0.0)), 2)
+                    except Exception: v = 0.0
+                    parts.append(f"{t}:{o}:{hi}:{lo}:{cl}:{v}")
+            h.update(";".join(parts).encode("utf-8", errors="replace"))
+            return (n, h.hexdigest())
     except Exception:
         return None
     return None

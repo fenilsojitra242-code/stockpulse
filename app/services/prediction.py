@@ -1,4 +1,5 @@
 import os
+import time
 import copy
 import joblib
 import numpy as np
@@ -16,31 +17,92 @@ from app.services.market_regime import classify_market_regime
 from app.services.diagnostic_logger import diagnostic_logger
 
 _MODEL_CACHE = None
+_MODEL_MTIME = 0.0
 MODEL_PATH = "app/ml/model.joblib"
 
 _REVERSAL_MODEL_CACHE = None
+_REVERSAL_MODEL_MTIME = 0.0
 REVERSAL_MODEL_PATH = "app/ml/reversal_model.joblib"
 
 _PREDICT_ST_REVERSAL_CACHE: Dict[Tuple, Dict[str, Any]] = {}
 _PREDICT_TARGET_PROB_CACHE: Dict[Tuple, Dict[str, Any]] = {}
 
+_MODEL_DIAGNOSTICS: Dict[str, Any] = {
+    "target_model": {
+        "status": "UNLOADED",
+        "loaded": False,
+        "error": None,
+        "model_name": None,
+        "path": MODEL_PATH,
+        "mtime": 0.0,
+        "load_duration_ms": 0.0
+    },
+    "reversal_model": {
+        "status": "UNLOADED",
+        "loaded": False,
+        "error": None,
+        "model_name": None,
+        "path": REVERSAL_MODEL_PATH,
+        "mtime": 0.0,
+        "load_duration_ms": 0.0
+    }
+}
 
 
 def load_model():
-    """Load cached model artifact or load from disk."""
-    global _MODEL_CACHE
-    if _MODEL_CACHE is not None:
+    """Load cached model artifact or load from disk with mtime invalidation."""
+    global _MODEL_CACHE, _MODEL_MTIME, _MODEL_DIAGNOSTICS
+    mtime = os.path.getmtime(MODEL_PATH) if os.path.exists(MODEL_PATH) else 0.0
+    if _MODEL_CACHE is not None and mtime == _MODEL_MTIME:
         return _MODEL_CACHE
-        
-    if os.path.exists(MODEL_PATH):
-        try:
-            _MODEL_CACHE = joblib.load(MODEL_PATH)
-            print(f"[PredictionService] Loaded model: {_MODEL_CACHE.get('model_name', 'Unknown')}")
-            return _MODEL_CACHE
-        except Exception as e:
-            print(f"[PredictionService] Error loading model from {MODEL_PATH}: {e}")
-            
-    return None
+
+    if not os.path.exists(MODEL_PATH):
+        _MODEL_DIAGNOSTICS["target_model"] = {
+            "status": "FILE_MISSING",
+            "loaded": False,
+            "error": f"Model artifact not found at {MODEL_PATH}",
+            "model_name": None,
+            "path": MODEL_PATH,
+            "mtime": 0.0,
+            "load_duration_ms": 0.0
+        }
+        return None
+
+    t0 = time.perf_counter()
+    try:
+        loaded = joblib.load(MODEL_PATH)
+        dur = (time.perf_counter() - t0) * 1000.0
+        if not isinstance(loaded, dict) or "model" not in loaded:
+            raise ValueError(f"Corrupt model artifact: expected dict with 'model' key, got {type(loaded)}")
+        _MODEL_CACHE = loaded
+        _MODEL_MTIME = mtime
+        _PREDICT_TARGET_PROB_CACHE.clear()
+        name = _MODEL_CACHE.get("model_name", "Unknown")
+        _MODEL_DIAGNOSTICS["target_model"] = {
+            "status": "LOADED",
+            "loaded": True,
+            "error": None,
+            "model_name": name,
+            "path": MODEL_PATH,
+            "mtime": mtime,
+            "load_duration_ms": round(dur, 2)
+        }
+        print(f"[PredictionService] Loaded model: {name} in {dur:.2f}ms")
+        return _MODEL_CACHE
+    except Exception as e:
+        dur = (time.perf_counter() - t0) * 1000.0
+        _MODEL_CACHE = None
+        _MODEL_DIAGNOSTICS["target_model"] = {
+            "status": "CORRUPT",
+            "loaded": False,
+            "error": str(e),
+            "model_name": None,
+            "path": MODEL_PATH,
+            "mtime": mtime,
+            "load_duration_ms": round(dur, 2)
+        }
+        print(f"[PredictionService] Error loading model from {MODEL_PATH}: {e}")
+        return None
 
 
 def calculate_statistical_barrier_probability(
@@ -107,13 +169,17 @@ def predict_target_probability(
     clean_sym_upper = symbol.strip().upper()
     abs_target_percent = abs(float(target_percent))
     dir_upper = direction.upper()
+    model_mtime = os.path.getmtime(MODEL_PATH) if os.path.exists(MODEL_PATH) else 0.0
+    feat_tuple = tuple(sorted((str(k), round(float(v), 4)) for k, v in features.items() if isinstance(v, (int, float, np.floating, np.integer)) and not np.isnan(v))) if isinstance(features, dict) else ()
     cache_key = (
         clean_sym_upper,
         round(abs_target_percent, 4),
         int(warning_minutes),
         dir_upper,
         str(market_snapshot.get("latest_market_timestamp")),
-        round(float(current_price), 2)
+        round(float(current_price), 2),
+        feat_tuple,
+        model_mtime
     )
 
     if cache_key in _PREDICT_TARGET_PROB_CACHE:
@@ -268,25 +334,86 @@ def predict_target_probability(
 
 
 def load_reversal_model() -> Optional[Dict[str, Any]]:
-    """Load cached Supertrend reversal model artifact or load from disk."""
-    global _REVERSAL_MODEL_CACHE
-    if _REVERSAL_MODEL_CACHE is not None:
+    """Load cached Supertrend reversal model artifact or load from disk with mtime invalidation."""
+    global _REVERSAL_MODEL_CACHE, _REVERSAL_MODEL_MTIME, _MODEL_DIAGNOSTICS
+    mtime = os.path.getmtime(REVERSAL_MODEL_PATH) if os.path.exists(REVERSAL_MODEL_PATH) else 0.0
+    if _REVERSAL_MODEL_CACHE is not None and mtime == _REVERSAL_MODEL_MTIME:
         return _REVERSAL_MODEL_CACHE
 
-    if os.path.exists(REVERSAL_MODEL_PATH):
-        try:
-            _REVERSAL_MODEL_CACHE = joblib.load(REVERSAL_MODEL_PATH)
-            clf = _REVERSAL_MODEL_CACHE.get("model")
-            if hasattr(clf, "estimator") and hasattr(clf.estimator, "n_jobs"):
-                clf.estimator.n_jobs = 1
-            elif hasattr(clf, "n_jobs"):
-                clf.n_jobs = 1
-            print(f"[PredictionService] Loaded Supertrend reversal model: {_REVERSAL_MODEL_CACHE.get('model_name', 'Unknown')}")
-            return _REVERSAL_MODEL_CACHE
-        except Exception as e:
-            print(f"[PredictionService] Error loading reversal model from {REVERSAL_MODEL_PATH}: {e}")
+    if not os.path.exists(REVERSAL_MODEL_PATH):
+        _MODEL_DIAGNOSTICS["reversal_model"] = {
+            "status": "FILE_MISSING",
+            "loaded": False,
+            "error": f"Reversal model artifact not found at {REVERSAL_MODEL_PATH}",
+            "model_name": None,
+            "path": REVERSAL_MODEL_PATH,
+            "mtime": 0.0,
+            "load_duration_ms": 0.0
+        }
+        return None
 
-    return None
+    t0 = time.perf_counter()
+    try:
+        loaded = joblib.load(REVERSAL_MODEL_PATH)
+        dur = (time.perf_counter() - t0) * 1000.0
+        if not isinstance(loaded, dict) or "model" not in loaded:
+            raise ValueError(f"Corrupt reversal model artifact: expected dict with 'model' key, got {type(loaded)}")
+        _REVERSAL_MODEL_CACHE = loaded
+        _REVERSAL_MODEL_MTIME = mtime
+        _PREDICT_ST_REVERSAL_CACHE.clear()
+        clf = _REVERSAL_MODEL_CACHE.get("model")
+        if hasattr(clf, "estimator") and hasattr(clf.estimator, "n_jobs"):
+            clf.estimator.n_jobs = 1
+        elif hasattr(clf, "n_jobs"):
+            clf.n_jobs = 1
+        name = _REVERSAL_MODEL_CACHE.get("model_name", "Unknown")
+        _MODEL_DIAGNOSTICS["reversal_model"] = {
+            "status": "LOADED",
+            "loaded": True,
+            "error": None,
+            "model_name": name,
+            "path": REVERSAL_MODEL_PATH,
+            "mtime": mtime,
+            "load_duration_ms": round(dur, 2)
+        }
+        print(f"[PredictionService] Loaded Supertrend reversal model: {name} in {dur:.2f}ms")
+        return _REVERSAL_MODEL_CACHE
+    except Exception as e:
+        dur = (time.perf_counter() - t0) * 1000.0
+        _REVERSAL_MODEL_CACHE = None
+        _MODEL_DIAGNOSTICS["reversal_model"] = {
+            "status": "CORRUPT",
+            "loaded": False,
+            "error": str(e),
+            "model_name": None,
+            "path": REVERSAL_MODEL_PATH,
+            "mtime": mtime,
+            "load_duration_ms": round(dur, 2)
+        }
+        print(f"[PredictionService] Error loading reversal model from {REVERSAL_MODEL_PATH}: {e}")
+        return None
+
+
+def prewarm_models() -> Dict[str, Any]:
+    """
+    Pre-loads target-probability model and Supertrend-reversal model before active alert evaluation begins.
+    Reuses existing model-loading functions and model caches.
+    Thread-safe, avoids competing instances, and produces comprehensive diagnostic telemetry.
+    """
+    t_start = time.perf_counter()
+    load_model()
+    load_reversal_model()
+    total_dur = (time.perf_counter() - t_start) * 1000.0
+    return {
+        "target_model": copy.deepcopy(_MODEL_DIAGNOSTICS["target_model"]),
+        "reversal_model": copy.deepcopy(_MODEL_DIAGNOSTICS["reversal_model"]),
+        "total_prewarm_duration_ms": round(total_dur, 2)
+    }
+
+
+def get_model_diagnostics() -> Dict[str, Any]:
+    """Returns telemetry of both prediction models."""
+    return copy.deepcopy(_MODEL_DIAGNOSTICS)
 
 
 def predict_supertrend_reversal(
@@ -317,6 +444,7 @@ def predict_supertrend_reversal(
     horizon = int(horizon_minutes) if horizon_minutes in (1, 2, 5) else 5
 
     ckey = get_candle_sequence_key(candles_or_df)
+    rev_model_mtime = os.path.getmtime(REVERSAL_MODEL_PATH) if os.path.exists(REVERSAL_MODEL_PATH) else 0.0
     cache_key = (
         ckey,
         symbol.strip().upper(),
@@ -326,7 +454,8 @@ def predict_supertrend_reversal(
         float(threshold) if threshold is not None else None,
         int(period),
         float(multiplier),
-        round(supertrend_price, 2) if supertrend_price is not None else None
+        round(supertrend_price, 2) if supertrend_price is not None else None,
+        rev_model_mtime
     ) if ckey is not None else None
 
     if cache_key is not None and cache_key in _PREDICT_ST_REVERSAL_CACHE:

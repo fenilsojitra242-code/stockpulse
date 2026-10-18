@@ -16,12 +16,21 @@ IST = ZoneInfo("Asia/Kolkata")
 _RANGE_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _FAST_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
 _SNAPSHOT_FEATURES_CACHE: Dict[Tuple, Dict[str, float]] = {}
-_NEGATIVE_LOOKUP_CACHE: Dict[str, float] = {}
+_NEGATIVE_LOOKUP_CACHE: Dict[str, Any] = {}
 
 CACHE_TTL_INTRADAY = 5      # seconds during open market (frequent fresh updates)
 CACHE_TTL_HISTORICAL = 180  # 3 minutes for 5D, 1M, etc.
 CACHE_TTL_CLOSED = 1800     # 30 minutes when market is closed (data doesn't change!)
 FAST_INFO_CACHE_TTL = 7200  # 2 hours for static stats (market cap, 52w high/low)
+
+# Configurable Yahoo Finance request timeouts (Phase 5 reliability)
+YFINANCE_PRIMARY_TIMEOUT = float(os.getenv("YFINANCE_PRIMARY_TIMEOUT", "5.0"))
+YFINANCE_SECONDARY_TIMEOUT = float(os.getenv("YFINANCE_SECONDARY_TIMEOUT", "2.5"))
+YFINANCE_FALLBACK_TIMEOUT = float(os.getenv("YFINANCE_FALLBACK_TIMEOUT", "3.0"))
+
+# Configurable Negative Cache TTLs (Phase 5 reliability)
+NEGATIVE_CACHE_TTL_TRANSIENT = float(os.getenv("NEGATIVE_CACHE_TTL_TRANSIENT", "20.0"))
+NEGATIVE_CACHE_TTL_INVALID = float(os.getenv("NEGATIVE_CACHE_TTL_INVALID", "300.0"))
 
 # In-flight request deduplication to prevent redundant concurrent fetches
 _IN_FLIGHT_LOCK = threading.Lock()
@@ -274,44 +283,48 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
     }
     cfg = range_config[range_key]
     server_time = datetime.now(IST)
-    if clean_sym in _NEGATIVE_LOOKUP_CACHE and (now_ts - _NEGATIVE_LOOKUP_CACHE[clean_sym] < 120):
-        meta = STOCK_METADATA.get(clean_sym, {})
-        display_name = meta.get("name", f"{clean_sym} Equity")
-        return {
-            "status": "DATA_UNAVAILABLE",
-            "data_status": "DATA_UNAVAILABLE",
-            "data_interval": cfg["interval"],
-            "data_age_seconds": None,
-            "latest_market_timestamp": None,
-            "data_received_at": server_time.isoformat(),
-            "provider": "yfinance",
-            "symbol": clean_sym,
-            "full_symbol": f"{clean_sym}.NS",
-            "name": display_name,
-            "currency_symbol": "₹",
-            "exchange": "NSE",
-            "price": 0.0,
-            "previous_close": 0.0,
-            "price_change": 0.0,
-            "change_pct": 0.0,
-            "day_high": 0.0,
-            "day_low": 0.0,
-            "open": 0.0,
-            "volume": "N/A",
-            "raw_volume": 0,
-            "fifty_two_week_high": None,
-            "fifty_two_week_low": None,
-            "market_cap": "N/A",
-            "avg_volume": "N/A",
-            "trading_status": "Data Unavailable",
-            "market_status": market_status_val,
-            "last_updated": server_time.strftime("%I:%M:%S %p"),
-            "market_last_traded": "N/A",
-            "time_range": range_key,
-            "candles": [],
-            "chart_points": [],
-            "supertrend": None
-        }
+    if clean_sym in _NEGATIVE_LOOKUP_CACHE:
+        neg_entry = _NEGATIVE_LOOKUP_CACHE[clean_sym]
+        neg_ts = neg_entry["timestamp"] if isinstance(neg_entry, dict) else float(neg_entry)
+        neg_ttl = neg_entry.get("ttl", NEGATIVE_CACHE_TTL_TRANSIENT) if isinstance(neg_entry, dict) else NEGATIVE_CACHE_TTL_TRANSIENT
+        if now_ts - neg_ts < neg_ttl:
+            meta = STOCK_METADATA.get(clean_sym, {})
+            display_name = meta.get("name", f"{clean_sym} Equity")
+            return {
+                "status": "DATA_UNAVAILABLE",
+                "data_status": "DATA_UNAVAILABLE",
+                "data_interval": cfg["interval"],
+                "data_age_seconds": None,
+                "latest_market_timestamp": None,
+                "data_received_at": server_time.isoformat(),
+                "provider": "yfinance",
+                "symbol": clean_sym,
+                "full_symbol": f"{clean_sym}.NS",
+                "name": display_name,
+                "currency_symbol": "₹",
+                "exchange": "NSE",
+                "price": 0.0,
+                "previous_close": 0.0,
+                "price_change": 0.0,
+                "change_pct": 0.0,
+                "day_high": 0.0,
+                "day_low": 0.0,
+                "open": 0.0,
+                "volume": "N/A",
+                "raw_volume": 0,
+                "fifty_two_week_high": None,
+                "fifty_two_week_low": None,
+                "market_cap": "N/A",
+                "avg_volume": "N/A",
+                "trading_status": "Data Unavailable",
+                "market_status": market_status_val,
+                "last_updated": server_time.strftime("%I:%M:%S %p"),
+                "market_last_traded": "N/A",
+                "time_range": range_key,
+                "candles": [],
+                "chart_points": [],
+                "supertrend": None
+            }
 
     try:
         # Determine candidate tickers to fetch (deduplicated):
@@ -332,16 +345,19 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         best_df = pd.DataFrame()
         best_ticker = None
         best_chosen_sym = candidate_syms[0]
+        had_network_exception = False
 
-        for cand in candidate_syms:
+        for cand_idx, cand in enumerate(candidate_syms):
             try:
                 t = yf.Ticker(cand)
-                # Request intraday or historical data with low latency timeout
-                df_cand = t.history(period=cfg["period"], interval=cfg["interval"], auto_adjust=False, timeout=6)
+                # Primary candidate gets YFINANCE_PRIMARY_TIMEOUT; secondary fallbacks get shorter YFINANCE_SECONDARY_TIMEOUT
+                cand_timeout = YFINANCE_PRIMARY_TIMEOUT if cand_idx == 0 else YFINANCE_SECONDARY_TIMEOUT
+                df_cand = t.history(period=cfg["period"], interval=cfg["interval"], auto_adjust=False, timeout=cand_timeout)
 
                 # Fallback for 1D if 1d 1m is empty (e.g. pre-market, weekend, holiday): strictly 1m, not 5m!
                 if df_cand.empty and range_key == "1D":
-                    df_cand = t.history(period="5d", interval="1m", auto_adjust=False, timeout=6)
+                    fb_timeout = min(cand_timeout, YFINANCE_FALLBACK_TIMEOUT)
+                    df_cand = t.history(period="5d", interval="1m", auto_adjust=False, timeout=fb_timeout)
                     if not df_cand.empty:
                         last_date = df_cand.index[-1].date()
                         df_cand = df_cand[df_cand.index.date == last_date]
@@ -352,6 +368,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                     best_chosen_sym = cand
                     break
             except Exception as e_cand:
+                had_network_exception = True
                 print(f"[MarketData] Note checking candidate {cand}: {e_cand}")
 
         df = best_df
@@ -359,8 +376,23 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         norm_sym = best_chosen_sym
 
         if df.empty or len(df) < 1:
-            _NEGATIVE_LOOKUP_CACHE[clean_sym] = now_ts
-            print(f"[MarketData] Symbol: {clean_sym} | Provider empty, no market data available.")
+            is_known = bool(clean_sym in STOCK_METADATA or clean_sym in TICKER_ALIASES)
+            is_syntactically_invalid = bool(not clean_sym.replace("^", "").isalnum() or len(clean_sym) > 15)
+            # Distinguish transient network issues from invalid or unsupported tickers
+            if is_syntactically_invalid or (not is_known and not had_network_exception):
+                neg_reason = "INVALID_SYMBOL"
+                neg_ttl = NEGATIVE_CACHE_TTL_INVALID
+            else:
+                neg_reason = "TRANSIENT"
+                neg_ttl = NEGATIVE_CACHE_TTL_TRANSIENT
+
+            _NEGATIVE_LOOKUP_CACHE[clean_sym] = {
+                "timestamp": now_ts,
+                "reason": neg_reason,
+                "ttl": neg_ttl,
+                "error": "Empty candle data returned"
+            }
+            print(f"[MarketData] Symbol: {clean_sym} | Provider empty ({neg_reason}, cache TTL: {neg_ttl}s).")
             meta = STOCK_METADATA.get(clean_sym, {})
             currency_symbol = "₹" if (".NS" in norm_sym or ".BO" in norm_sym) else "$"
             exchange_label = "NSE" if ".NS" in norm_sym else ("BSE" if ".BO" in norm_sym else "NASDAQ")
@@ -404,6 +436,9 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         df.columns = [c.lower() for c in df.columns]
         df = df.sort_index()
         df = df[~df.index.duplicated(keep='last')]
+
+        # Automatic recovery from temporary error: clean up negative cache entry
+        _NEGATIVE_LOOKUP_CACHE.pop(clean_sym, None)
 
         # Fast info & metadata extraction with local 2-hour caching (static fields only, NEVER cache price for 2 hours)
         fi_cached = _FAST_INFO_CACHE.get(clean_sym)
@@ -456,7 +491,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                 fi_fresh = getattr(ticker, 'fast_info', None)
                 if fi_fresh:
                     fresh_p = getattr(fi_fresh, 'last_price', None) or getattr(fi_fresh, 'lastPrice', None)
-                    if fresh_p and not np.isnan(fresh_p) and fresh_p > 0:
+                    if fresh_p is not None and isinstance(fresh_p, (int, float, np.floating, np.integer)) and not np.isnan(fresh_p) and fresh_p > 0:
                         curr_price = float(fresh_p)
             except Exception:
                 pass
@@ -496,14 +531,14 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         currency_symbol = "₹" if fi_currency == "INR" else ("$" if fi_currency == "USD" else f"{fi_currency} ")
 
         if range_key == "1D":
-            if fi_prev_close and not np.isnan(fi_prev_close) and fi_prev_close > 0:
+            if fi_prev_close is not None and isinstance(fi_prev_close, (int, float, np.floating, np.integer)) and not np.isnan(fi_prev_close) and fi_prev_close > 0:
                 prev_close = float(fi_prev_close)
             else:
                 prev_close = float(df['open'].iloc[0])
         else:
             prev_close = float(df['close'].iloc[0])
 
-        if fi_open and not np.isnan(fi_open) and fi_open > 0:
+        if fi_open is not None and isinstance(fi_open, (int, float, np.floating, np.integer)) and not np.isnan(fi_open) and fi_open > 0:
             open_price = float(fi_open)
         else:
             open_price = day_open
@@ -523,26 +558,26 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
             "avg_vol": "N/A"
         })
 
-        if fi_year_high and not np.isnan(fi_year_high):
+        if fi_year_high is not None and isinstance(fi_year_high, (int, float, np.floating, np.integer)) and not np.isnan(fi_year_high):
             high_52w = round(float(fi_year_high), 2)
         elif meta.get("52w_high"):
             high_52w = float(meta["52w_high"])
         else:
             high_52w = round(curr_price * 1.25, 2)
 
-        if fi_year_low and not np.isnan(fi_year_low):
+        if fi_year_low is not None and isinstance(fi_year_low, (int, float, np.floating, np.integer)) and not np.isnan(fi_year_low):
             low_52w = round(float(fi_year_low), 2)
         elif meta.get("52w_low"):
             low_52w = float(meta["52w_low"])
         else:
             low_52w = round(curr_price * 0.75, 2)
 
-        if fi_market_cap and not np.isnan(fi_market_cap):
+        if fi_market_cap is not None and isinstance(fi_market_cap, (int, float, np.floating, np.integer)) and not np.isnan(fi_market_cap):
             market_cap_str = format_market_cap(fi_market_cap, fi_currency)
         else:
             market_cap_str = meta.get("market_cap", "N/A")
 
-        if fi_avg_vol and not np.isnan(fi_avg_vol):
+        if fi_avg_vol is not None and isinstance(fi_avg_vol, (int, float, np.floating, np.integer)) and not np.isnan(fi_avg_vol):
             avg_vol_str = format_volume_metric(float(fi_avg_vol))
         else:
             avg_vol_str = meta.get("avg_vol", "N/A")
@@ -669,6 +704,12 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         return result
 
     except Exception as e:
+        _NEGATIVE_LOOKUP_CACHE[clean_sym] = {
+            "timestamp": now_ts,
+            "reason": "TRANSIENT",
+            "ttl": NEGATIVE_CACHE_TTL_TRANSIENT,
+            "error": str(e)
+        }
         print(f"[MarketData] Error retrieving visualization for {symbol}: {e}")
         return {
             "status": "UNAVAILABLE",
@@ -689,6 +730,34 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
             with _IN_FLIGHT_LOCK:
                 event_to_wait.set()
                 _IN_FLIGHT_EVENTS.pop(cache_id, None)
+
+
+def get_negative_cache_status() -> Dict[str, Any]:
+    """Returns telemetry of symbols currently in the negative market data cache."""
+    now_ts = time.time()
+    active_neg = {}
+    for sym, entry in list(_NEGATIVE_LOOKUP_CACHE.items()):
+        ts = entry["timestamp"] if isinstance(entry, dict) else float(entry)
+        ttl = entry.get("ttl", NEGATIVE_CACHE_TTL_TRANSIENT) if isinstance(entry, dict) else NEGATIVE_CACHE_TTL_TRANSIENT
+        elapsed = now_ts - ts
+        if elapsed < ttl:
+            active_neg[sym] = {
+                "reason": entry.get("reason", "TRANSIENT") if isinstance(entry, dict) else "TRANSIENT",
+                "remaining_seconds": round(ttl - elapsed, 1),
+                "ttl": ttl,
+                "error": entry.get("error") if isinstance(entry, dict) else None
+            }
+    return active_neg
+
+
+def clear_negative_cache(symbol: Optional[str] = None):
+    """Manually clear negative lookup cache for a symbol or all symbols."""
+    global _NEGATIVE_LOOKUP_CACHE
+    if symbol:
+        clean = get_clean_symbol(normalize_ticker(symbol))
+        _NEGATIVE_LOOKUP_CACHE.pop(clean, None)
+    else:
+        _NEGATIVE_LOOKUP_CACHE.clear()
 
 
 _WARMER_STARTED = False
@@ -845,10 +914,12 @@ def get_latest_market_snapshot(symbol: str) -> Dict[str, Any]:
     features = {}
     
     clean_sym_upper = symbol.strip().upper()
+    from app.services.feature_engine import get_candle_sequence_key
+    ckey = get_candle_sequence_key(candles)
     feat_key = (
         clean_sym_upper,
         str(data.get("latest_market_timestamp")),
-        len(candles),
+        ckey,
         round(float(data.get("price", 0.0)), 2)
     )
 
