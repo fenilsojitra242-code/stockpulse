@@ -111,22 +111,79 @@ def format_volume_metric(vol: float) -> str:
     return f"{int(vol):,}"
 
 
-def get_market_status() -> Tuple[str, str]:
+# Official NSE / BSE Trading Holidays (2025 - 2026)
+NSE_HOLIDAYS = {
+    # 2025
+    "2025-01-26",  # Republic Day
+    "2025-02-26",  # Mahashivratri
+    "2025-03-14",  # Holi
+    "2025-03-31",  # Id-Ul-Fitr
+    "2025-04-10",  # Shri Mahavir Jayanti
+    "2025-04-14",  # Dr. Baba Saheb Ambedkar Jayanti
+    "2025-04-18",  # Good Friday
+    "2025-05-01",  # Maharashtra Day
+    "2025-06-07",  # Bakri Id
+    "2025-07-06",  # Muharram
+    "2025-08-15",  # Independence Day
+    "2025-08-27",  # Ganesh Chaturthi
+    "2025-10-02",  # Mahatma Gandhi Jayanti
+    "2025-10-21",  # Diwali Balipratipada
+    "2025-11-05",  # Guru Nanak Jayanti
+    "2025-12-25",  # Christmas
+    # 2026
+    "2026-01-26",  # Republic Day
+    "2026-02-16",  # Mahashivratri
+    "2026-03-04",  # Holi
+    "2026-03-21",  # Id-Ul-Fitr
+    "2026-04-03",  # Good Friday
+    "2026-04-14",  # Dr. Ambedkar Jayanti
+    "2026-05-01",  # Maharashtra Day
+    "2026-05-28",  # Bakri Id
+    "2026-06-26",  # Muharram
+    "2026-08-15",  # Independence Day
+    "2026-09-14",  # Ganesh Chaturthi
+    "2026-10-02",  # Mahatma Gandhi Jayanti
+    "2026-10-20",  # Dussehra
+    "2026-11-10",  # Diwali Balipratipada
+    "2026-11-24",  # Guru Nanak Jayanti
+    "2026-12-25",  # Christmas
+}
+
+
+def get_market_status(as_of: Optional[datetime] = None) -> Tuple[str, str]:
     """
-    Returns market status: 'OPEN' or 'CLOSED', and formatted current IST time.
-    NSE/BSE Trading Hours: Monday to Friday, 09:15 to 15:30 IST.
+    Returns authoritative market status: 'OPEN', 'CLOSED', or 'STATUS UNKNOWN', and formatted IST time.
+    NSE/BSE Trading Hours: Monday to Friday, 09:15 to 15:30 IST, excluding exchange holidays.
+    Completely independent of individual provider connectivity or single API request success.
     """
-    now_ist = datetime.now(IST)
-    time_str = now_ist.strftime("%I:%M:%S %p")
-    
-    is_weekday = now_ist.weekday() < 5
-    market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
-    market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
-    
-    if is_weekday and market_open <= now_ist <= market_close:
-        return "OPEN", time_str
-    else:
-        return "CLOSED", time_str
+    try:
+        if as_of:
+            now_ist = as_of.astimezone(IST) if as_of.tzinfo else as_of.replace(tzinfo=IST)
+        else:
+            now_ist = datetime.now(IST)
+
+        time_str = now_ist.strftime("%I:%M:%S %p")
+        date_str = now_ist.strftime("%Y-%m-%d")
+
+        # 1. Exchange Holiday Check
+        if date_str in NSE_HOLIDAYS:
+            return "CLOSED", time_str
+
+        # 2. Weekend Check (Saturday=5, Sunday=6)
+        if now_ist.weekday() >= 5:
+            return "CLOSED", time_str
+
+        # 3. Regular Trading Hours: 09:15 to 15:30 IST
+        market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+        market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+
+        if market_open <= now_ist <= market_close:
+            return "OPEN", time_str
+        else:
+            return "CLOSED", time_str
+    except Exception:
+        fallback_time = datetime.now().strftime("%I:%M:%S %p")
+        return "STATUS UNKNOWN", fallback_time
 
 
 def format_market_cap(mcap: Optional[float], currency: str = "INR") -> str:
@@ -354,13 +411,34 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                 cand_timeout = YFINANCE_PRIMARY_TIMEOUT if cand_idx == 0 else YFINANCE_SECONDARY_TIMEOUT
                 df_cand = t.history(period=cfg["period"], interval=cfg["interval"], auto_adjust=False, timeout=cand_timeout)
 
-                # Fallback for 1D if 1d 1m is empty (e.g. pre-market, weekend, holiday): strictly 1m, not 5m!
+                # Robust multi-tier fallback for 1D when market is closed or 1d 1m is empty
                 if df_cand.empty and range_key == "1D":
                     fb_timeout = min(cand_timeout, YFINANCE_FALLBACK_TIMEOUT)
-                    df_cand = t.history(period="5d", interval="1m", auto_adjust=False, timeout=fb_timeout)
-                    if not df_cand.empty:
-                        last_date = df_cand.index[-1].date()
-                        df_cand = df_cand[df_cand.index.date == last_date]
+                    # 1. Retrieve the latest available 1m intraday candles from the last 5 days
+                    try:
+                        df_cand = t.history(period="5d", interval="1m", auto_adjust=False, timeout=fb_timeout)
+                        if not df_cand.empty:
+                            last_date = df_cand.index[-1].date()
+                            df_cand = df_cand[df_cand.index.date == last_date]
+                    except Exception:
+                        pass
+
+                    # 2. If 1m data is purged/unavailable (e.g. closed market / holiday), get 5m candles of latest session
+                    if df_cand.empty:
+                        try:
+                            df_cand = t.history(period="5d", interval="5m", auto_adjust=False, timeout=fb_timeout)
+                            if not df_cand.empty:
+                                last_date = df_cand.index[-1].date()
+                                df_cand = df_cand[df_cand.index.date == last_date]
+                        except Exception:
+                            pass
+
+                    # 3. If intraday is unavailable from provider, fall back to recent daily candles
+                    if df_cand.empty:
+                        try:
+                            df_cand = t.history(period="1mo", interval="1d", auto_adjust=False, timeout=fb_timeout)
+                        except Exception:
+                            pass
 
                 if not df_cand.empty:
                     best_df = df_cand
@@ -496,12 +574,9 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
             except Exception:
                 pass
 
-        # Market trading hours (09:15 to 15:30 IST on weekdays)
-        market_status_val, ist_time_str = get_market_status()
-        is_weekday = server_time.weekday() < 5
-        market_open_today = server_time.replace(hour=9, minute=15, second=0, microsecond=0)
-        market_close_today = server_time.replace(hour=15, minute=30, second=0, microsecond=0)
-        is_market_currently_open = is_weekday and (market_open_today <= server_time <= market_close_today)
+        # Authoritative market status check (timezone, holidays, weekends, trading hours)
+        market_status_val, ist_time_str = get_market_status(server_time)
+        is_market_currently_open = (market_status_val == "OPEN")
 
         day_open = float(df['open'].iloc[0])
 

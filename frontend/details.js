@@ -115,16 +115,39 @@
     }
     activeDetailsAbortController = new AbortController();
 
+    const startTime = Date.now();
+    const reqUrl = `/api/stocks/${encodeURIComponent(currentStock)}?range=1D`;
+
     try {
-      const res = await fetch(`/api/stocks/${currentStock}?range=1D`, {
+      const res = await fetch(reqUrl, {
         signal: activeDetailsAbortController.signal
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const durationMs = Date.now() - startTime;
+
+      if (!res.ok) {
+        console.warn(`[StockPulse][StockDetails] Symbol=${currentStock} endpoint=${reqUrl} HTTP error=${res.status} duration=${durationMs}ms`);
+        throw new Error(`HTTP ${res.status}`);
+      }
       const data = await res.json();
 
       if (seq !== activeDetailsSeq) {
         return; // Stale request, ignore response
       }
+
+      if (data.status === 'DATA_UNAVAILABLE' || data.status === 'UNAVAILABLE' || !data.price) {
+        console.warn(`[StockPulse][StockDetails] Symbol=${currentStock} endpoint=${reqUrl} returned DATA_UNAVAILABLE duration=${durationMs}ms`);
+        if (!detailsClientCache.has(symbol)) {
+          if (el.summaryCard) el.summaryCard.style.display = 'none';
+          if (el.detailsSection) el.detailsSection.style.display = 'none';
+          if (el.unavailableState) el.unavailableState.style.display = 'block';
+          if (el.detailsErrorText) {
+            el.detailsErrorText.textContent = data.error || `Could not retrieve market quotes for ${symbol}. Please check your connection or retry.`;
+          }
+        }
+        return;
+      }
+
+      console.log(`[StockPulse][StockDetails] Symbol=${currentStock} endpoint=${reqUrl} status=${res.status} duration=${durationMs}ms`);
 
       detailsClientCache.set(symbol, { data: data, timestamp: Date.now() });
       if (el.unavailableState) el.unavailableState.style.display = 'none';
@@ -134,7 +157,8 @@
       if (err.name === 'AbortError') return;
       if (seq !== activeDetailsSeq) return;
 
-      console.warn('[StockDetails] Error loading details:', err);
+      const durationMs = Date.now() - startTime;
+      console.warn(`[StockPulse][StockDetails] Symbol=${currentStock} endpoint=${reqUrl} failed duration=${durationMs}ms errorType=${err.name || 'Error'}: ${err.message}`);
       if (el.refreshingBadge) el.refreshingBadge.style.display = 'none';
 
       // If we don't have cached data displayed, show the error state

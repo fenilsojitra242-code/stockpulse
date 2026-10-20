@@ -12,6 +12,8 @@
   let hoveredCandleIdx = -1;
   let pollingTimer = null;
   let isFetching = false;
+  let currentMarketStatus = 'CLOSED';
+  let lastFetchTimestamp = 0;
   let currentPriceVal = 0;
   let supertrendOverlayEnabled = (window.StockPulse && window.StockPulse.getSupertrendOverlay) ? window.StockPulse.getSupertrendOverlay() : true;
   let cachedSuperTrendData = null;
@@ -27,6 +29,10 @@
   let panStartCandleEnd = 0;
   let lastTouchDistance = null;
   let lastPinchMidX = 0;
+
+  function getEl(id) {
+    return document.getElementById(id);
+  }
 
   // Active fetch abort controller and monotonic request sequence
   let activeFetchController = null;
@@ -140,26 +146,38 @@
     const thisSeq = ++activeFetchSeq;
     activeFetchController = new AbortController();
     isFetching = true;
+    const reqSymbol = currentSymbol;
+    const reqRange = currentTimeRange;
+    const reqUrl = `/api/stocks/${encodeURIComponent(reqSymbol)}?range=${encodeURIComponent(reqRange)}`;
+    const startTime = Date.now();
 
     try {
-      const url = `/api/stocks/${encodeURIComponent(currentSymbol)}?range=${encodeURIComponent(currentTimeRange)}`;
-      const resStock = await fetch(url, {
+      const resStock = await fetch(reqUrl, {
         signal: activeFetchController.signal,
         cache: 'default'
       });
 
-      if (!resStock.ok) throw new Error(`HTTP ${resStock.status}`);
+      const durationMs = Date.now() - startTime;
+
+      if (!resStock.ok) {
+        console.warn(`[StockPulse][LiveMarket] Symbol=${reqSymbol} endpoint=${reqUrl} HTTP error=${resStock.status} duration=${durationMs}ms`);
+        throw new Error(`HTTP ${resStock.status}`);
+      }
+
       const data = await resStock.json();
 
       // Guard against race conditions: ignore response if a newer selection occurred
       if (thisSeq !== activeFetchSeq) return;
 
       if (data.status === 'DATA_UNAVAILABLE' || data.status === 'UNAVAILABLE' || !data.price) {
+        console.warn(`[StockPulse][LiveMarket] Symbol=${reqSymbol} endpoint=${reqUrl} returned DATA_UNAVAILABLE duration=${durationMs}ms`);
         if (!cachedEntry) {
           showUnavailableState(data.symbol || currentSymbol, data.error || 'Provider data is currently unavailable.');
         }
         return;
       }
+
+      console.log(`[StockPulse][LiveMarket] Symbol=${reqSymbol} endpoint=${reqUrl} status=${resStock.status} duration=${durationMs}ms`);
 
       // Update client cache with fresh payload
       clientStockCache.set(cacheKey, { data, timestamp: Date.now() });
@@ -169,17 +187,28 @@
         cachedSuperTrendData = data.supertrend;
         cachedSuperTrendSeries = data.supertrend.series || [];
         renderLiveSuperTrendHUD(data.supertrend);
+      } else {
+        fetchLiveSuperTrend(currentSymbol);
       }
 
       renderDashboard(data);
       clearLiveBufferingState();
+
+      lastFetchTimestamp = Date.now();
+      if (data && data.market_status) {
+        currentMarketStatus = (data.market_status || 'CLOSED').toUpperCase();
+        if (window.StockPulse && window.StockPulse.applyMarketStatus) {
+          window.StockPulse.applyMarketStatus(currentMarketStatus);
+        }
+      }
 
     } catch (err) {
       if (err.name === 'AbortError' || thisSeq !== activeFetchSeq) {
         // Obsolete request cleanly cancelled; nothing to report
         return;
       }
-      console.warn('[LiveMarket] Fetch error:', err);
+      const durationMs = Date.now() - startTime;
+      console.warn(`[StockPulse][LiveMarket] Symbol=${reqSymbol} endpoint=${reqUrl} failed duration=${durationMs}ms errorType=${err.name || 'Error'}: ${err.message}`);
 
       if (!cachedEntry) {
         showUnavailableState(currentSymbol, 'Network connection error or market provider timeout. Please check your connection and retry.');
@@ -189,8 +218,25 @@
         isFetching = false;
         const refBadge = getEl('stock-refreshing-badge');
         if (refBadge) refBadge.style.display = 'none';
+        scheduleNextPoll();
       }
     }
+  }
+
+  function scheduleNextPoll(delayMs) {
+    if (pollingTimer) {
+      clearTimeout(pollingTimer);
+      pollingTimer = null;
+    }
+    if (document.hidden) return; // Tab in background: paused
+
+    let delay = delayMs;
+    if (delay === undefined) {
+      delay = (currentMarketStatus === 'OPEN') ? 3000 : 30000;
+    }
+    pollingTimer = setTimeout(() => {
+      fetchStockData(false);
+    }, delay);
   }
 
   function showUnavailableState(sym, message) {
@@ -201,6 +247,48 @@
     if (errText) errText.textContent = message || `Market data for ${sym} is currently unavailable. Please retry.`;
     if (unavail) unavail.style.display = 'block';
     if (cContainer) cContainer.style.display = 'none';
+
+    // Clear Header & Price Skeletons so they don't remain stuck indefinitely on failure
+    const symEl = getEl('stock-symbol');
+    const exchEl = getEl('stock-exchange');
+    const nameEl = getEl('company-name');
+    const curPrice = getEl('current-price');
+    const priceChangeAbs = getEl('price-change-abs');
+    const priceChangePct = getEl('price-change-pct');
+    const prevCloseRef = getEl('prev-close-ref');
+    const liveLabel = getEl('live-status-label');
+    const updatedEl = getEl('last-updated-time');
+    const livePill = getEl('live-status-pill');
+
+    if (symEl) symEl.textContent = sym || currentSymbol;
+    if (exchEl) exchEl.textContent = 'NSE';
+    if (nameEl) nameEl.textContent = `${sym || currentSymbol} — Data Unavailable`;
+    if (curPrice) curPrice.textContent = '₹--.--';
+    if (priceChangeAbs) priceChangeAbs.textContent = '';
+    if (priceChangePct) priceChangePct.textContent = '';
+    if (prevCloseRef) prevCloseRef.textContent = 'Quotes currently unavailable';
+    if (livePill) livePill.className = 'live-pill closed';
+    if (liveLabel) liveLabel.textContent = 'UNAVAILABLE';
+    if (updatedEl) updatedEl.textContent = new Date().toLocaleTimeString('en-IN');
+
+    // SuperTrend Strip Skeletons clear
+    const stPill = getEl('live-st-pill');
+    const stPrice = getEl('live-st-price');
+    const stGap = getEl('live-st-gap');
+    const stHitPill = getEl('live-st-hit-pill');
+    if (stPill) {
+      stPill.className = 'supertrend-badge-pill';
+      stPill.innerHTML = '<i class="fa-solid fa-circle-exclamation"></i> UNAVAILABLE';
+    }
+    if (stPrice) stPrice.textContent = '₹--.--';
+    if (stGap) stGap.textContent = '--';
+    if (stHitPill) stHitPill.style.display = 'none';
+
+    // OHLC HUD Skeletons clear
+    ['live-hud-time', 'live-hud-open', 'live-hud-high', 'live-hud-low', 'live-hud-close', 'live-hud-change', 'live-hud-vol', 'live-hud-st'].forEach(id => {
+      const el = getEl(id);
+      if (el) el.textContent = '--';
+    });
   }
 
   // --- SUPERTREND ENGINE & HUD ---
@@ -220,12 +308,23 @@
   }
 
   function renderLiveSuperTrendHUD(data) {
-    if (!data) return;
     const pill = getEl('live-st-pill');
     const priceEl = getEl('live-st-price');
     const gapEl = getEl('live-st-gap');
     const hitPill = getEl('live-st-hit-pill');
     const iconBox = getEl('live-st-icon-box');
+
+    if (!data) {
+      if (pill) {
+        pill.className = 'supertrend-badge-pill neutral';
+        pill.innerHTML = '<i class="fa-solid fa-circle-info"></i> STATUS UNAVAILABLE';
+      }
+      if (priceEl) priceEl.textContent = '₹--.--';
+      if (gapEl) gapEl.textContent = '--';
+      if (hitPill) hitPill.style.display = 'none';
+      if (iconBox) iconBox.style.background = 'var(--bg-card)';
+      return;
+    }
 
     const isBuy = data.direction === 'BUY';
     const stPrice = Number(data.supertrend_price || 0).toFixed(2);
@@ -342,6 +441,65 @@
     }
   }
 
+  // --- OHLC HUD UPDATERS ---
+  function updateOHLCHUD(activeCandle) {
+    if (!activeCandle) {
+      resetOHLCHUD();
+      return;
+    }
+    const hTime = getEl('live-hud-time');
+    const hOpen = getEl('live-hud-open');
+    const hHigh = getEl('live-hud-high');
+    const hLow = getEl('live-hud-low');
+    const hClose = getEl('live-hud-close');
+    const hChange = getEl('live-hud-change');
+    const hVol = getEl('live-hud-vol');
+
+    const closeVal = Number(activeCandle.close != null ? activeCandle.close : (activeCandle.price != null ? activeCandle.price : (currentPriceVal || 0)));
+    const openVal = Number(activeCandle.open != null ? activeCandle.open : closeVal);
+    const highVal = Number(activeCandle.high != null ? activeCandle.high : Math.max(openVal, closeVal));
+    const lowVal = Number(activeCandle.low != null ? activeCandle.low : Math.min(openVal, closeVal));
+
+    const diffVal = closeVal - openVal;
+    const pctVal = openVal > 0 ? (diffVal / openVal) * 100 : 0;
+    const sign = diffVal >= 0 ? '+' : '';
+    const isBull = closeVal >= openVal;
+
+    if (hTime) hTime.textContent = activeCandle.time || '--:--';
+    if (hOpen) hOpen.textContent = `₹${openVal.toFixed(2)}`;
+    if (hHigh) hHigh.textContent = `₹${highVal.toFixed(2)}`;
+    if (hLow) hLow.textContent = `₹${lowVal.toFixed(2)}`;
+    if (hClose) {
+      hClose.textContent = `₹${closeVal.toFixed(2)}`;
+      hClose.style.color = isBull ? '#089981' : '#f23645';
+    }
+    if (hChange) {
+      hChange.textContent = `${sign}₹${diffVal.toFixed(2)} (${sign}${pctVal.toFixed(2)}%)`;
+      hChange.style.color = isBull ? '#089981' : '#f23645';
+    }
+    if (hVol) hVol.textContent = activeCandle.volume ? Number(activeCandle.volume).toLocaleString('en-IN') : '--';
+
+    const hSt = getEl('live-hud-st');
+    const hStItem = getEl('live-hud-st-item');
+    if (hSt && supertrendOverlayEnabled && cachedSuperTrendData && cachedSuperTrendData.supertrend_price) {
+      if (hStItem) hStItem.style.display = 'flex';
+      const isBuy = cachedSuperTrendData.direction === 'BUY';
+      hSt.innerHTML = `<span style="color: ${isBuy ? '#089981' : '#f23645'}; font-weight: 800;">₹${Number(cachedSuperTrendData.supertrend_price).toFixed(2)} <span style="font-size: 10px; padding: 1px 4px; border-radius: 4px; background: ${isBuy ? 'rgba(8, 153, 129, 0.15)' : 'rgba(242, 54, 69, 0.15)'};">${cachedSuperTrendData.direction}</span></span>`;
+    } else if (hSt) {
+      hSt.textContent = '₹--.--';
+    }
+  }
+
+  function resetOHLCHUD() {
+    ['live-hud-time', 'live-hud-open', 'live-hud-high', 'live-hud-low', 'live-hud-close', 'live-hud-change', 'live-hud-vol', 'live-hud-st'].forEach(id => {
+      const el = getEl(id);
+      if (el) {
+        el.textContent = id.endsWith('open') || id.endsWith('high') || id.endsWith('low') || id.endsWith('close') || id.endsWith('st') ? '₹--.--' : '--';
+        el.style.color = '';
+      }
+    });
+  }
+
   // --- RENDER DASHBOARD & CHART ---
   function renderDashboard(data) {
     if (!data) return;
@@ -352,34 +510,39 @@
     // Ensure candlestick canvas and HUD are active
     ensureCandleElementsActive();
 
-    // Header info
+    // Header info with targeted updates (only mutate if changed)
     const symEl = getEl('stock-symbol');
     const exchEl = getEl('stock-exchange');
     const nameEl = getEl('company-name');
     const updatedEl = getEl('last-updated-time');
 
-    if (symEl) symEl.textContent = data.symbol || currentSymbol;
-    if (exchEl) exchEl.textContent = data.exchange || 'NSE';
-    if (nameEl) nameEl.textContent = data.name || `${currentSymbol} Ltd`;
+    const nextSym = data.symbol || currentSymbol;
+    const nextExch = data.exchange || 'NSE';
+    const nextName = data.name || `${currentSymbol} Ltd`;
+    if (symEl && symEl.textContent !== nextSym) symEl.textContent = nextSym;
+    if (exchEl && exchEl.textContent !== nextExch) exchEl.textContent = nextExch;
+    if (nameEl && nameEl.textContent !== nextName) nameEl.textContent = nextName;
 
-    // Last updated timestamp & market trade time
-    if (updatedEl) {
-      const syncTime = data.last_updated || new Date().toLocaleTimeString('en-IN');
-      const marketTradeTime = data.market_last_traded;
-      const isClosed = data.market_status === 'CLOSED' || data.data_status === 'CLOSED';
-      if (isClosed && marketTradeTime) {
-        updatedEl.textContent = `${syncTime} (Close: ${marketTradeTime})`;
-      } else {
-        updatedEl.textContent = syncTime;
-      }
+    // Market status and closure state
+    const isClosed = data.market_status === 'CLOSED' || data.data_status === 'CLOSED';
+    const marketTradeTime = data.market_last_traded;
+    const syncTime = data.last_updated || new Date().toLocaleTimeString('en-IN');
+    const targetUpdated = (isClosed && marketTradeTime) ? `${syncTime} (Close: ${marketTradeTime})` : syncTime;
+    if (updatedEl && updatedEl.textContent !== targetUpdated) {
+      updatedEl.textContent = targetUpdated;
     }
 
-    // Market status in navigation
-    const mStatusText = getEl('market-status-text');
-    const mStatusDot = getEl('market-status-dot');
-    const isMarketClosed = data.market_status === 'CLOSED' || data.data_status === 'CLOSED';
-    if (mStatusText) mStatusText.textContent = `Market: ${data.market_status || (isMarketClosed ? 'CLOSED' : 'OPEN')}`;
-    if (mStatusDot) mStatusDot.className = `pulse-dot ${isMarketClosed ? 'amber' : 'green'}`;
+    // Market status in navigation (delegate to shared coordinator to eliminate flicker)
+    if (window.StockPulse && window.StockPulse.applyMarketStatus) {
+      window.StockPulse.applyMarketStatus(data.market_status || (isClosed ? 'CLOSED' : 'OPEN'));
+    } else {
+      const mStatusText = getEl('market-status-text');
+      const mStatusDot = getEl('market-status-dot');
+      const targetMText = `Market: ${data.market_status || (isClosed ? 'CLOSED' : 'OPEN')}`;
+      const targetMDot = `pulse-dot ${isClosed ? 'amber' : 'green'}`;
+      if (mStatusText && mStatusText.textContent !== targetMText) mStatusText.textContent = targetMText;
+      if (mStatusDot && mStatusDot.className !== targetMDot) mStatusDot.className = targetMDot;
+    }
 
     // Live / Delayed / Closed status badge
     const livePill = getEl('live-status-pill');
@@ -388,27 +551,45 @@
     const globalDot = getEl('global-status-dot');
     const globalText = getEl('global-status-text');
 
-    if (isMarketClosed) {
-      if (livePill) livePill.className = 'live-pill closed';
-      if (liveDot) liveDot.className = 'pulse-dot amber';
-      if (liveLabel) liveLabel.textContent = 'MARKET CLOSED';
-      if (globalDot) globalDot.className = 'status-indicator-dot closed';
-      if (globalText) globalText.textContent = 'CLOSED';
+    let targetPillClass = 'live-pill';
+    let targetDotClass = 'pulse-dot green';
+    let targetLabelText = 'LIVE';
+    let targetGlobalDot = 'status-indicator-dot live';
+    let targetGlobalText = 'LIVE';
+
+    if (isClosed) {
+      targetPillClass = 'live-pill closed';
+      targetDotClass = 'pulse-dot amber';
+      targetLabelText = 'MARKET CLOSED';
+      targetGlobalDot = 'status-indicator-dot closed';
+      targetGlobalText = 'CLOSED';
     } else if (data.data_status === 'LIVE' || data.status === 'LIVE') {
-      if (livePill) livePill.className = 'live-pill';
-      if (liveDot) liveDot.className = 'pulse-dot green';
-      if (liveLabel) liveLabel.textContent = 'LIVE';
-      if (globalDot) globalDot.className = 'status-indicator-dot live';
-      if (globalText) globalText.textContent = 'LIVE';
+      targetPillClass = 'live-pill';
+      targetDotClass = 'pulse-dot green';
+      targetLabelText = 'LIVE';
+      targetGlobalDot = 'status-indicator-dot live';
+      targetGlobalText = 'LIVE';
     } else if (data.data_status === 'DELAYED') {
-      if (livePill) livePill.className = 'live-pill delayed';
-      if (liveDot) liveDot.className = 'pulse-dot amber';
-      if (liveLabel) liveLabel.textContent = 'DELAYED (15m)';
-      if (globalDot) globalDot.className = 'status-indicator-dot delayed';
-      if (globalText) globalText.textContent = 'DELAYED';
+      targetPillClass = 'live-pill delayed';
+      targetDotClass = 'pulse-dot amber';
+      targetLabelText = 'DELAYED (15m)';
+      targetGlobalDot = 'status-indicator-dot delayed';
+      targetGlobalText = 'DELAYED';
+    } else {
+      targetPillClass = 'live-pill closed';
+      targetDotClass = 'pulse-dot amber';
+      targetLabelText = 'LAST CLOSE / STALE';
+      targetGlobalDot = 'status-indicator-dot closed';
+      targetGlobalText = 'STALE';
     }
 
-    // Price
+    if (livePill && livePill.className !== targetPillClass) livePill.className = targetPillClass;
+    if (liveDot && liveDot.className !== targetDotClass) liveDot.className = targetDotClass;
+    if (liveLabel && liveLabel.textContent !== targetLabelText) liveLabel.textContent = targetLabelText;
+    if (globalDot && globalDot.className !== targetGlobalDot) globalDot.className = targetGlobalDot;
+    if (globalText && globalText.textContent !== targetGlobalText) globalText.textContent = targetGlobalText;
+
+    // Price and Change
     const priceVal = data.price || 0;
     const prevPrice = currentPriceVal;
     currentPriceVal = priceVal;
@@ -426,31 +607,37 @@
     const changeAbs = getEl('price-change-abs');
     const changePctEl = getEl('price-change-pct');
 
-    if (priceEl) {
-      priceEl.textContent = `₹${priceVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-      // Visual tick pulse animation when live price moves
-      if (prevPrice > 0 && Math.abs(priceVal - prevPrice) >= 0.01) {
+    const formattedPrice = `₹${priceVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (priceEl && priceEl.textContent !== formattedPrice) {
+      priceEl.textContent = formattedPrice;
+      // Visual tick pulse animation ONLY when market is open and live price moves
+      if (!isClosed && prevPrice > 0 && Math.abs(priceVal - prevPrice) >= 0.01) {
         priceEl.classList.remove('price-pulse-up', 'price-pulse-down');
         void priceEl.offsetWidth; // Force CSS reflow
         priceEl.classList.add(priceVal >= prevPrice ? 'price-pulse-up' : 'price-pulse-down');
       }
     }
-    if (prevRefEl) {
-      prevRefEl.textContent = `vs prev close ₹${prevClose.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const prevRefText = `vs prev close ₹${prevClose.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (prevRefEl && prevRefEl.textContent !== prevRefText) {
+      prevRefEl.textContent = prevRefText;
     }
 
-    if (changeBadge) {
-      changeBadge.className = `change-badge ${isUp ? 'up' : 'down'}`;
+    const badgeClass = `change-badge ${isUp ? 'up' : 'down'}`;
+    if (changeBadge && changeBadge.className !== badgeClass) {
+      changeBadge.className = badgeClass;
     }
     if (changeIcon) {
       changeIcon.style.display = 'inline-block';
-      changeIcon.className = `fa-solid ${isUp ? 'fa-arrow-trend-up' : 'fa-arrow-trend-down'}`;
+      const iconClass = `fa-solid ${isUp ? 'fa-arrow-trend-up' : 'fa-arrow-trend-down'}`;
+      if (changeIcon.className !== iconClass) changeIcon.className = iconClass;
     }
-    if (changeAbs) {
-      changeAbs.textContent = `${sign}₹${Math.abs(changeVal).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const absText = `${sign}₹${Math.abs(changeVal).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (changeAbs && changeAbs.textContent !== absText) {
+      changeAbs.textContent = absText;
     }
-    if (changePctEl) {
-      changePctEl.textContent = `(${sign}${changePct.toFixed(2)}%)`;
+    const pctText = `(${sign}${changePct.toFixed(2)}%)`;
+    if (changePctEl && changePctEl.textContent !== pctText) {
+      changePctEl.textContent = pctText;
     }
 
     // Update Chart with candles or chart_points
@@ -458,6 +645,13 @@
     const points = (data.candles && data.candles.length > 0) ? data.candles : (data.chart_points || []);
     cachedCandles = points;
     const newLen = points.length;
+
+    // Immediately update OHLC HUD with the latest candle (removes HUD skeletons!)
+    if (points.length > 0) {
+      updateOHLCHUD(points[points.length - 1]);
+    } else {
+      resetOHLCHUD();
+    }
 
     // Real-time anchor: follow newest incoming candle if user was viewing latest edge
     if (zoomVisibleEnd != null && prevLen > 0 && zoomVisibleEnd >= prevLen - 1) {
@@ -477,7 +671,8 @@
     if (!sym) return;
     const clean = sym.toUpperCase().replace(/\.(NS|BO)$/, '');
     const isUnavail = getEl('unavailable-state') && getEl('unavailable-state').style.display !== 'none';
-    if (clean === currentSymbol && !isUnavail) return; // Prevent duplicate requests for already loaded stock
+    const isBuffering = getEl('skeleton-chart-wrapper') && getEl('skeleton-chart-wrapper').style.display !== 'none';
+    if (clean === currentSymbol && !isUnavail && !isBuffering) return; // Prevent duplicate requests for already loaded stock
     currentSymbol = clean;
     zoomVisibleStart = null;
     zoomVisibleEnd = null;
@@ -964,7 +1159,11 @@
       ctx.font = '600 13px "Plus Jakarta Sans", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('Loading live candlestick market data...', width / 2, height / 2);
+      const mStatus = (sessionStorage.getItem('stockpulse_cached_market_status') || 'CLOSED');
+      const msg = mStatus === 'CLOSED'
+        ? 'Market Closed — No Active Intraday Trades In Session'
+        : 'Loading candlestick market data...';
+      ctx.fillText(msg, width / 2, height / 2);
       return;
     }
 
@@ -1639,10 +1838,32 @@
 
     fetchStockData(true);
 
-    if (pollingTimer) clearInterval(pollingTimer);
-    pollingTimer = setInterval(() => {
-      fetchStockData(false);
-    }, 3000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        const elapsed = Date.now() - lastFetchTimestamp;
+        const threshold = (currentMarketStatus === 'OPEN') ? 3000 : 30000;
+        if (elapsed >= threshold) {
+          fetchStockData(false);
+        } else {
+          scheduleNextPoll(threshold - elapsed);
+        }
+      } else {
+        if (pollingTimer) {
+          clearTimeout(pollingTimer);
+          pollingTimer = null;
+        }
+      }
+    });
+
+    window.addEventListener('beforeunload', () => {
+      if (pollingTimer) {
+        clearTimeout(pollingTimer);
+        pollingTimer = null;
+      }
+      if (activeFetchController) {
+        try { activeFetchController.abort(); } catch (e) {}
+      }
+    });
   }
 
   if (document.readyState === 'loading') {
@@ -1650,5 +1871,11 @@
   } else {
     init();
   }
+
+  if (window.StockPulse) {
+    window.StockPulse.changeStock = changeStock;
+    window.StockPulse.fetchStockData = fetchStockData;
+  }
+  window.changeStock = changeStock;
 
 })();

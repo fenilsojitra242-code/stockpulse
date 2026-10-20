@@ -4,8 +4,21 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 from sqlalchemy import event
 
-# Default to local SQLite database in data/ directory, with support for PostgreSQL
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/stockpulse.db")
+# Establish consistent, absolute database path based on project root
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DEFAULT_DB_FILE = os.path.join(BASE_DIR, "data", "stockpulse.db")
+os.makedirs(os.path.dirname(DEFAULT_DB_FILE), exist_ok=True)
+
+raw_db_url = os.getenv("DATABASE_URL")
+if not raw_db_url:
+    DATABASE_URL = f"sqlite:///{DEFAULT_DB_FILE.replace(chr(92), '/')}"
+elif raw_db_url.startswith("sqlite:///") and not raw_db_url.startswith("sqlite:////") and not (len(raw_db_url) > 11 and raw_db_url[11] == ":"):
+    rel_path = raw_db_url.replace("sqlite:///./", "").replace("sqlite:///", "")
+    abs_db_file = os.path.abspath(os.path.join(BASE_DIR, rel_path))
+    os.makedirs(os.path.dirname(abs_db_file), exist_ok=True)
+    DATABASE_URL = f"sqlite:///{abs_db_file.replace(chr(92), '/')}"
+else:
+    DATABASE_URL = raw_db_url
 
 # For SQLite, check_same_thread=False allows multi-threaded access across FastAPI and APScheduler
 connect_args = {"check_same_thread": False, "timeout": 15} if DATABASE_URL.startswith("sqlite") else {}

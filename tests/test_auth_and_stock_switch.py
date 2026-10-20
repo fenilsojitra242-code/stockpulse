@@ -123,7 +123,7 @@ class TestAuthAndStockSwitch(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             login_user(req=login_wrong, response=response, db=self.db)
         self.assertEqual(ctx.exception.status_code, 401)
-        self.assertIn("Incorrect password", ctx.exception.detail)
+        self.assertIn("Invalid email/username or password", ctx.exception.detail)
 
         # Non-existent user
         login_ghost = LoginRequest(identifier="ghost_user_does_not_exist", password="SomePassword")

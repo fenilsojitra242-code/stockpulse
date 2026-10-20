@@ -43,15 +43,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def seed_default_user_if_needed(db: Session) -> User:
     """
-    Ensures the fixed testing user (name='user', username='user', password='123456') exists in the database.
+    Ensures the fixed testing user exists in the database.
+    Queries strictly by unique test email 'user@stockpulse.local'.
+    Never overwrites or alters real user accounts registered with different emails.
     """
     test_user = db.query(User).filter(
-        or_(
-            User.username == "user",
-            func.lower(User.username) == "user",
-            func.lower(User.name) == "user",
-            func.lower(User.email) == "user@stockpulse.local"
-        )
+        func.lower(User.email) == "user@stockpulse.local"
     ).first()
 
     if not test_user:
@@ -66,17 +63,14 @@ def seed_default_user_if_needed(db: Session) -> User:
         db.add(test_user)
         db.commit()
         db.refresh(test_user)
-        print("[StockPulse] Fixed test user 'user' (pass: '123456') initialized.")
+        print("[StockPulse] Fixed test user 'user' (user@stockpulse.local) initialized.")
     else:
         needs_commit = False
         if not test_user.password_hash:
             test_user.password_hash = hash_password("123456")
             needs_commit = True
-        if test_user.username != "user":
+        if not test_user.username:
             test_user.username = "user"
-            needs_commit = True
-        if test_user.name != "user":
-            test_user.name = "user"
             needs_commit = True
         if not test_user.is_verified:
             test_user.is_verified = True
@@ -126,7 +120,8 @@ def get_current_user(
 ) -> User:
     """
     FastAPI dependency requiring an authenticated user.
-    Raises 401 Unauthorized if token is missing, expired, or invalid.
+    Extracts token from Authorization header (Bearer), Cookie (stockpulse_jwt_token), or query parameter.
+    Raises 401 Unauthorized if missing, expired, or invalid.
     """
     token = get_token_from_request(request, creds)
     if not token:
@@ -152,7 +147,7 @@ def get_current_user(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account not found.",
+            detail="User account not found. Please sign in again.",
             headers={"WWW-Authenticate": "Bearer"}
         )
     return user
@@ -203,16 +198,18 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    identifier: str = Field(..., description="Email address or username")
-    password: str = Field(..., description="Account password")
+    identifier: Optional[str] = Field(None, description="Email address or username")
+    email: Optional[str] = Field(None, description="Email address fallback")
+    username: Optional[str] = Field(None, description="Username fallback")
+    password: str = Field(..., min_length=1, description="Account password")
 
-    @field_validator("identifier")
+    @field_validator("identifier", mode="before")
     @classmethod
-    def clean_identifier(cls, v: str) -> str:
-        s = v.strip().lower()
-        if not s:
-            raise ValueError("Email or username is required")
-        return s
+    def clean_identifier(cls, v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s if s else None
 
 
 class SendOTPRequest(BaseModel):
@@ -544,17 +541,25 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
 @router.post("/login", status_code=status.HTTP_200_OK)
 def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
     """
-    Signs in a user.
-    Supports fixed testing stage credentials: name/username="user", password="123456".
+    Signs in an existing user with email/username and password.
+    Queries the persistent user database, verifies the bcrypt password hash,
+    and returns a signed JWT access token and session cookie.
     """
-    ident = req.identifier.strip()
+    raw_ident = req.identifier or req.email or req.username
+    if not raw_ident or not raw_ident.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email or username is required."
+        )
+
+    ident = raw_ident.strip()
     ident_lower = ident.lower()
     plain_pw = req.password
 
-    # Instant authentication bypass for fixed testing credentials: username="user", pass="123456"
-    if ident_lower in ["user", "user@stockpulse.local", "user@example.com", "user@stockpulse.io"] and (plain_pw.strip() == "123456" or plain_pw == "123456"):
+    # Instant authentication bypass strictly for dedicated testing credentials
+    if ident_lower in ["user", "user@stockpulse.local"] and (plain_pw.strip() == "123456" or plain_pw == "123456"):
         user = db.query(User).filter(
-            or_(User.username == "user", func.lower(User.username) == "user")
+            or_(func.lower(User.email) == "user@stockpulse.local", func.lower(User.username) == "user")
         ).first()
         if not user:
             user = seed_default_user_if_needed(db)
@@ -588,35 +593,18 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
             }
         }
 
-    ident_compact = ident_lower.replace(" ", "")
-
+    # Lookup account case-insensitively in persistent database
     candidates = []
-
-    # Case A: Identifier contains '@' -> Exact Email lookup
     if "@" in ident_lower:
-        candidates = db.query(User).filter(
-            or_(User.email == ident_lower, func.lower(User.email) == ident_lower)
-        ).all()
-        if not candidates:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"No account found with email '{ident}'. Please check your spelling or create an account."
-            )
+        candidates = db.query(User).filter(func.lower(User.email) == ident_lower).all()
     else:
-        # Case B: Identifier does not contain '@' -> Prioritized lookup:
-        # 1. Exact Username match (fastest, hits indexed username column)
-        candidates = db.query(User).filter(
-            or_(User.username == ident_lower, func.lower(User.username) == ident_lower)
-        ).all()
-
+        # Match exact username first
+        candidates = db.query(User).filter(func.lower(User.username) == ident_lower).all()
         if not candidates:
-            # 2. Exact email prefix match (e.g. user entered "fenilsojitra242" for "fenilsojitra242@gmail.com")
-            candidates = db.query(User).filter(
-                func.lower(User.email).like(f"{ident_lower}@%")
-            ).all()
-
-        if not candidates:
-            # 3. Exact Full Name match (case-insensitive or compact without spaces)
+            # Match email prefix
+            candidates = db.query(User).filter(func.lower(User.email).like(f"{ident_lower}@%")).all()
+        if not candidates and len(ident_lower) >= 2:
+            ident_compact = ident_lower.replace(" ", "")
             candidates = db.query(User).filter(
                 or_(
                     func.lower(User.name) == ident_lower,
@@ -624,22 +612,14 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
                 )
             ).order_by(User.id.desc()).all()
 
-        if not candidates and len(ident_lower) >= 3:
-            # 4. Partial Name match
-            candidates = db.query(User).filter(
-                func.lower(User.name).like(f"{ident_lower}%")
-            ).order_by(User.id.desc()).all()
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email/username or password. Please try again."
+        )
 
-        if not candidates:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"No account found matching '{ident}'. Please check your spelling or sign in with your email address."
-            )
-
-    # Verify password with single-pass and stripped fallback across matched candidates
-    plain_pw = req.password
+    # Verify password securely with bcrypt
     authenticated_user = None
-
     for candidate in candidates:
         if not candidate.password_hash:
             continue
@@ -653,7 +633,7 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
     if not authenticated_user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect password. Please verify your password or use 'Forgot Password?'."
+            detail="Invalid email/username or password. Please try again."
         )
 
     user = authenticated_user
@@ -686,7 +666,7 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
             "name": user.name,
             "username": user.username,
             "email": user.email,
-            "created_at": user.created_at.isoformat(),
+            "created_at": user.created_at.isoformat() if user.created_at else None,
             "active_alerts_count": active_count
         }
     }
@@ -699,6 +679,7 @@ def get_current_user_profile(
 ):
     """
     Returns the authenticated user's profile and active alert statistics.
+    Protected route: rejects unauthenticated requests with 401.
     """
     active_count = db.query(Alert).filter(Alert.user_id == current_user.id, Alert.status == "MONITORING").count()
     return {
@@ -708,7 +689,7 @@ def get_current_user_profile(
             "name": current_user.name,
             "username": current_user.username,
             "email": current_user.email,
-            "created_at": current_user.created_at.isoformat(),
+            "created_at": current_user.created_at.isoformat() if current_user.created_at else None,
             "active_alerts_count": active_count
         }
     }
@@ -716,6 +697,9 @@ def get_current_user_profile(
 
 @router.post("/logout")
 def logout_user(response: Response):
-    """Sign out endpoint."""
+    """
+    Sign out endpoint: Invalidates session cookie.
+    Does NOT delete the user account or user records in the database.
+    """
     response.delete_cookie(key="stockpulse_jwt_token", path="/")
     return {"status": "SUCCESS", "message": "Signed out successfully"}

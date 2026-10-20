@@ -285,9 +285,14 @@ body {
   box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.25);
 }
 
-.status-indicator-dot.closed {
+.status-indicator-dot.closed, .pulse-dot.closed {
   background-color: #64748b;
   box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.25);
+}
+
+.status-indicator-dot.neutral, .pulse-dot.neutral {
+  background-color: #94a3b8;
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.25);
 }
 
 .status-indicator-dot.unavailable, .pulse-dot.red {

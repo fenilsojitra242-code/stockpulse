@@ -4,6 +4,10 @@
  * Web Audio API chime synthesis, desktop OS notifications, and live status.
  */
 
+window.getEl = function (id) {
+  return document.getElementById(id);
+};
+
 window.StockPulse = (function () {
   'use strict';
 
@@ -32,7 +36,7 @@ window.StockPulse = (function () {
   // --- AUTOMATIC SESSION TIMEOUT & AUTO LOGOUT ---
   const STORAGE_KEY_SESSION_TIMEOUT = 'stockpulse_session_timeout_minutes';
   const STORAGE_KEY_LAST_ACTIVE = 'stockpulse_last_active_ts';
-  const DEFAULT_SESSION_TIMEOUT_MINUTES = 15; // Default 15 minutes auto-logout when site closed/inactive
+  const DEFAULT_SESSION_TIMEOUT_MINUTES = 1440; // 24 hours inactivity timeout before auto-logout
 
   function getSessionTimeoutMinutes() {
     const val = localStorage.getItem(STORAGE_KEY_SESSION_TIMEOUT);
@@ -66,8 +70,11 @@ window.StockPulse = (function () {
       }
     } catch (e) {}
 
-    const targetUrl = reason === 'session_timeout' ? '/login?session_timeout=true' : '/login?logout=true';
-    window.location.replace(targetUrl);
+    if (reason === 'manual_logout') {
+      window.location.replace('/login?logout=true');
+    } else {
+      renderNavbarUserPill();
+    }
   }
 
   function checkSessionTimeout() {
@@ -115,17 +122,11 @@ window.StockPulse = (function () {
     return t;
   }
 
-  // 1. Immediately evaluate session timeout upon opening site
-  if (checkSessionTimeout()) {
-    return {};
-  }
+  // 1. Check session timeout quietly upon opening site
+  checkSessionTimeout();
 
-  // 2. Enforce authentication gate: redirect unauthenticated users to /login immediately
-  const existingToken = getStoredToken();
-  if (!existingToken && !isAuthPage) {
-    window.location.replace('/login');
-    return {};
-  }
+  // 2. Open access: authentication session requirement removed
+  // Users can freely browse /live, /monitoring, /details, /history, /notifications without logging in.
 
   // 3. User activity & background timeout watcher
   if (!isAuthPage) {
@@ -191,13 +192,13 @@ window.StockPulse = (function () {
 
       const response = await originalFetch(resource, init);
 
-      // Handle 401 Unauthorized by returning to /login only for authenticated user endpoints
+      // Handle 401 Unauthorized quietly without disruptive full-page redirects
       if (response.status === 401 && !isAuthPage) {
         const urlStr = typeof resource === 'string' ? resource : (resource.url || '');
         if (urlStr.includes('/api/auth/me') || urlStr.includes('/api/alerts') || urlStr.includes('/api/notifications')) {
           localStorage.removeItem(STORAGE_KEY_TOKEN);
           localStorage.removeItem(STORAGE_KEY_USER);
-          window.location.replace('/login');
+          renderNavbarUserPill();
         }
       }
       return response;
@@ -1511,32 +1512,116 @@ window.StockPulse = (function () {
     }
   }
 
-  // --- MARKET STATUS & NOTIFICATION BADGE POLLING ---
+  // --- MARKET STATUS CACHING & TARGETED NAVBAR UPDATES ---
+  const STORAGE_KEY_MARKET_STATUS = 'stockpulse_cached_market_status';
+  const STORAGE_KEY_MARKET_STATUS_TS = 'stockpulse_cached_market_status_ts';
   let isSystemStatusInFlight = false;
+  let systemStatusPollTimer = null;
+
+  function getCachedMarketStatus() {
+    try {
+      const status = sessionStorage.getItem(STORAGE_KEY_MARKET_STATUS);
+      const ts = parseInt(sessionStorage.getItem(STORAGE_KEY_MARKET_STATUS_TS) || '0', 10);
+      if (status && (Date.now() - ts < 300000)) { // 5 minutes validity
+        return status;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function applyMarketStatus(status) {
+    if (!status) return;
+    const dot = document.getElementById('market-status-dot');
+    const text = document.getElementById('market-status-text');
+    if (!dot || !text) return;
+
+    let targetText = 'Market: CHECKING...';
+    let targetClass = 'pulse-dot neutral';
+
+    if (status === 'OPEN') {
+      targetText = 'Market: OPEN';
+      targetClass = 'pulse-dot green';
+    } else if (status === 'CLOSED') {
+      targetText = 'Market: CLOSED';
+      targetClass = 'pulse-dot amber';
+    } else if (status === 'STATUS UNKNOWN') {
+      targetText = 'Market: UNKNOWN';
+      targetClass = 'pulse-dot neutral';
+    } else {
+      targetText = `Market: ${status}`;
+      targetClass = 'pulse-dot amber';
+    }
+
+    // Targeted DOM update: ONLY update if changed to avoid unnecessary re-rendering
+    if (text.textContent !== targetText) {
+      text.textContent = targetText;
+    }
+    if (dot.className !== targetClass) {
+      dot.className = targetClass;
+    }
+
+    try {
+      sessionStorage.setItem(STORAGE_KEY_MARKET_STATUS, status);
+      sessionStorage.setItem(STORAGE_KEY_MARKET_STATUS_TS, Date.now().toString());
+    } catch (e) {}
+  }
+
+  function initNavbarMarketStatus() {
+    const cached = getCachedMarketStatus();
+    if (cached) {
+      applyMarketStatus(cached);
+    } else {
+      // Neutral initial state; never flash "Market Live" or "Market: OPEN"!
+      const dot = document.getElementById('market-status-dot');
+      const text = document.getElementById('market-status-text');
+      if (dot && dot.className !== 'pulse-dot neutral') {
+        dot.className = 'pulse-dot neutral';
+      }
+      if (text && text.textContent !== 'Checking market status...') {
+        text.textContent = 'Checking market status...';
+      }
+    }
+  }
+
+  function scheduleNextSystemStatusPoll(delayMs) {
+    if (systemStatusPollTimer) clearTimeout(systemStatusPollTimer);
+    systemStatusPollTimer = setTimeout(updateSystemStatus, delayMs);
+  }
+
   async function updateSystemStatus() {
     if (isSystemStatusInFlight) return;
+    if (document.hidden) return; // Pause polling when tab is not visible
+
     isSystemStatusInFlight = true;
+    let currentStatus = getCachedMarketStatus() || 'CLOSED';
     try {
       const res = await fetch('/api/stocks/market-status');
       if (res.ok) {
         const data = await res.json();
-        const dot = document.getElementById('market-status-dot');
-        const text = document.getElementById('market-status-text');
-        if (dot && text) {
-          const isOpen = data.market_status === 'OPEN';
-          dot.className = `pulse-dot ${isOpen ? 'green' : 'amber'}`;
-          text.textContent = `Market: ${data.market_status || 'OPEN'}`;
+        if (data && data.market_status) {
+          currentStatus = data.market_status;
+          applyMarketStatus(data.market_status);
         }
       }
     } catch (e) {
-      // quiet fallback
+      // quiet fallback; preserve existing status
     } finally {
       isSystemStatusInFlight = false;
     }
 
-    // Check for newly arriving real-time notifications to trigger sound & popup
+    // Check for newly arriving real-time notifications
     await checkRealtimeNotifications();
+
+    // Dynamically adjust polling interval: 15s if open, 60s if closed
+    scheduleNextSystemStatusPoll(currentStatus === 'OPEN' ? 15000 : 60000);
   }
+
+  // Resume status refresh immediately when tab becomes visible
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      updateSystemStatus();
+    }
+  });
 
   // --- INIT ACTIVE PAGE HIGHLIGHT ---
   function highlightCurrentNav() {
@@ -1724,13 +1809,38 @@ window.StockPulse = (function () {
     }
   }
 
-  // --- RENDER AUTHENTICATED USER CIRCLE IN NAVBAR ---
+  // --- RENDER AUTHENTICATED USER CIRCLE / SIGN IN BUTTON IN NAVBAR ---
   function renderNavbarUserPill() {
     const navActions = document.querySelector('.nav-actions');
     if (!navActions) return;
 
     let userWrapper = document.getElementById('nav-user-circle-wrapper');
+    let signinBtn = document.getElementById('nav-signin-btn');
     const user = getUser();
+    const token = getStoredToken();
+    const isAuthenticated = Boolean(token && user && (user.name || user.username || user.email));
+
+    if (!isAuthenticated) {
+      if (userWrapper) userWrapper.style.display = 'none';
+      if (!signinBtn) {
+        signinBtn = document.createElement('a');
+        signinBtn.id = 'nav-signin-btn';
+        signinBtn.href = '/login';
+        signinBtn.title = 'Sign in or create an account';
+        signinBtn.className = 'nav-signin-btn';
+        signinBtn.style.cssText = 'display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 13px; font-weight: 700; color: #ffffff; background: linear-gradient(135deg, #2563eb, #1d4ed8); border-radius: 9px; text-decoration: none; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25); transition: opacity 0.15s, transform 0.15s; margin-left: 8px;';
+        signinBtn.innerHTML = '<i class="fa-solid fa-right-to-bracket"></i> Sign In';
+        navActions.insertBefore(signinBtn, navActions.firstChild);
+      } else {
+        signinBtn.style.display = 'inline-flex';
+      }
+      return;
+    }
+
+    if (signinBtn) {
+      signinBtn.style.display = 'none';
+    }
+
     const displayName = (user && (user.name || user.username || user.email)) ? (user.name || user.username) : 'User';
     const emailStr = user && user.email ? user.email : '';
     const initial = displayName ? displayName.trim().charAt(0).toUpperCase() : 'U';
@@ -1791,6 +1901,7 @@ window.StockPulse = (function () {
       }
 
     } else {
+      userWrapper.style.display = 'inline-flex';
       const circleBtn = document.getElementById('nav-user-circle-btn');
       const nameEl = document.getElementById('nav-dropdown-name');
       const emailEl = document.getElementById('nav-dropdown-email');
@@ -1832,6 +1943,7 @@ window.StockPulse = (function () {
   // --- AUTO INITIALIZE ON DOM READY ---
   document.addEventListener('DOMContentLoaded', () => {
     if (isAuthPage) return;
+    initNavbarMarketStatus();
     highlightCurrentNav();
     setupMobileMenu();
     renderNavbarUserPill();
@@ -1845,7 +1957,6 @@ window.StockPulse = (function () {
     document.querySelectorAll('.btn-voice-toggle').forEach(btn => {
       btn.addEventListener('click', toggleVoiceEnabled);
     });
-    setInterval(updateSystemStatus, 5000);
     // Dedicated fast notification poller backed by Web Worker
     // (immune to browser background tab throttling when working in another window)
     checkRealtimeNotifications();
@@ -1908,6 +2019,8 @@ window.StockPulse = (function () {
     setChartMode,
     getSupertrendOverlay,
     setSupertrendOverlay,
-    formatIST
+    formatIST,
+    applyMarketStatus,
+    initNavbarMarketStatus
   };
 })();

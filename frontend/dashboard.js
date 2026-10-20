@@ -815,9 +815,14 @@
       });
     }
 
-    // 13. Simple User Login & Email Alert Listeners
     if (elements.btnOpenLogin) {
-      elements.btnOpenLogin.addEventListener('click', () => openLoginModal());
+      elements.btnOpenLogin.addEventListener('click', () => {
+        if (!state.user || !state.userEmail) {
+          window.location.href = '/login';
+        } else {
+          openLoginModal();
+        }
+      });
     }
     if (elements.btnCloseLoginModal) {
       elements.btnCloseLoginModal.addEventListener('click', closeLoginModal);
@@ -1405,45 +1410,19 @@
 
   async function handleLoginSubmit(e) {
     if (e) e.preventDefault();
-
-    const email = elements.loginEmailInput ? elements.loginEmailInput.value.trim() : '';
-    const name = elements.loginNameInput ? elements.loginNameInput.value.trim() : '';
-
-    if (!email || !email.includes('@') || !email.includes('.')) {
-      showLoginFeedback('Please enter a valid email address (e.g. user@gmail.com).', false);
+    if (!state.user) {
+      window.location.href = '/login';
       return;
     }
-
-    try {
-      if (elements.btnSubmitLogin) {
-        elements.btnSubmitLogin.disabled = true;
-        elements.btnSubmitLogin.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
-      }
-
-      const resp = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, name: name || undefined })
-      });
-
-      const data = await resp.json();
-      if (resp.ok && data.user) {
-        applyUserSession(data.user);
-        showLoginFeedback(`✅ Welcome ${escapeHtml(data.user.name)}! Stock alerts will be sent to ${escapeHtml(data.user.email)}.`, true);
-        setTimeout(() => {
-          closeLoginModal();
-        }, 1200);
-      } else {
-        const msg = data.detail || (data.message ? data.message : 'Sign in failed');
-        showLoginFeedback(Array.isArray(msg) ? msg[0].msg : msg, false);
-      }
-    } catch (err) {
-      showLoginFeedback('Network error: ' + err.message, false);
-    } finally {
-      if (elements.btnSubmitLogin) {
-        elements.btnSubmitLogin.disabled = false;
-        elements.btnSubmitLogin.innerHTML = '<i class="fa-solid fa-check"></i> Sign In & Save Email';
-      }
+    // If user is already logged in, update display handle
+    const name = elements.loginNameInput ? elements.loginNameInput.value.trim() : '';
+    if (name) {
+      state.userName = name;
+      if (state.user) state.user.name = name;
+      localStorage.setItem('stockpulse_user', JSON.stringify(state.user));
+      renderUserUI();
+      showLoginFeedback('Trader handle updated.', true);
+      setTimeout(() => closeLoginModal(), 800);
     }
   }
 
@@ -1452,6 +1431,9 @@
       await fetch('/api/auth/logout', { method: 'POST' });
     } catch (_) {}
     localStorage.removeItem('stockpulse_user');
+    localStorage.removeItem('stockpulse_jwt_token');
+    localStorage.removeItem('stockpulse_user_profile');
+    document.cookie = 'stockpulse_jwt_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax';
     state.user = null;
     state.userEmail = '';
     state.userName = '';
@@ -1461,7 +1443,8 @@
     showLoginFeedback('Signed out successfully.', true);
     setTimeout(() => {
       closeLoginModal();
-    }, 800);
+      window.location.href = '/login?logout=true';
+    }, 600);
   }
 
   function applyUserSession(user) {
@@ -1642,8 +1625,14 @@
 
     // Market status in floating nav
     if (data.market_status) {
-      elements.marketStatusText.textContent = `Market: ${data.market_status}`;
-      elements.marketStatusDot.className = `pulse-dot ${data.market_status === 'OPEN' ? 'green' : 'amber'}`;
+      if (window.StockPulse && window.StockPulse.applyMarketStatus) {
+        window.StockPulse.applyMarketStatus(data.market_status);
+      } else if (elements.marketStatusText && elements.marketStatusDot) {
+        const isOp = data.market_status === 'OPEN';
+        const isCl = data.market_status === 'CLOSED';
+        elements.marketStatusText.textContent = `Market: ${data.market_status}`;
+        elements.marketStatusDot.className = `pulse-dot ${isOp ? 'green' : (isCl ? 'closed' : 'neutral')}`;
+      }
     }
 
     // 5. Update Statistics Section

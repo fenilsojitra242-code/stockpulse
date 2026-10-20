@@ -70,10 +70,16 @@ def search_stocks(q: str = Query("", description="Stock search query"), response
 
 @router.get("/market-status")
 def get_global_market_status_endpoint(response: Response):
-    """Lightweight market status check without invoking external market data."""
+    """Authoritative market status check based on exchange rules and timezone."""
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     status, time_str = get_market_status()
-    return {"market_status": status, "time": time_str}
+    return {
+        "market_status": status,
+        "time": time_str,
+        "exchange": "NSE",
+        "timezone": "Asia/Kolkata",
+        "is_open": (status == "OPEN")
+    }
 
 
 @router.get("/{symbol}")
@@ -308,7 +314,15 @@ def get_stock_supertrend(
     from app.services.market_data import get_stock_visualization_data
     from app.services.feature_engine import analyze_supertrend_hit
 
-    time_range_val = range.strip().upper() if range else "1D"
+    period_val = int(period.default if hasattr(period, 'default') else period)
+    multiplier_val = float(multiplier.default if hasattr(multiplier, 'default') else multiplier)
+    proximity_val = float(proximity.default if hasattr(proximity, 'default') else proximity)
+    prox_pct_val = proximity_percent.default if hasattr(proximity_percent, 'default') else proximity_percent
+    if prox_pct_val is not None:
+        prox_pct_val = float(prox_pct_val)
+    time_range_raw = (range.default if hasattr(range, 'default') else range)
+    time_range_val = time_range_raw.strip().upper() if time_range_raw else "1D"
+
     vis = get_stock_visualization_data(symbol, time_range=time_range_val)
 
     candles = vis.get("candles", [])
@@ -317,10 +331,10 @@ def get_stock_supertrend(
     st_analysis = analyze_supertrend_hit(
         candles_or_df=candles,
         current_price=curr_price,
-        period=period,
-        multiplier=multiplier,
-        proximity_points=proximity,
-        proximity_percent=proximity_percent
+        period=period_val,
+        multiplier=multiplier_val,
+        proximity_points=proximity_val,
+        proximity_percent=prox_pct_val
     )
 
     return {
