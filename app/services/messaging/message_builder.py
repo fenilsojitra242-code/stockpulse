@@ -293,33 +293,50 @@ class MessageBuilder:
             prob_str = f"{float(prob_val) * 100:.1f}%" if prob_val is not None else "High Risk"
             horizon_min = int(data.get("horizon_minutes") or 5)
 
-            early_warning_phrase = f"Early warning: {symbol} may change from {curr_dir} to {target_dir} within the selected {prox_pct:.2f}% prediction distance."
+            if target_dir in ("SELL", "DOWN"):
+                target_sign = "-"
+            elif target_dir in ("BUY", "UP"):
+                target_sign = "+"
+            elif curr_dir in ("BUY", "UP"):
+                target_sign = "-"
+            else:
+                target_sign = "+"
 
-            title = f"⚡ EARLY {target_dir} WARNING: {symbol} (within {prox_pct:.2f}% distance)"
+            if data.get("target_movement") is not None:
+                try:
+                    target_sign = "-" if float(data["target_movement"]) < 0 else "+"
+                except (ValueError, TypeError):
+                    pass
+
+            prox_pct_str = f"{target_sign}{abs(prox_pct):.2f}%"
+
+            early_warning_phrase = f"Early warning: {symbol} may change from {curr_dir} to {target_dir} within the selected {prox_pct_str} prediction distance."
+
+            title = f"⚡ EARLY {target_dir} WARNING: {symbol} (within {prox_pct_str} distance)"
             plain_text = (
                 f"{early_warning_phrase}\n\n"
                 f"Stock: {symbol}\n"
                 f"Live Price: {curr_price_str}\n"
                 f"SuperIndicator Band: {st_str}\n"
-                f"Distance to Band: {dist_pct:.2f}% (₹{dist_pts:.2f}) [Selected distance limit: {prox_pct:.2f}%]\n"
+                f"Distance to Band: {dist_pct:.2f}% (₹{dist_pts:.2f}) [Selected distance limit: {prox_pct_str}]\n"
                 f"Confirmed Direction: {curr_dir}\n"
                 f"Predicted Reversal Direction: {target_dir}\n"
                 f"Estimated Reversal Horizon: {horizon_min} minutes\n"
                 f"Reversal Risk Probability: {prob_str}\n\n"
-                f"Status: EARLY WARNING ACTIVE (The selected {prox_pct:.2f}% is the maximum permitted price movement distance used by the prediction logic, not a guarantee of reversal. Confirmed Supertrend remains {curr_dir} until confirmed on completed candle close)\n"
+                f"Status: EARLY WARNING ACTIVE (The selected {prox_pct_str} is the maximum permitted price movement distance used by the prediction logic, not a guarantee of reversal. Confirmed Supertrend remains {curr_dir} until confirmed on completed candle close)\n"
                 f"Time: {time_str}"
             )
             html_text = (
-                f"⚡ <b>Early warning: {symbol} may change from {curr_dir} to {target_dir} within the selected {prox_pct:.2f}% prediction distance.</b>\n\n"
+                f"⚡ <b>Early warning: {symbol} may change from {curr_dir} to {target_dir} within the selected {prox_pct_str} prediction distance.</b>\n\n"
                 f"<b>Stock:</b> <b>{symbol}</b>\n"
                 f"<b>Live Price:</b> <b>{curr_price_str}</b>\n"
                 f"<b>SuperIndicator Band:</b> <b>{st_str}</b>\n"
-                f"<b>Distance to Band:</b> <span style='color: #f59e0b; font-weight: 700;'>{dist_pct:.2f}% (₹{dist_pts:.2f}) [Selected limit: {prox_pct:.2f}%]</span>\n"
+                f"<b>Distance to Band:</b> <span style='color: #f59e0b; font-weight: 700;'>{dist_pct:.2f}% (₹{dist_pts:.2f}) [Selected limit: {prox_pct_str}]</span>\n"
                 f"<b>Confirmed Direction:</b> <b>{curr_dir}</b> (Remains unchanged until confirmed)\n"
                 f"<b>Predicted Reversal:</b> <b style='color: {'#16a34a' if target_dir == 'BUY' else '#dc2626'};'>{target_dir}</b>\n"
                 f"<b>Estimated Horizon:</b> <b>{horizon_min} minutes</b>\n"
                 f"<b>Reversal Risk Probability:</b> <b>{prob_str}</b>\n\n"
-                f"⚠️ <i>Note: The selected {prox_pct:.2f}% is the maximum permitted prediction distance, not a guarantee of reversal. Confirmed Supertrend direction remains {curr_dir} until completed candle confirmation.</i>\n"
+                f"⚠️ <i>Note: The selected {prox_pct_str} is the maximum permitted prediction distance, not a guarantee of reversal. Confirmed Supertrend direction remains {curr_dir} until completed candle confirmation.</i>\n"
                 f"<b>Time:</b> {time_str}"
             )
             short_summary = early_warning_phrase

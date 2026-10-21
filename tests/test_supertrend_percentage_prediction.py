@@ -37,7 +37,7 @@ from app.services.alert_engine import (
     get_supertrend_settings,
     save_supertrend_settings,
 )
-from app.services.messaging import notification_manager, NotificationEventType
+from app.services.messaging import notification_manager, NotificationEventType, MessageBuilder
 from app.database.models import Alert, SystemSetting
 
 
@@ -591,6 +591,55 @@ class TestSuperTrendPercentagePrediction(unittest.TestCase):
         self.assertIn("distance_percent", res)
         self.assertIn("upper_boundary", res)
         self.assertIn("lower_boundary", res)
+
+    # 13. Supertrend early-warning message signed percentage formatting
+    def test_13_early_warning_message_signed_percentage_formatting(self):
+        """
+        Verify that early-warning message displays:
+        - '-0.25%' for downward moves (e.g., target_direction='SELL', or downward move)
+        - '+0.25%' for upward moves (e.g., target_direction='BUY', or upward move)
+        """
+        # Downward prediction: BUY -> SELL (price moves down to reach target band)
+        data_down = {
+            "symbol": "TCS",
+            "current_price": 1000.0,
+            "supertrend_price": 997.5,
+            "distance_points": 2.5,
+            "proximity_threshold": 2.5,
+            "proximity_percent": 0.25,
+            "distance_percent": 0.25,
+            "current_direction": "BUY",
+            "target_direction": "SELL",
+            "model_probability": 0.80,
+            "horizon_minutes": 5,
+        }
+        msg_down = MessageBuilder.build(NotificationEventType.SUPERTREND_APPROACHING.value, data_down)
+        self.assertIn("-0.25%", msg_down["plain_text"])
+        self.assertIn("-0.25%", msg_down["html"])
+        self.assertIn("-0.25%", msg_down["title"])
+        self.assertIn("-0.25%", msg_down["short_summary"])
+        self.assertNotIn("+0.25%", msg_down["plain_text"])
+
+        # Upward prediction: SELL -> BUY (price moves up to reach target band)
+        data_up = {
+            "symbol": "INFY",
+            "current_price": 2000.0,
+            "supertrend_price": 2005.0,
+            "distance_points": 5.0,
+            "proximity_threshold": 5.0,
+            "proximity_percent": 0.25,
+            "distance_percent": 0.25,
+            "current_direction": "SELL",
+            "target_direction": "BUY",
+            "model_probability": 0.85,
+            "horizon_minutes": 5,
+        }
+        msg_up = MessageBuilder.build(NotificationEventType.SUPERTREND_APPROACHING.value, data_up)
+        self.assertIn("+0.25%", msg_up["plain_text"])
+        self.assertIn("+0.25%", msg_up["html"])
+        self.assertIn("+0.25%", msg_up["title"])
+        self.assertIn("+0.25%", msg_up["short_summary"])
+        self.assertNotIn("-0.25%", msg_up["plain_text"])
 
 
 if __name__ == "__main__":
