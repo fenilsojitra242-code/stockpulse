@@ -472,14 +472,15 @@
         </div>
 
         <div class="form-group">
-          <label for="register-username">Username <span style="font-weight: 400; color: #94a3b8;">(optional)</span></label>
+          <label for="register-username">Username</label>
           <div class="input-wrapper">
             <i class="fa-solid fa-at field-icon"></i>
             <input
               type="text"
               id="register-username"
               class="auth-input"
-              placeholder="Choose a username (e.g. trader_john)"
+              placeholder="Choose a unique username (e.g. trader_john)"
+              required
               autocomplete="username"
             >
           </div>
@@ -513,6 +514,24 @@
               autocomplete="new-password"
             >
             <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('register-password', this)" title="Show/hide password">
+              <i class="fa-solid fa-eye"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="register-confirm-password">Confirm Password</label>
+          <div class="input-wrapper">
+            <i class="fa-solid fa-shield-halved field-icon"></i>
+            <input
+              type="password"
+              id="register-confirm-password"
+              class="auth-input"
+              placeholder="Re-enter your password to confirm"
+              required
+              autocomplete="new-password"
+            >
+            <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('register-confirm-password', this)" title="Show/hide password">
               <i class="fa-solid fa-eye"></i>
             </button>
           </div>
@@ -836,7 +855,7 @@
       }
     }
 
-    // Direct Registration (Testing Stage: OTP Removed)
+    // Direct Registration with Client-Side and Server-Side Validation
     async function handleRegisterSubmit(e) {
       if (e) e.preventDefault();
       if (isAuthSubmitting) return;
@@ -847,21 +866,49 @@
       const userInput = document.getElementById('register-username');
       const emailInput = document.getElementById('register-email');
       const passInput = document.getElementById('register-password');
+      const confirmInput = document.getElementById('register-confirm-password');
       const btn = document.getElementById('btn-register-submit');
 
       const name = nameInput.value.trim();
-      const username = userInput.value.trim();
+      const username = userInput.value.trim().toLowerCase();
       const email = emailInput.value.trim().toLowerCase();
       const password = passInput.value;
+      const confirmPassword = confirmInput ? confirmInput.value : '';
 
-      if (!name || !email || !password) {
+      if (!name || !username || !email || !password || !confirmPassword) {
         showFeedback('Please fill in all required fields.');
+        return;
+      }
+
+      if (name.length < 2) {
+        showFeedback('Full name must be at least 2 characters long.');
+        nameInput.focus();
+        return;
+      }
+
+      const userRegex = /^[a-z0-9_.-]+$/;
+      if (username.length < 3 || !userRegex.test(username)) {
+        showFeedback('Username must be at least 3 characters and can only contain letters, numbers, underscores, hyphens, and dots.');
+        userInput.focus();
+        return;
+      }
+
+      const emailRegex = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
+      if (!emailRegex.test(email)) {
+        showFeedback('Please enter a valid email address (e.g. user@example.com).');
+        emailInput.focus();
         return;
       }
 
       if (password.length < 4) {
         showFeedback('Password must be at least 4 characters long.');
         passInput.focus();
+        return;
+      }
+
+      if (password !== confirmPassword) {
+        showFeedback('Passwords do not match. Please ensure both passwords are identical.');
+        confirmInput.focus();
         return;
       }
 
@@ -876,9 +923,10 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name,
-            username: username || null,
+            username,
             email,
-            password
+            password,
+            confirm_password: confirmPassword
           })
         });
 
@@ -910,7 +958,7 @@
         localStorage.setItem('stockpulse_user_profile', JSON.stringify(data.user));
         localStorage.setItem('stockpulse_remembered_identifier', data.user.email);
         localStorage.setItem('stockpulse_last_active_ts', Date.now().toString());
-        showFeedback(`Welcome, ${data.user.name}! Account created. Entering dashboard...`, false);
+        showFeedback(`Welcome, ${data.user.name}! Account created successfully. Entering dashboard...`, false);
 
         // Immediate navigation without blocking delay
         window.location.replace('/live');

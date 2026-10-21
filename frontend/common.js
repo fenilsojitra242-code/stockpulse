@@ -36,7 +36,7 @@ window.StockPulse = (function () {
   // --- AUTOMATIC SESSION TIMEOUT & AUTO LOGOUT ---
   const STORAGE_KEY_SESSION_TIMEOUT = 'stockpulse_session_timeout_minutes';
   const STORAGE_KEY_LAST_ACTIVE = 'stockpulse_last_active_ts';
-  const DEFAULT_SESSION_TIMEOUT_MINUTES = 1440; // 24 hours inactivity timeout before auto-logout
+  const DEFAULT_SESSION_TIMEOUT_MINUTES = 43200; // 30 days default session lifetime before timeout
 
   function getSessionTimeoutMinutes() {
     const val = localStorage.getItem(STORAGE_KEY_SESSION_TIMEOUT);

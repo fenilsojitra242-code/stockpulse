@@ -428,6 +428,105 @@ class TestAccountPersistence(unittest.TestCase):
         final_user_count = self.db.query(User).count()
         self.assertEqual(initial_user_count, final_user_count)
 
+    # -------------------------------------------------------------------------
+    # Scenario 15: Mismatched password confirmation rejected
+    # -------------------------------------------------------------------------
+    def test_14_mismatched_password_confirmation_rejected(self):
+        """Verify mismatched password confirmation is rejected with clear error."""
+        resp = Response()
+        # 1. Pydantic validator check
+        with self.assertRaises(Exception) as ctx:
+            RegisterRequest(
+                name="Mismatch User",
+                username="mismatch1",
+                email="mismatch@resistance.net",
+                password="Password123!",
+                confirm_password="DifferentPassword456!"
+            )
+        self.assertIn("Passwords do not match", str(ctx.exception))
+
+        # 2. Endpoint logic check
+        req = RegisterRequest(
+            name="Mismatch User",
+            username="mismatch2",
+            email="mismatch2@resistance.net",
+            password="Password123!"
+        )
+        req.confirm_password = "DifferentPassword999!"
+        with self.assertRaises(HTTPException) as ctx:
+            register_user(req=req, response=resp, db=self.db)
+        self.assertEqual(ctx.exception.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Passwords do not match", ctx.exception.detail)
+
+    # -------------------------------------------------------------------------
+    # Scenario 16: Duplicate username rejected
+    # -------------------------------------------------------------------------
+    def test_15_duplicate_username_rejected(self):
+        """Verify duplicate username is rejected with clear error message."""
+        resp = Response()
+        req = RegisterRequest(
+            name="Imposter Connor",
+            username="SCONNOR",  # Case-insensitive duplicate of sconnor
+            email="imposter@resistance.net",
+            password="SomePassword123!"
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            register_user(req=req, response=resp, db=self.db)
+        self.assertEqual(ctx.exception.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already taken", ctx.exception.detail)
+
+    # -------------------------------------------------------------------------
+    # Scenario 17: User remains authenticated across simulated page refresh
+    # -------------------------------------------------------------------------
+    def test_16_user_remains_authenticated_after_page_refresh(self):
+        """Verify session cookie or bearer token keeps user authenticated across page refreshes."""
+        user = self.db.query(User).filter(User.email == "sarah.connor@resistance.net").first()
+        token = create_access_token({
+            "sub": str(user.id),
+            "email": user.email,
+            "username": user.username
+        })
+
+        # Simulate fresh page request with Cookie header
+        mock_req = MagicMock(spec=Request)
+        mock_req.headers = {}
+        mock_req.cookies = {"stockpulse_jwt_token": token}
+        mock_req.query_params = {}
+
+        current_u = get_current_user(request=mock_req, creds=None, db=self.db)
+        self.assertEqual(current_u.id, user.id)
+        self.assertEqual(current_u.username, "sconnor")
+
+        # Simulate /api/auth/me profile request
+        profile = get_current_user_profile(current_user=current_u, db=self.db)
+        self.assertTrue(profile["logged_in"])
+        self.assertEqual(profile["user"]["email"], "sarah.connor@resistance.net")
+
+    # -------------------------------------------------------------------------
+    # Scenario 18: Database failures never produce false registration-success messages
+    # -------------------------------------------------------------------------
+    def test_17_database_failures_never_produce_false_success(self):
+        """Verify when database operations fail, registration raises an exception and never returns success."""
+        mock_broken_db = MagicMock()
+        mock_broken_db.query.return_value.filter.return_value.first.return_value = None
+        mock_broken_db.commit.side_effect = Exception("Simulated SQLite disk full or locked error")
+
+        req = RegisterRequest(
+            name="Failure Test User",
+            username="fail_test_user",
+            email="fail_test@resistance.net",
+            password="SecurePassword2026!"
+        )
+        resp = Response()
+
+        with self.assertRaises(HTTPException) as ctx:
+            register_user(req=req, response=resp, db=mock_broken_db)
+
+        # Must be 500 server error, never 201 success
+        self.assertEqual(ctx.exception.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertIn("Database error", ctx.exception.detail)
+        mock_broken_db.rollback.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

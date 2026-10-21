@@ -4,24 +4,49 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 from sqlalchemy import event
 
-# Establish consistent, absolute database path based on project root
+# Establish consistent, absolute database path based on project root or persistent storage
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DEFAULT_DB_FILE = os.path.join(BASE_DIR, "data", "stockpulse.db")
+
+# Check for persistent storage mount directory (e.g. Render, Railway, Docker persistent volume)
+persistent_dir = (
+    os.getenv("PERSISTENT_DATA_DIR")
+    or os.getenv("PERSISTENT_STORAGE_DIR")
+    or os.getenv("STOCKPULSE_DATA_DIR")
+    or os.getenv("DATA_DIR")
+)
+if persistent_dir and os.path.isabs(persistent_dir):
+    DEFAULT_DB_FILE = os.path.join(persistent_dir, "stockpulse.db")
+elif persistent_dir:
+    DEFAULT_DB_FILE = os.path.abspath(os.path.join(BASE_DIR, persistent_dir, "stockpulse.db"))
+else:
+    DEFAULT_DB_FILE = os.path.join(BASE_DIR, "data", "stockpulse.db")
+
 os.makedirs(os.path.dirname(DEFAULT_DB_FILE), exist_ok=True)
 
 raw_db_url = os.getenv("DATABASE_URL")
 if not raw_db_url:
     DATABASE_URL = f"sqlite:///{DEFAULT_DB_FILE.replace(chr(92), '/')}"
-elif raw_db_url.startswith("sqlite:///") and not raw_db_url.startswith("sqlite:////") and not (len(raw_db_url) > 11 and raw_db_url[11] == ":"):
-    rel_path = raw_db_url.replace("sqlite:///./", "").replace("sqlite:///", "")
-    abs_db_file = os.path.abspath(os.path.join(BASE_DIR, rel_path))
+elif raw_db_url.startswith("postgres://"):
+    # SQLAlchemy 2.0 requires postgresql://
+    DATABASE_URL = raw_db_url.replace("postgres://", "postgresql://", 1)
+elif raw_db_url.startswith("sqlite:///"):
+    path_part = raw_db_url[10:]
+    # Check if Windows absolute path (e.g. C:/... or C:\...)
+    import re
+    if re.match(r'^[a-zA-Z]:[/\\].*', path_part):
+        abs_db_file = os.path.abspath(path_part)
+    elif path_part.startswith("/"):
+        abs_db_file = os.path.abspath(path_part)
+    else:
+        rel_path = path_part.replace("./", "")
+        abs_db_file = os.path.abspath(os.path.join(BASE_DIR, rel_path))
     os.makedirs(os.path.dirname(abs_db_file), exist_ok=True)
     DATABASE_URL = f"sqlite:///{abs_db_file.replace(chr(92), '/')}"
 else:
     DATABASE_URL = raw_db_url
 
 # For SQLite, check_same_thread=False allows multi-threaded access across FastAPI and APScheduler
-connect_args = {"check_same_thread": False, "timeout": 15} if DATABASE_URL.startswith("sqlite") else {}
+connect_args = {"check_same_thread": False, "timeout": 30} if DATABASE_URL.startswith("sqlite") else {}
 
 engine = create_engine(
     DATABASE_URL,
@@ -119,10 +144,16 @@ def run_db_migrations(db_engine):
                 except Exception as idx_err:
                     print(f"[DB Migration] History index migration note: {idx_err}")
 
-            # Backfill any missing usernames from email prefix
+            # Backfill any missing usernames from email prefix and ensure unique indexes
             if "users" in table_names:
-                conn.execute(text("UPDATE users SET username = lower(substr(email, 1, instr(email, '@') - 1)) WHERE username IS NULL OR username = ''"))
+                conn.execute(text("UPDATE users SET username = lower(substr(email, 1, instr(email, '@') - 1)) WHERE (username IS NULL OR username = '') AND instr(email, '@') > 1"))
                 conn.commit()
+                try:
+                    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username_lower ON users (lower(username)) WHERE username IS NOT NULL"))
+                    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email_lower ON users (lower(email)) WHERE email IS NOT NULL"))
+                    conn.commit()
+                except Exception as user_idx_err:
+                    print(f"[DB Migration] User index migration note: {user_idx_err}")
     except Exception as e:
         print(f"[DB Migration] Schema migration note: {e}")
 

@@ -1,14 +1,16 @@
 import os
 import re
+import time
 import bcrypt
 import jwt
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from typing import Optional, Dict, Any, List
+from pydantic import BaseModel, Field, field_validator, model_validator
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 import secrets
 
 from app.database.database import get_db
@@ -21,8 +23,65 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "stockpulse-jwt-super-secret-key-2025")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 365
+COOKIE_NAME = "stockpulse_jwt_token"
+IS_PRODUCTION = os.getenv("ENVIRONMENT", "").lower() == "production"
+SECURE_COOKIES = os.getenv("SECURE_COOKIES", "false").lower() == "true" or (
+    IS_PRODUCTION and os.getenv("HOST", "") not in ("127.0.0.1", "localhost")
+)
 
 security = HTTPBearer(auto_error=False)
+
+# Failed login attempt rate limiting (in-memory sliding window)
+FAILED_LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
+RATE_LIMIT_WINDOW_SECONDS = 60
+MAX_FAILED_ATTEMPTS = 5
+
+
+def check_login_rate_limit(client_key: str):
+    now = time.time()
+    attempts = [t for t in FAILED_LOGIN_ATTEMPTS.get(client_key, []) if now - t < RATE_LIMIT_WINDOW_SECONDS]
+    FAILED_LOGIN_ATTEMPTS[client_key] = attempts
+    if len(attempts) >= MAX_FAILED_ATTEMPTS:
+        retry_after = int(RATE_LIMIT_WINDOW_SECONDS - (now - attempts[0]))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many failed login attempts. Please wait {max(1, retry_after)} seconds before trying again."
+        )
+
+
+def record_failed_login(client_key: str):
+    now = time.time()
+    attempts = [t for t in FAILED_LOGIN_ATTEMPTS.get(client_key, []) if now - t < RATE_LIMIT_WINDOW_SECONDS]
+    attempts.append(now)
+    FAILED_LOGIN_ATTEMPTS[client_key] = attempts
+
+
+def clear_failed_login(client_key: str):
+    FAILED_LOGIN_ATTEMPTS.pop(client_key, None)
+
+
+def set_auth_cookie(response: Response, token: str):
+    """Sets a secure HTTP session cookie with appropriate environment attributes."""
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        max_age=365 * 86400,
+        path="/",
+        samesite="lax",
+        httponly=True,
+        secure=SECURE_COOKIES
+    )
+
+
+def clear_auth_cookie(response: Response):
+    """Clears the session cookie on sign out without deleting database records."""
+    response.delete_cookie(
+        key=COOKIE_NAME,
+        path="/",
+        samesite="lax",
+        httponly=True,
+        secure=SECURE_COOKIES
+    )
 
 
 def hash_password(password: str) -> str:
@@ -179,6 +238,7 @@ class RegisterRequest(BaseModel):
     email: str = Field(..., description="Unique email address")
     password: str = Field(..., min_length=4, max_length=128, description="Password")
     username: Optional[str] = Field(None, max_length=50, description="Optional chosen username")
+    confirm_password: Optional[str] = Field(None, max_length=128, description="Password confirmation")
 
     @field_validator("email")
     @classmethod
@@ -186,15 +246,37 @@ class RegisterRequest(BaseModel):
         s = v.strip().lower()
         if not s or "@" not in s or "." not in s.split("@")[-1]:
             raise ValueError("Please provide a valid email address (e.g. user@example.com)")
+        if not re.match(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', s):
+            raise ValueError("Please provide a valid email address format (e.g. user@example.com)")
         return s
 
     @field_validator("name")
     @classmethod
     def clean_name(cls, v: str) -> str:
         s = v.strip()
-        if not s:
-            raise ValueError("Name cannot be empty")
+        if not s or len(s) < 2:
+            raise ValueError("Name must be at least 2 characters long")
         return s
+
+    @field_validator("username")
+    @classmethod
+    def clean_username(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = v.strip().lower()
+        if not s:
+            return None
+        if len(s) < 3:
+            raise ValueError("Username must be at least 3 characters long")
+        if not re.match(r'^[a-z0-9_.-]+$', s):
+            raise ValueError("Username can only contain letters, numbers, underscores, hyphens, and dots")
+        return s
+
+    @model_validator(mode="after")
+    def verify_passwords_match(self):
+        if self.confirm_password is not None and self.password != self.confirm_password:
+            raise ValueError("Passwords do not match. Please ensure password and confirm password are identical.")
+        return self
 
 
 class LoginRequest(BaseModel):
@@ -335,14 +417,7 @@ def verify_registration_otp(req: VerifyOTPRegisterRequest, response: Response, d
         "name": user.name
     })
 
-    response.set_cookie(
-        key="stockpulse_jwt_token",
-        value=token,
-        max_age=365 * 86400,
-        path="/",
-        samesite="lax",
-        httponly=False
-    )
+    set_auth_cookie(response, token)
 
     return {
         "status": "SUCCESS",
@@ -418,14 +493,7 @@ def reset_password(req: ResetPasswordRequest, response: Response, db: Session = 
         "name": user.name
     })
 
-    response.set_cookie(
-        key="stockpulse_jwt_token",
-        value=token,
-        max_age=365 * 86400,
-        path="/",
-        samesite="lax",
-        httponly=False
-    )
+    set_auth_cookie(response, token)
 
     return {
         "status": "SUCCESS",
@@ -446,20 +514,22 @@ def reset_password(req: ResetPasswordRequest, response: Response, db: Session = 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register_user(req: RegisterRequest, response: Response, db: Session = Depends(get_db)):
     """
-    Registers a brand new user account directly without OTP and generates a long-lived JWT session.
+    Registers a brand new user account directly and permanently stores in the database.
+    Verifies that the registration commits successfully before reporting success.
     """
     clean_email = req.email.strip().lower()
     clean_name = req.name.strip()
-    
-    if not clean_email or "@" not in clean_email or "." not in clean_email.split("@")[-1]:
+
+    # Verify password confirmation matches
+    if req.confirm_password is not None and req.password != req.confirm_password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Please provide a valid email address (e.g. user@example.com)"
+            detail="Passwords do not match. Please ensure password and confirm password are identical."
         )
 
-    # Check if email is already taken
+    # Check if email is already taken (case-insensitive)
     existing_by_email = db.query(User).filter(
-        or_(User.email == clean_email, func.lower(User.email) == clean_email)
+        func.lower(User.email) == clean_email
     ).first()
     if existing_by_email:
         raise HTTPException(
@@ -467,11 +537,11 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
             detail="An account with this email already exists. Please sign in with your email and password."
         )
 
-    # Process username
+    # Process and validate username
     if req.username and req.username.strip():
-        clean_username = req.username.strip().lower().replace(" ", "_")
+        clean_username = req.username.strip().lower()
         existing_by_user = db.query(User).filter(
-            or_(User.username == clean_username, func.lower(User.username) == clean_username)
+            func.lower(User.username) == clean_username
         ).first()
         if existing_by_user:
             raise HTTPException(
@@ -502,9 +572,42 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
         is_verified=True,
         created_at=datetime.utcnow()
     )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+
+    try:
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+    except IntegrityError as e:
+        db.rollback()
+        err_str = str(e).lower()
+        if "username" in err_str:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This username is already taken. Please choose a different username."
+            )
+        elif "email" in err_str:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An account with this email already exists. Please sign in with your email and password."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Account creation failed due to duplicate information. Please choose a different username or email."
+            )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error while saving account. The account could not be persisted."
+        )
+
+    # Strictly verify account has been permanently persisted with an ID
+    if not new_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to verify permanent account persistence in database."
+        )
 
     token = create_access_token({
         "sub": str(new_user.id),
@@ -513,14 +616,7 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
         "name": new_user.name
     })
 
-    response.set_cookie(
-        key="stockpulse_jwt_token",
-        value=token,
-        max_age=365 * 86400,
-        path="/",
-        samesite="lax",
-        httponly=False
-    )
+    set_auth_cookie(response, token)
 
     return {
         "status": "SUCCESS",
@@ -532,17 +628,17 @@ def register_user(req: RegisterRequest, response: Response, db: Session = Depend
             "name": new_user.name,
             "username": new_user.username,
             "email": new_user.email,
-            "created_at": new_user.created_at.isoformat(),
+            "created_at": new_user.created_at.isoformat() if new_user.created_at else None,
             "active_alerts_count": 0
         }
     }
 
 
 @router.post("/login", status_code=status.HTTP_200_OK)
-def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
+def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_db), request: Request = None):
     """
-    Signs in an existing user with email/username and password.
-    Queries the persistent user database, verifies the bcrypt password hash,
+    Signs in an existing user with email or username and password.
+    Queries the persistent user database, verifies bcrypt password hash,
     and returns a signed JWT access token and session cookie.
     """
     raw_ident = req.identifier or req.email or req.username
@@ -556,6 +652,15 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
     ident_lower = ident.lower()
     plain_pw = req.password
 
+    # Rate limiting key based on IP and identifier
+    client_ip = (
+        request.client.host
+        if (request and getattr(request, "client", None) and getattr(request.client, "host", None))
+        else "local"
+    )
+    rate_key = f"{client_ip}:{ident_lower}"
+    check_login_rate_limit(rate_key)
+
     # Instant authentication bypass strictly for dedicated testing credentials
     if ident_lower in ["user", "user@stockpulse.local"] and (plain_pw.strip() == "123456" or plain_pw == "123456"):
         user = db.query(User).filter(
@@ -563,20 +668,14 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
         ).first()
         if not user:
             user = seed_default_user_if_needed(db)
+        clear_failed_login(rate_key)
         token = create_access_token({
             "sub": str(user.id),
             "email": user.email,
             "username": user.username or "user",
             "name": user.name
         })
-        response.set_cookie(
-            key="stockpulse_jwt_token",
-            value=token,
-            max_age=365 * 86400,
-            path="/",
-            samesite="lax",
-            httponly=False
-        )
+        set_auth_cookie(response, token)
         active_count = db.query(Alert).filter(Alert.user_id == user.id, Alert.status == "MONITORING").count()
         return {
             "status": "SUCCESS",
@@ -594,49 +693,45 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
         }
 
     # Lookup account case-insensitively in persistent database
-    candidates = []
+    user = None
     if "@" in ident_lower:
-        candidates = db.query(User).filter(func.lower(User.email) == ident_lower).all()
+        user = db.query(User).filter(func.lower(User.email) == ident_lower).first()
     else:
         # Match exact username first
-        candidates = db.query(User).filter(func.lower(User.username) == ident_lower).all()
-        if not candidates:
+        user = db.query(User).filter(func.lower(User.username) == ident_lower).first()
+        if not user:
             # Match email prefix
-            candidates = db.query(User).filter(func.lower(User.email).like(f"{ident_lower}@%")).all()
-        if not candidates and len(ident_lower) >= 2:
+            user = db.query(User).filter(func.lower(User.email).like(f"{ident_lower}@%")).first()
+        if not user and len(ident_lower) >= 2:
             ident_compact = ident_lower.replace(" ", "")
-            candidates = db.query(User).filter(
+            user = db.query(User).filter(
                 or_(
                     func.lower(User.name) == ident_lower,
                     func.replace(func.lower(User.name), " ", "") == ident_compact
                 )
-            ).order_by(User.id.desc()).all()
+            ).order_by(User.id.desc()).first()
 
-    if not candidates:
+    if not user or not user.password_hash:
+        record_failed_login(rate_key)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email/username or password. Please try again."
         )
 
     # Verify password securely with bcrypt
-    authenticated_user = None
-    for candidate in candidates:
-        if not candidate.password_hash:
-            continue
-        pw_ok = verify_password(plain_pw, candidate.password_hash)
-        if not pw_ok and plain_pw.strip() != plain_pw:
-            pw_ok = verify_password(plain_pw.strip(), candidate.password_hash)
-        if pw_ok:
-            authenticated_user = candidate
-            break
+    pw_ok = verify_password(plain_pw, user.password_hash)
+    if not pw_ok and plain_pw.strip() != plain_pw:
+        pw_ok = verify_password(plain_pw.strip(), user.password_hash)
 
-    if not authenticated_user:
+    if not pw_ok:
+        record_failed_login(rate_key)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email/username or password. Please try again."
         )
 
-    user = authenticated_user
+    # Login succeeded: clear failed rate limit counter
+    clear_failed_login(rate_key)
 
     token = create_access_token({
         "sub": str(user.id),
@@ -645,14 +740,7 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
         "name": user.name
     })
 
-    response.set_cookie(
-        key="stockpulse_jwt_token",
-        value=token,
-        max_age=365 * 86400,
-        path="/",
-        samesite="lax",
-        httponly=False
-    )
+    set_auth_cookie(response, token)
 
     active_count = db.query(Alert).filter(Alert.user_id == user.id, Alert.status == "MONITORING").count()
 
@@ -701,5 +789,5 @@ def logout_user(response: Response):
     Sign out endpoint: Invalidates session cookie.
     Does NOT delete the user account or user records in the database.
     """
-    response.delete_cookie(key="stockpulse_jwt_token", path="/")
+    clear_auth_cookie(response)
     return {"status": "SUCCESS", "message": "Signed out successfully"}
