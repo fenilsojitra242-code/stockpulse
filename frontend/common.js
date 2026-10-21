@@ -1517,52 +1517,97 @@ window.StockPulse = (function () {
   const STORAGE_KEY_MARKET_STATUS_TS = 'stockpulse_cached_market_status_ts';
   let isSystemStatusInFlight = false;
   let systemStatusPollTimer = null;
+  let lastAppliedMarketStatusTs = 0;
 
   function getCachedMarketStatus() {
     try {
       const status = sessionStorage.getItem(STORAGE_KEY_MARKET_STATUS);
       const ts = parseInt(sessionStorage.getItem(STORAGE_KEY_MARKET_STATUS_TS) || '0', 10);
-      if (status && (Date.now() - ts < 300000)) { // 5 minutes validity
+      if (status && (Date.now() - ts < 30000)) { // 30 seconds validity for consistent page navigation
         return status;
       }
     } catch (e) {}
     return null;
   }
 
-  function applyMarketStatus(status) {
+  function applyMarketStatus(status, updateTs = 0) {
     if (!status) return;
+    const norm = String(status).toUpperCase();
+
+    // Prevent race conditions: ignore older out-of-order API responses
+    if (updateTs && lastAppliedMarketStatusTs && updateTs < lastAppliedMarketStatusTs) {
+      return;
+    }
+    if (updateTs) {
+      lastAppliedMarketStatusTs = updateTs;
+    } else if (!lastAppliedMarketStatusTs) {
+      lastAppliedMarketStatusTs = Date.now();
+    }
+
     const dot = document.getElementById('market-status-dot');
     const text = document.getElementById('market-status-text');
-    if (!dot || !text) return;
+    const globalDot = document.getElementById('global-status-dot');
+    const globalText = document.getElementById('global-status-text');
 
     let targetText = 'Market: CHECKING...';
     let targetClass = 'pulse-dot neutral';
+    let targetGlobalDot = 'status-indicator-dot neutral';
+    let targetGlobalText = 'UNKNOWN';
 
-    if (status === 'OPEN') {
+    if (norm === 'OPEN' || norm === 'LIVE') {
       targetText = 'Market: OPEN';
       targetClass = 'pulse-dot green';
-    } else if (status === 'CLOSED') {
+      targetGlobalDot = 'status-indicator-dot live';
+      targetGlobalText = 'LIVE';
+    } else if (norm === 'CLOSED') {
       targetText = 'Market: CLOSED';
-      targetClass = 'pulse-dot amber';
-    } else if (status === 'STATUS UNKNOWN') {
+      targetClass = 'pulse-dot closed';
+      targetGlobalDot = 'status-indicator-dot closed';
+      targetGlobalText = 'CLOSED';
+    } else if (norm === 'STATUS UNKNOWN' || norm === 'UNKNOWN') {
       targetText = 'Market: UNKNOWN';
       targetClass = 'pulse-dot neutral';
+      targetGlobalDot = 'status-indicator-dot neutral';
+      targetGlobalText = 'UNKNOWN';
+    } else if (norm === 'DATA_UNAVAILABLE' || norm === 'UNAVAILABLE') {
+      targetText = 'Market: DATA UNAVAILABLE';
+      targetClass = 'pulse-dot neutral';
+      targetGlobalDot = 'status-indicator-dot unavailable';
+      targetGlobalText = 'UNAVAILABLE';
+    } else if (norm === 'DELAYED') {
+      targetText = 'Market: DELAYED';
+      targetClass = 'pulse-dot amber';
+      targetGlobalDot = 'status-indicator-dot delayed';
+      targetGlobalText = 'DELAYED';
+    } else if (norm === 'STALE') {
+      targetText = 'Market: STALE';
+      targetClass = 'pulse-dot amber';
+      targetGlobalDot = 'status-indicator-dot closed';
+      targetGlobalText = 'STALE';
     } else {
       targetText = `Market: ${status}`;
       targetClass = 'pulse-dot amber';
+      targetGlobalDot = 'status-indicator-dot neutral';
+      targetGlobalText = status;
     }
 
     // Targeted DOM update: ONLY update if changed to avoid unnecessary re-rendering
-    if (text.textContent !== targetText) {
+    if (text && text.textContent !== targetText) {
       text.textContent = targetText;
     }
-    if (dot.className !== targetClass) {
+    if (dot && dot.className !== targetClass) {
       dot.className = targetClass;
+    }
+    if (globalText && globalText.textContent !== targetGlobalText) {
+      globalText.textContent = targetGlobalText;
+    }
+    if (globalDot && globalDot.className !== targetGlobalDot) {
+      globalDot.className = targetGlobalDot;
     }
 
     try {
-      sessionStorage.setItem(STORAGE_KEY_MARKET_STATUS, status);
-      sessionStorage.setItem(STORAGE_KEY_MARKET_STATUS_TS, Date.now().toString());
+      sessionStorage.setItem(STORAGE_KEY_MARKET_STATUS, norm === 'LIVE' ? 'OPEN' : norm);
+      sessionStorage.setItem(STORAGE_KEY_MARKET_STATUS_TS, (updateTs || Date.now()).toString());
     } catch (e) {}
   }
 
@@ -1593,18 +1638,28 @@ window.StockPulse = (function () {
     if (document.hidden) return; // Pause polling when tab is not visible
 
     isSystemStatusInFlight = true;
-    let currentStatus = getCachedMarketStatus() || 'CLOSED';
+    const reqTs = Date.now();
+    let currentStatus = getCachedMarketStatus();
     try {
       const res = await fetch('/api/stocks/market-status');
       if (res.ok) {
         const data = await res.json();
         if (data && data.market_status) {
           currentStatus = data.market_status;
-          applyMarketStatus(data.market_status);
+          applyMarketStatus(data.market_status, reqTs);
+        } else {
+          currentStatus = 'STATUS UNKNOWN';
+          applyMarketStatus('STATUS UNKNOWN', reqTs);
         }
+      } else {
+        // API response inconclusive/unavailable: show UNKNOWN / DATA_UNAVAILABLE state instead of incorrectly declaring market CLOSED
+        currentStatus = 'DATA_UNAVAILABLE';
+        applyMarketStatus('DATA_UNAVAILABLE', reqTs);
       }
     } catch (e) {
-      // quiet fallback; preserve existing status
+      // Network error: show DATA_UNAVAILABLE state instead of incorrectly declaring market CLOSED
+      currentStatus = 'DATA_UNAVAILABLE';
+      applyMarketStatus('DATA_UNAVAILABLE', reqTs);
     } finally {
       isSystemStatusInFlight = false;
     }
@@ -1612,8 +1667,9 @@ window.StockPulse = (function () {
     // Check for newly arriving real-time notifications
     await checkRealtimeNotifications();
 
-    // Dynamically adjust polling interval: 15s if open, 60s if closed
-    scheduleNextSystemStatusPoll(currentStatus === 'OPEN' ? 15000 : 60000);
+    // Dynamically adjust polling interval: 15s if open, 60s if closed, 15s if unknown/unavailable
+    const nextInterval = (currentStatus === 'OPEN') ? 15000 : ((currentStatus === 'CLOSED') ? 60000 : 15000);
+    scheduleNextSystemStatusPoll(nextInterval);
   }
 
   // Resume status refresh immediately when tab becomes visible
@@ -2021,6 +2077,7 @@ window.StockPulse = (function () {
     setSupertrendOverlay,
     formatIST,
     applyMarketStatus,
-    initNavbarMarketStatus
+    initNavbarMarketStatus,
+    getCachedMarketStatus
   };
 })();

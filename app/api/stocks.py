@@ -120,10 +120,10 @@ def get_stock_fast_live(symbol: str, response: Response):
         "latest_market_timestamp": data.get("latest_market_timestamp"),
         "data_received_at": data.get("data_received_at"),
         "data_interval": data.get("data_interval", "1m"),
-        "data_status": data.get("data_status", "LIVE"),
+        "data_status": data.get("data_status") or ("CLOSED" if not (data.get("market_status") == "OPEN") else "LIVE"),
         "data_age_seconds": data.get("data_age_seconds", 0),
         "last_updated": data.get("last_updated"),
-        "market_status": data.get("market_status", "OPEN"),
+        "market_status": data.get("market_status") or get_market_status()[0],
         "fifty_two_week_high": data.get("fifty_two_week_high"),
         "fifty_two_week_low": data.get("fifty_two_week_low"),
         "provider": data.get("provider", "yfinance")

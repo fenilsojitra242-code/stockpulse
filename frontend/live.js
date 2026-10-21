@@ -12,7 +12,7 @@
   let hoveredCandleIdx = -1;
   let pollingTimer = null;
   let isFetching = false;
-  let currentMarketStatus = 'CLOSED';
+  let currentMarketStatus = (window.StockPulse && window.StockPulse.getCachedMarketStatus && window.StockPulse.getCachedMarketStatus()) || (sessionStorage.getItem('stockpulse_cached_market_status') || 'UNKNOWN');
   let lastFetchTimestamp = 0;
   let currentPriceVal = 0;
   let supertrendOverlayEnabled = (window.StockPulse && window.StockPulse.getSupertrendOverlay) ? window.StockPulse.getSupertrendOverlay() : true;
@@ -196,9 +196,10 @@
 
       lastFetchTimestamp = Date.now();
       if (data && data.market_status) {
-        currentMarketStatus = (data.market_status || 'CLOSED').toUpperCase();
+        currentMarketStatus = data.market_status.toUpperCase();
         if (window.StockPulse && window.StockPulse.applyMarketStatus) {
-          window.StockPulse.applyMarketStatus(currentMarketStatus);
+          const ts = data.data_received_at ? new Date(data.data_received_at).getTime() : Date.now();
+          window.StockPulse.applyMarketStatus(currentMarketStatus, ts);
         }
       }
 
@@ -523,8 +524,9 @@
     if (exchEl && exchEl.textContent !== nextExch) exchEl.textContent = nextExch;
     if (nameEl && nameEl.textContent !== nextName) nameEl.textContent = nextName;
 
-    // Market status and closure state
-    const isClosed = data.market_status === 'CLOSED' || data.data_status === 'CLOSED';
+    // Market status and closure state based on authoritative exchange session
+    const isClosed = data.market_status === 'CLOSED';
+    const isDataUnavailable = data.status === 'DATA_UNAVAILABLE' || data.status === 'UNAVAILABLE' || data.data_status === 'DATA_UNAVAILABLE';
     const marketTradeTime = data.market_last_traded;
     const syncTime = data.last_updated || new Date().toLocaleTimeString('en-IN');
     const targetUpdated = (isClosed && marketTradeTime) ? `${syncTime} (Close: ${marketTradeTime})` : syncTime;
@@ -532,19 +534,20 @@
       updatedEl.textContent = targetUpdated;
     }
 
-    // Market status in navigation (delegate to shared coordinator to eliminate flicker)
+    // Market status in navigation (delegate to shared coordinator to eliminate flicker and race conditions)
     if (window.StockPulse && window.StockPulse.applyMarketStatus) {
-      window.StockPulse.applyMarketStatus(data.market_status || (isClosed ? 'CLOSED' : 'OPEN'));
+      const ts = data.data_received_at ? new Date(data.data_received_at).getTime() : Date.now();
+      window.StockPulse.applyMarketStatus(data.market_status || (isClosed ? 'CLOSED' : 'OPEN'), ts);
     } else {
       const mStatusText = getEl('market-status-text');
       const mStatusDot = getEl('market-status-dot');
       const targetMText = `Market: ${data.market_status || (isClosed ? 'CLOSED' : 'OPEN')}`;
-      const targetMDot = `pulse-dot ${isClosed ? 'amber' : 'green'}`;
+      const targetMDot = `pulse-dot ${isClosed ? 'closed' : 'green'}`;
       if (mStatusText && mStatusText.textContent !== targetMText) mStatusText.textContent = targetMText;
       if (mStatusDot && mStatusDot.className !== targetMDot) mStatusDot.className = targetMDot;
     }
 
-    // Live / Delayed / Closed status badge
+    // Live / Delayed / Closed / Unavailable status badge
     const livePill = getEl('live-status-pill');
     const liveDot = getEl('live-status-dot');
     const liveLabel = getEl('live-status-label');
@@ -559,10 +562,16 @@
 
     if (isClosed) {
       targetPillClass = 'live-pill closed';
-      targetDotClass = 'pulse-dot amber';
+      targetDotClass = 'pulse-dot closed';
       targetLabelText = 'MARKET CLOSED';
       targetGlobalDot = 'status-indicator-dot closed';
       targetGlobalText = 'CLOSED';
+    } else if (isDataUnavailable) {
+      targetPillClass = 'live-pill closed';
+      targetDotClass = 'pulse-dot neutral';
+      targetLabelText = 'DATA UNAVAILABLE';
+      targetGlobalDot = 'status-indicator-dot unavailable';
+      targetGlobalText = 'UNAVAILABLE';
     } else if (data.data_status === 'LIVE' || data.status === 'LIVE') {
       targetPillClass = 'live-pill';
       targetDotClass = 'pulse-dot green';
@@ -1159,7 +1168,7 @@
       ctx.font = '600 13px "Plus Jakarta Sans", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      const mStatus = (sessionStorage.getItem('stockpulse_cached_market_status') || 'CLOSED');
+      const mStatus = (window.StockPulse && window.StockPulse.getCachedMarketStatus && window.StockPulse.getCachedMarketStatus()) || (sessionStorage.getItem('stockpulse_cached_market_status') || 'UNKNOWN');
       const msg = mStatus === 'CLOSED'
         ? 'Market Closed — No Active Intraday Trades In Session'
         : 'Loading candlestick market data...';

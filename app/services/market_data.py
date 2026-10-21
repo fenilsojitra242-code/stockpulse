@@ -313,7 +313,33 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
     if cache_id in _RANGE_CACHE:
         entry = _RANGE_CACHE[cache_id]
         if now_ts - entry["timestamp"] < ttl:
-            return entry["data"].copy()
+            cached_market_status = entry["data"].get("market_status")
+            if is_market_open and cached_market_status == "CLOSED" and range_key == "1D":
+                _RANGE_CACHE.pop(cache_id, None)
+            else:
+                data_copy = entry["data"].copy()
+                data_copy["market_status"] = market_status_val
+                data_copy["trading_status"] = "Normal Trading" if is_market_open else "Market Closed"
+                if not is_market_open:
+                    data_copy["data_status"] = "CLOSED"
+                else:
+                    latest_ts = data_copy.get("latest_market_timestamp")
+                    if latest_ts:
+                        try:
+                            latest_dt = datetime.fromisoformat(latest_ts)
+                            if not latest_dt.tzinfo:
+                                latest_dt = latest_dt.replace(tzinfo=IST)
+                            age = max(0, int((datetime.now(IST) - latest_dt).total_seconds()))
+                            data_copy["data_age_seconds"] = age
+                            if age <= 180:
+                                data_copy["data_status"] = "LIVE"
+                            elif age <= 900:
+                                data_copy["data_status"] = "DELAYED"
+                            else:
+                                data_copy["data_status"] = "STALE"
+                        except Exception:
+                            pass
+                return data_copy
 
     # In-flight request deduplication: if another thread is currently fetching this exact item, wait for it
     event_to_wait = None
@@ -329,7 +355,13 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
     if not is_fetcher and event_to_wait is not None:
         event_to_wait.wait(timeout=8.0)
         if cache_id in _RANGE_CACHE:
-            return _RANGE_CACHE[cache_id]["data"].copy()
+            entry = _RANGE_CACHE[cache_id]
+            data_copy = entry["data"].copy()
+            data_copy["market_status"] = market_status_val
+            data_copy["trading_status"] = "Normal Trading" if is_market_open else "Market Closed"
+            if not is_market_open:
+                data_copy["data_status"] = "CLOSED"
+            return data_copy
 
     range_config = {
         "1D": {"period": "1d", "interval": "1m"},
