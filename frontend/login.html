@@ -408,14 +408,14 @@
       </div>      <!-- 1. SIGN IN FORM -->
       <form id="form-login" onsubmit="handleLoginSubmit(event)" autocomplete="on">
         <div class="form-group">
-          <label for="login-identifier">Email, Username, or Full Name</label>
+          <label for="login-identifier">Email or Username</label>
           <div class="input-wrapper">
             <i class="fa-solid fa-user field-icon"></i>
             <input
               type="text"
               id="login-identifier"
               class="auth-input"
-              placeholder="Enter your email, username, or name"
+              placeholder="Enter your registered email or username"
               required
               autocomplete="username"
             >
@@ -663,17 +663,7 @@
   </div>
 
   <script>
-    // Helper to read cookies safely
-    function getCookie(name) {
-      try {
-        const value = `; ${document.cookie}`;
-        const parts = value.split(`; ${name}=`);
-        if (parts.length === 2) return parts.pop().split(';').shift();
-      } catch (e) {}
-      return null;
-    }
-
-    // If user already has a valid token in localStorage OR cookies, redirect directly to /live
+    // If user already has a valid token in localStorage, verify session or redirect directly to /live
     (function checkExistingSession() {
       const urlParams = new URLSearchParams(window.location.search);
       const isLogout = urlParams.get('logout') === 'true';
@@ -683,7 +673,9 @@
         localStorage.removeItem('stockpulse_jwt_token');
         localStorage.removeItem('stockpulse_user_profile');
         localStorage.removeItem('stockpulse_last_active_ts');
-        document.cookie = 'stockpulse_jwt_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax';
+        try {
+          fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+        } catch (e) {}
 
         document.addEventListener('DOMContentLoaded', () => {
           setTimeout(() => {
@@ -697,11 +689,12 @@
         return;
       }
 
-      let token = localStorage.getItem('stockpulse_jwt_token') || getCookie('stockpulse_jwt_token');
+      const rawToken = localStorage.getItem('stockpulse_jwt_token');
+      const token = (rawToken && typeof rawToken === 'string' && rawToken.trim() !== 'undefined' && rawToken.trim() !== 'null') ? rawToken.trim() : null;
       if (token) {
-        localStorage.setItem('stockpulse_jwt_token', token);
         fetch('/api/auth/me', {
-          headers: { 'Authorization': 'Bearer ' + token }
+          headers: { 'Authorization': 'Bearer ' + token },
+          credentials: 'same-origin'
         }).then(res => {
           if (res.ok) {
             return res.json().then(data => {
@@ -710,6 +703,9 @@
               }
               window.location.replace('/live');
             });
+          } else if (res.status === 401) {
+            localStorage.removeItem('stockpulse_jwt_token');
+            localStorage.removeItem('stockpulse_user_profile');
           }
         }).catch(() => {});
       }
@@ -805,7 +801,7 @@
       const password = passInput.value;
 
       if (!identifier || !password) {
-        showFeedback('Please enter both your email/username/name and password.');
+        showFeedback('Please enter both your email or username and password.');
         if (!identifier) identInput.focus();
         else passInput.focus();
         return;
@@ -820,6 +816,7 @@
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
           body: JSON.stringify({ identifier, password })
         });
 
@@ -921,6 +918,7 @@
         const res = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
           body: JSON.stringify({
             name,
             username,

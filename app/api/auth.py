@@ -3,7 +3,7 @@ import re
 import time
 import bcrypt
 import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field, field_validator, model_validator
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
@@ -95,7 +95,17 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     if not hashed_password or not plain_password:
         return False
     try:
-        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+        hp = hashed_password.strip() if isinstance(hashed_password, str) else hashed_password
+        h_bytes = hp.encode("utf-8") if isinstance(hp, str) else hp
+        p_bytes = plain_password.encode("utf-8")
+        if bcrypt.checkpw(p_bytes, h_bytes):
+            return True
+        if plain_password.strip() != plain_password:
+            if bcrypt.checkpw(plain_password.strip().encode("utf-8"), h_bytes):
+                return True
+        if len(p_bytes) > 72 and bcrypt.checkpw(p_bytes[:72], h_bytes):
+            return True
+        return False
     except Exception:
         return False
 
@@ -143,15 +153,21 @@ def seed_default_user_if_needed(db: Session) -> User:
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     """Creates a signed JWT access token."""
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS))
-    to_encode.update({"exp": expire})
+    now_utc = datetime.now(timezone.utc)
+    expire = now_utc + (expires_delta or timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS))
+    to_encode.update({"exp": expire, "iat": now_utc})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
     """Decodes and validates a signed JWT access token."""
+    if not token or not isinstance(token, str):
+        return None
+    s = token.strip()
+    if not s or s.lower() in ("undefined", "null", "none"):
+        return None
     try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return jwt.decode(s, SECRET_KEY, algorithms=[ALGORITHM])
     except Exception:
         return None
 
@@ -159,15 +175,19 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
 def get_token_from_request(request: Request, creds: Optional[HTTPAuthorizationCredentials] = None) -> Optional[str]:
     """Extracts bearer token from Authorization header, Cookie, or Query parameter."""
     if creds and creds.credentials:
-        return creds.credentials
+        c = creds.credentials.strip()
+        if c and c.lower() not in ("undefined", "null", "none"):
+            return c
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        return auth_header[7:].strip()
-    cookie_token = request.cookies.get("stockpulse_jwt_token")
-    if cookie_token:
+        token_val = auth_header[7:].strip()
+        if token_val and token_val.lower() not in ("undefined", "null", "none"):
+            return token_val
+    cookie_token = request.cookies.get(COOKIE_NAME)
+    if cookie_token and cookie_token.strip() and cookie_token.strip().lower() not in ("undefined", "null", "none"):
         return cookie_token.strip()
     query_token = request.query_params.get("token")
-    if query_token:
+    if query_token and query_token.strip() and query_token.strip().lower() not in ("undefined", "null", "none"):
         return query_token.strip()
     return None
 
@@ -285,13 +305,22 @@ class LoginRequest(BaseModel):
     username: Optional[str] = Field(None, description="Username fallback")
     password: str = Field(..., min_length=1, description="Account password")
 
-    @field_validator("identifier", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def clean_identifier(cls, v: Any) -> Optional[str]:
-        if v is None:
-            return None
-        s = str(v).strip()
-        return s if s else None
+    def resolve_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            raw = data.get("identifier") or data.get("email") or data.get("username")
+            if raw is not None and str(raw).strip():
+                data["identifier"] = str(raw).strip()
+        return data
+
+    @model_validator(mode="after")
+    def validate_identifier_present(self):
+        raw = self.identifier or self.email or self.username
+        if not raw or not str(raw).strip():
+            raise ValueError("Email or username is required.")
+        self.identifier = str(raw).strip()
+        return self
 
 
 class SendOTPRequest(BaseModel):
@@ -692,24 +721,13 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
             }
         }
 
-    # Lookup account case-insensitively in persistent database
-    user = None
-    if "@" in ident_lower:
-        user = db.query(User).filter(func.lower(User.email) == ident_lower).first()
-    else:
-        # Match exact username first
-        user = db.query(User).filter(func.lower(User.username) == ident_lower).first()
-        if not user:
-            # Match email prefix
-            user = db.query(User).filter(func.lower(User.email).like(f"{ident_lower}@%")).first()
-        if not user and len(ident_lower) >= 2:
-            ident_compact = ident_lower.replace(" ", "")
-            user = db.query(User).filter(
-                or_(
-                    func.lower(User.name) == ident_lower,
-                    func.replace(func.lower(User.name), " ", "") == ident_compact
-                )
-            ).order_by(User.id.desc()).first()
+    # Exact account lookup case-insensitively by registered email OR registered username only
+    user = db.query(User).filter(
+        or_(
+            func.lower(User.email) == ident_lower,
+            func.lower(User.username) == ident_lower
+        )
+    ).first()
 
     if not user or not user.password_hash:
         record_failed_login(rate_key)
@@ -719,11 +737,7 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
         )
 
     # Verify password securely with bcrypt
-    pw_ok = verify_password(plain_pw, user.password_hash)
-    if not pw_ok and plain_pw.strip() != plain_pw:
-        pw_ok = verify_password(plain_pw.strip(), user.password_hash)
-
-    if not pw_ok:
+    if not verify_password(plain_pw, user.password_hash):
         record_failed_login(rate_key)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

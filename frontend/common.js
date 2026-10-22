@@ -58,16 +58,10 @@ window.StockPulse = (function () {
     localStorage.removeItem(STORAGE_KEY_TOKEN);
     localStorage.removeItem(STORAGE_KEY_USER);
     localStorage.removeItem(STORAGE_KEY_LAST_ACTIVE);
-    // Invalidate cookie
-    document.cookie = 'stockpulse_jwt_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax';
 
-    // Best-effort notify backend
+    // Invalidate session cookie on the backend
     try {
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon('/api/auth/logout');
-      } else {
-        fetch('/api/auth/logout', { method: 'POST', keepalive: true }).catch(() => {});
-      }
+      fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin', keepalive: true }).catch(() => {});
     } catch (e) {}
 
     if (reason === 'manual_logout') {
@@ -110,16 +104,18 @@ window.StockPulse = (function () {
     return false;
   }
 
-  // Retrieve JWT token from either localStorage or HTTP cookie (bidirectional sync)
+  // Retrieve JWT access token from localStorage safely
   function getStoredToken() {
-    let t = localStorage.getItem(STORAGE_KEY_TOKEN);
-    if (!t) {
-      t = getCookie(STORAGE_KEY_TOKEN);
-      if (t) {
-        localStorage.setItem(STORAGE_KEY_TOKEN, t);
+    try {
+      const t = localStorage.getItem(STORAGE_KEY_TOKEN);
+      if (t && typeof t === 'string') {
+        const trimmed = t.trim();
+        if (trimmed && trimmed !== 'undefined' && trimmed !== 'null' && trimmed !== 'none') {
+          return trimmed;
+        }
       }
-    }
-    return t;
+    } catch (e) {}
+    return null;
   }
 
   // 1. Check session timeout quietly upon opening site
@@ -171,9 +167,9 @@ window.StockPulse = (function () {
     window._stockpulseFetchWrapped = true;
     const originalFetch = window.fetch;
     window.fetch = async function (resource, init = {}) {
+      init = init || {};
       const token = getStoredToken();
       if (token) {
-        init = init || {};
         init.headers = init.headers || {};
         if (init.headers instanceof Headers) {
           if (!init.headers.has('Authorization')) {
@@ -189,13 +185,16 @@ window.StockPulse = (function () {
           }
         }
       }
+      if (!init.credentials) {
+        init.credentials = 'same-origin';
+      }
 
       const response = await originalFetch(resource, init);
 
-      // Handle 401 Unauthorized quietly without disruptive full-page redirects
+      // Only invalidate session if the dedicated profile check returns 401
       if (response.status === 401 && !isAuthPage) {
         const urlStr = typeof resource === 'string' ? resource : (resource.url || '');
-        if (urlStr.includes('/api/auth/me') || urlStr.includes('/api/alerts') || urlStr.includes('/api/notifications')) {
+        if (urlStr.includes('/api/auth/me')) {
           localStorage.removeItem(STORAGE_KEY_TOKEN);
           localStorage.removeItem(STORAGE_KEY_USER);
           renderNavbarUserPill();
@@ -1981,15 +1980,25 @@ window.StockPulse = (function () {
   // Sync current user profile from /api/auth/me to keep navbar and profile perfectly up-to-date
   async function syncCurrentUserProfile() {
     const token = getStoredToken();
-    if (!token) return;
     try {
+      const headers = {};
+      if (token) {
+        headers['Authorization'] = 'Bearer ' + token;
+      }
       const res = await fetch('/api/auth/me', {
-        headers: { 'Authorization': 'Bearer ' + token }
+        headers,
+        credentials: 'same-origin'
       });
       if (res.ok) {
         const data = await res.json();
         if (data && data.user) {
           setUser(data.user);
+          renderNavbarUserPill();
+        }
+      } else if (res.status === 401) {
+        if (token) {
+          localStorage.removeItem(STORAGE_KEY_TOKEN);
+          localStorage.removeItem(STORAGE_KEY_USER);
           renderNavbarUserPill();
         }
       }

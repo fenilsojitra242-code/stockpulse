@@ -1428,12 +1428,11 @@
 
   async function handleLogout() {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
     } catch (_) {}
     localStorage.removeItem('stockpulse_user');
     localStorage.removeItem('stockpulse_jwt_token');
     localStorage.removeItem('stockpulse_user_profile');
-    document.cookie = 'stockpulse_jwt_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax';
     state.user = null;
     state.userEmail = '';
     state.userName = '';
