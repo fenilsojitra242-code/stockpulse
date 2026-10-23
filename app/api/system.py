@@ -1,18 +1,14 @@
 import os
 import json
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database.database import get_db
-from app.database.models import Alert, SystemSetting
+from app.database.models import Alert
 from app.services.scheduler import get_scheduler_status, start_scheduler, stop_scheduler, is_scheduler_running
 from app.services.market_data import inject_simulation_tick, reset_simulation, get_negative_cache_status
-from app.services.notification import (
-    get_notification_feed,
-    format_alert_message
-)
+from app.services.notification import get_notification_feed
 from app.services.prediction import load_model, load_reversal_model, get_model_diagnostics
 
 router = APIRouter(prefix="/system", tags=["System"])

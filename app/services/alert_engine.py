@@ -1,7 +1,7 @@
 import time
 import copy
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,6 @@ from app.services.prediction import predict_target_probability, predict_supertre
 from app.services.adaptive_threshold import adaptive_engine
 from app.services.messaging import notification_manager, NotificationEventType
 from app.services.diagnostic_logger import diagnostic_logger
-from app.services.market_regime import classify_market_regime
 
 
 POPULAR_SUPERTREND_SYMBOLS = ["TCS", "INFY", "RELIANCE", "HDFCBANK", "TATAMOTORS", "SBIN", "ICICIBANK", "BHARTIARTL", "ITC", "WIPRO"]
@@ -428,6 +427,7 @@ def _process_supertrend_state_transition(
     """
     clean_sym = symbol.strip().upper()
     state = _SUPERTREND_STATES.setdefault(condition_key, {
+        "symbol": clean_sym,
         "state": StateStr("MONITORING"),
         "confirmed_direction": None,
         "last_confirmed_candle_ts": None,
@@ -465,13 +465,13 @@ def _process_supertrend_state_transition(
         state["target_reversal_direction"] = None
         return None
 
-    raw_confirmed_dir = st_result["direction"]
-    confirmed_st_p = st_result["supertrend_price"]
-    dist_pts = st_result["distance_points"]
-    target_dir = st_result["target_direction"]
-    is_confirmed_flip = st_result["is_confirmed_flip"]
-    is_intrabar_cross = st_result["is_intrabar_cross"]
-    is_approaching = st_result["is_approaching"]
+    raw_confirmed_dir = st_result.get("direction", "BUY")
+    confirmed_st_p = float(st_result.get("supertrend_price", 0.0) or 0.0)
+    dist_pts = float(st_result.get("distance_points", 0.0) or 0.0)
+    target_dir = st_result.get("target_direction", "SELL" if raw_confirmed_dir == "BUY" else "BUY")
+    is_confirmed_flip = bool(st_result.get("is_confirmed_flip", False))
+    is_intrabar_cross = bool(st_result.get("is_intrabar_cross", False))
+    is_approaching = bool(st_result.get("is_approaching", False))
 
     # Percentage-based metrics
     ref_p = float(st_result.get("reference_price") or curr_price)
@@ -622,9 +622,9 @@ def _process_supertrend_state_transition(
                     state["target_reversal_direction"] = None
 
                     _STOCK_CONFIRMED_DIRECTIONS[clean_sym] = (raw_confirmed_dir, candle_ts)
-                    # Synchronize all conditions for this symbol
+                    # Synchronize all conditions for this symbol using exact match
                     for k, st in _SUPERTREND_STATES.items():
-                        if clean_sym in k.upper():
+                        if st.get("symbol") == clean_sym or (k.startswith("watchlist_") and k.split("_")[-1].upper() == clean_sym):
                             st["confirmed_direction"] = raw_confirmed_dir
 
                     # Resolve pending diagnostic prediction as TRUE_POSITIVE
@@ -937,18 +937,43 @@ def scan_default_watchlist_supertrend(
     results = []
     now = datetime.utcnow()
 
+    active_alert_syms_query = db.query(Alert.symbol).filter(
+        Alert.status.in_(ACTIVE_STATES),
+        Alert.enable_supertrend == True
+    )
+    if user_id:
+        active_alert_syms_query = active_alert_syms_query.filter(Alert.user_id == user_id)
+    active_alert_syms = {str(row[0]).strip().upper() for row in active_alert_syms_query.all() if row[0]}
+
+    if preloaded_snapshots is None and len(symbols) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        preloaded_snapshots = {}
+        uncached_syms = [s.strip().upper() for s in symbols if s and s.strip().upper() not in active_alert_syms]
+        def _fetch_snap(s):
+            t_start = time.perf_counter()
+            try:
+                sn = get_latest_market_snapshot(s)
+                dur = (time.perf_counter() - t_start) * 1000.0
+                return s, sn, dur, None
+            except Exception as ex:
+                dur = (time.perf_counter() - t_start) * 1000.0
+                return s, None, dur, str(ex)
+        workers = min(10, len(uncached_syms)) if uncached_syms else 1
+        symbol_timings = {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for s, sn, dur, err in pool.map(_fetch_snap, uncached_syms):
+                if sn:
+                    preloaded_snapshots[s] = sn
+                symbol_timings[s] = {"duration_ms": round(dur, 2), "error": err}
+        import app.services.scheduler as scheduler_mod
+        if hasattr(scheduler_mod, "_LAST_PER_SYMBOL_STATS"):
+            scheduler_mod._LAST_PER_SYMBOL_STATS = symbol_timings
+
     for sym in symbols:
         clean_sym = sym.strip().upper()
         try:
             # If user has an explicit active alert for this stock, alert handles it
-            alert_query = db.query(Alert).filter(
-                Alert.symbol == clean_sym,
-                Alert.status.in_(ACTIVE_STATES),
-                Alert.enable_supertrend == True
-            )
-            if user_id:
-                alert_query = alert_query.filter(Alert.user_id == user_id)
-            if alert_query.first():
+            if clean_sym in active_alert_syms:
                 continue
 
             if preloaded_snapshots is not None and clean_sym in preloaded_snapshots:
@@ -1065,7 +1090,7 @@ def evaluate_active_alerts(db: Session) -> List[Dict[str, Any]]:
             return s, None, dur, str(ex)
 
     if symbols_to_fetch:
-        workers = min(4, len(symbols_to_fetch))
+        workers = min(10, len(symbols_to_fetch))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(_fetch_one_symbol, sym) for sym in symbols_to_fetch]
             for f in as_completed(futures):

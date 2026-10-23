@@ -1,4 +1,5 @@
 import os
+import re
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -45,14 +46,44 @@ elif raw_db_url.startswith("sqlite:///"):
 else:
     DATABASE_URL = raw_db_url
 
-# For SQLite, check_same_thread=False allows multi-threaded access across FastAPI and APScheduler
-connect_args = {"check_same_thread": False, "timeout": 30} if DATABASE_URL.startswith("sqlite") else {}
+def get_database_file_path() -> str:
+    """Returns the canonical absolute filesystem path of the active SQLite database."""
+    if DATABASE_URL.startswith("sqlite:///"):
+        path_part = DATABASE_URL[10:].split("?")[0]
+        return os.path.abspath(path_part)
+    return os.path.abspath(DEFAULT_DB_FILE)
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args=connect_args,
-    echo=False
-)
+
+if DATABASE_URL.startswith("sqlite:///"):
+    sqlite_target_file = get_database_file_path()
+    try:
+        os.makedirs(os.path.dirname(sqlite_target_file), exist_ok=True)
+    except Exception:
+        pass
+    print(f"[StockPulse] SQLite Database connected at: {sqlite_target_file}")
+else:
+    # Log database scheme with credentials securely masked
+    masked_url = re.sub(r':([^@]+)@', ':***@', DATABASE_URL)
+    print(f"[StockPulse] Database connected with URL: {masked_url}")
+
+# For SQLite, check_same_thread=False allows multi-threaded access across FastAPI and APScheduler
+# For PostgreSQL / others, enable connection pooling with pre-ping to handle Render cloud connection drops
+if DATABASE_URL.startswith("sqlite"):
+    connect_args = {"check_same_thread": False, "timeout": 30}
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args=connect_args,
+        echo=False
+    )
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_size=10,
+        max_overflow=20,
+        echo=False
+    )
 
 if DATABASE_URL.startswith("sqlite"):
     @event.listens_for(engine, "connect")
@@ -62,6 +93,8 @@ if DATABASE_URL.startswith("sqlite"):
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA cache_size=-64000")  # 64MB cache
         cursor.execute("PRAGMA temp_store=MEMORY")
+        cursor.execute("PRAGMA busy_timeout=15000")  # 15s lock wait
+        cursor.execute("PRAGMA mmap_size=268435456")  # 256MB memory mapped I/O
         cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -146,8 +179,15 @@ def run_db_migrations(db_engine):
 
             # Backfill any missing usernames from email prefix and ensure unique indexes
             if "users" in table_names:
-                conn.execute(text("UPDATE users SET username = lower(substr(email, 1, instr(email, '@') - 1)) WHERE (username IS NULL OR username = '') AND instr(email, '@') > 1"))
-                conn.commit()
+                try:
+                    if db_engine.dialect.name == "postgresql":
+                        conn.execute(text("UPDATE users SET username = lower(split_part(email, '@', 1)) WHERE (username IS NULL OR username = '') AND position('@' in email) > 1"))
+                    else:
+                        conn.execute(text("UPDATE users SET username = lower(substr(email, 1, instr(email, '@') - 1)) WHERE (username IS NULL OR username = '') AND instr(email, '@') > 1"))
+                    conn.commit()
+                except Exception as update_err:
+                    print(f"[DB Migration] User username backfill note: {update_err}")
+
                 try:
                     conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username_lower ON users (lower(username)) WHERE username IS NOT NULL"))
                     conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email_lower ON users (lower(email)) WHERE email IS NOT NULL"))
@@ -156,4 +196,20 @@ def run_db_migrations(db_engine):
                     print(f"[DB Migration] User index migration note: {user_idx_err}")
     except Exception as e:
         print(f"[DB Migration] Schema migration note: {e}")
+
+
+def checkpoint_db(db_engine=None):
+    """
+    Safely checkpoints SQLite WAL log back into the main database file.
+    Flushes all uncheckpointed WAL frames into stockpulse.db on shutdown or idle.
+    """
+    from sqlalchemy import text
+    try:
+        target = db_engine or engine
+        if target.dialect.name == "sqlite":
+            with target.connect() as conn:
+                conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+                conn.commit()
+    except Exception as e:
+        print(f"[StockPulse] WAL checkpoint note: {e}")
 

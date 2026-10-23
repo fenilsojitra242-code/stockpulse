@@ -2,13 +2,14 @@ import hashlib
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, Tuple
 
 # High-performance in-memory calculation caches for deterministic indicator series
 _COMPUTE_ST_CACHE: Dict[Tuple, pd.DataFrame] = {}
 _ANALYZE_ST_CACHE: Dict[Tuple, Dict[str, Any]] = {}
 _REVERSAL_FEAT_CACHE: Dict[Tuple, Tuple] = {}
 _MARKET_FEATURES_CACHE: Dict[Tuple, pd.DataFrame] = {}
+_LIST_CANDLE_KEY_CACHE: Dict[Tuple, Tuple] = {}
 
 
 def get_candle_sequence_key(candles_or_df: Any) -> Optional[Tuple]:
@@ -80,6 +81,22 @@ def get_candle_sequence_key(candles_or_df: Any) -> Optional[Tuple]:
             n = len(candles_or_df)
             if n == 0:
                 return (0, "empty")
+            
+            c0 = candles_or_df[0] if isinstance(candles_or_df[0], dict) else {}
+            cn = candles_or_df[-1] if isinstance(candles_or_df[-1], dict) else {}
+            cm = candles_or_df[n // 2] if isinstance(candles_or_df[n // 2], dict) else {}
+            fast_probe = (
+                id(candles_or_df),
+                n,
+                str(c0.get("time") or c0.get("full_time")),
+                str(cn.get("time") or cn.get("full_time")),
+                round(float(c0.get("close") or c0.get("price") or 0.0), 2),
+                round(float(cn.get("close") or cn.get("price") or 0.0), 2),
+                round(float(cm.get("close") or cm.get("price") or 0.0), 2)
+            )
+            if fast_probe in _LIST_CANDLE_KEY_CACHE:
+                return _LIST_CANDLE_KEY_CACHE[fast_probe]
+
             h = hashlib.sha256()
             h.update(f"{n}:".encode("ascii"))
             parts = []
@@ -98,7 +115,11 @@ def get_candle_sequence_key(candles_or_df: Any) -> Optional[Tuple]:
                     except Exception: v = 0.0
                     parts.append(f"{t}:{o}:{hi}:{lo}:{cl}:{v}")
             h.update(";".join(parts).encode("utf-8", errors="replace"))
-            return (n, h.hexdigest())
+            key = (n, h.hexdigest())
+            if len(_LIST_CANDLE_KEY_CACHE) > 512:
+                _LIST_CANDLE_KEY_CACHE.pop(next(iter(_LIST_CANDLE_KEY_CACHE)))
+            _LIST_CANDLE_KEY_CACHE[fast_probe] = key
+            return key
     except Exception:
         return None
     return None
@@ -196,14 +217,14 @@ def sanitize_candles(candles_or_df: Any) -> pd.DataFrame:
     elif isinstance(candles_or_df, list):
         if not candles_or_df:
             return pd.DataFrame()
-        df = pd.DataFrame([dict(c) for c in candles_or_df])
+        df = pd.DataFrame(candles_or_df)
     else:
         return pd.DataFrame()
 
     if df.empty:
         return df
 
-    df.columns = [c.lower() for c in df.columns]
+    df.columns = [str(c).lower() for c in df.columns]
     if 'close' not in df.columns and 'price' in df.columns:
         df['close'] = df['price']
 
@@ -216,31 +237,44 @@ def sanitize_candles(candles_or_df: Any) -> pd.DataFrame:
 
     if time_col:
         try:
-            sort_ts = pd.to_datetime(df[time_col], errors='coerce', format='mixed')
-            df['_sort_ts'] = sort_ts
-            df = df.sort_values(by=['_sort_ts'], ascending=True)
-            df = df.drop_duplicates(subset=[time_col], keep='last')
-            df = df.drop(columns=['_sort_ts'])
+            s_time = df[time_col]
+            needs_sort_or_dedup = True
+            # Fast-path: skip expensive datetime parsing if already monotonic unique sequence
+            if s_time.is_monotonic_increasing and not s_time.hasnans and s_time.is_unique:
+                needs_sort_or_dedup = False
+
+            if needs_sort_or_dedup:
+                try:
+                    sort_ts = pd.to_datetime(s_time, errors='coerce', format='ISO8601')
+                    if sort_ts.isna().all() and not s_time.isna().all():
+                        sort_ts = pd.to_datetime(s_time, errors='coerce', format='mixed')
+                except Exception:
+                    sort_ts = pd.to_datetime(s_time, errors='coerce', format='mixed')
+                df['_sort_ts'] = sort_ts
+                df = df.sort_values(by=['_sort_ts'], ascending=True)
+                df = df.drop_duplicates(subset=[time_col], keep='last')
+                df = df.drop(columns=['_sort_ts'])
+                df = df.reset_index(drop=True)
         except Exception:
             pass
 
     df = df.reset_index(drop=True)
 
-    # Sanitize and physically validate OHLC
+    # Vectorized physical OHLC sanitization and boundary enforcement
     close_raw = pd.to_numeric(df.get('close', 100.0), errors='coerce')
-    close = close_raw.mask(close_raw <= 0.0, np.nan).ffill().bfill().fillna(100.0)
+    close = close_raw.mask(close_raw <= 0.0, np.nan).ffill().bfill().fillna(100.0).to_numpy()
     close = np.maximum(0.01, close)
 
     open_raw = pd.to_numeric(df.get('open', close), errors='coerce')
-    open_p = open_raw.mask(open_raw <= 0.0, np.nan).fillna(close)
+    open_p = open_raw.mask(open_raw <= 0.0, np.nan).fillna(pd.Series(close, index=open_raw.index)).to_numpy()
     open_p = np.maximum(0.01, open_p)
 
     high_raw = pd.to_numeric(df.get('high', close), errors='coerce')
-    high = high_raw.mask(high_raw <= 0.0, np.nan).fillna(close)
+    high = high_raw.mask(high_raw <= 0.0, np.nan).fillna(pd.Series(close, index=high_raw.index)).to_numpy()
     high = np.maximum(0.01, high)
 
     low_raw = pd.to_numeric(df.get('low', close), errors='coerce')
-    low = low_raw.mask(low_raw <= 0.0, np.nan).fillna(close)
+    low = low_raw.mask(low_raw <= 0.0, np.nan).fillna(pd.Series(close, index=low_raw.index)).to_numpy()
     low = np.maximum(0.01, low)
 
     valid_low = np.maximum(0.01, np.minimum(low, np.minimum(open_p, close)))
@@ -315,23 +349,31 @@ def compute_supertrend(
     basic_upper = hl2 + (float(multiplier) * atr)
     basic_lower = np.maximum(0.01, hl2 - (float(multiplier) * atr))
 
-    final_upper = [0.0] * n
-    final_lower = [0.0] * n
-    trend = [1] * n
-    supertrend = [0.0] * n
+    # Fast contiguous array extraction to avoid pandas iloc indexing overhead in loop
+    b_up_arr = np.maximum(0.01, basic_upper.to_numpy(dtype=np.float64))
+    b_low_arr = np.maximum(0.01, basic_lower.to_numpy(dtype=np.float64))
+    close_arr = close.to_numpy(dtype=np.float64)
+    atr_arr = atr.to_numpy(dtype=np.float64)
+
+    final_upper = np.zeros(n, dtype=np.float64)
+    final_lower = np.zeros(n, dtype=np.float64)
+    trend = np.ones(n, dtype=np.int32)
+    supertrend = np.zeros(n, dtype=np.float64)
     signal = [None] * n
 
     # Initialize first candle with positive bounds
-    final_upper[0] = max(0.01, float(basic_upper.iloc[0]))
-    final_lower[0] = max(0.01, float(basic_lower.iloc[0]))
-    trend[0] = 1 if float(close.iloc[0]) >= final_lower[0] else -1
+    final_upper[0] = b_up_arr[0]
+    final_lower[0] = b_low_arr[0]
+    trend[0] = 1 if close_arr[0] >= final_lower[0] else -1
     supertrend[0] = final_lower[0] if trend[0] == 1 else final_upper[0]
 
+    buf_factor = (float(band_buffer_pct) / 100.0) if band_buffer_pct > 0 else 0.0
+
     for i in range(1, n):
-        b_up = max(0.01, float(basic_upper.iloc[i]))
-        b_low = max(0.01, float(basic_lower.iloc[i]))
-        c_prev = float(close.iloc[i - 1])
-        c_curr = float(close.iloc[i])
+        b_up = b_up_arr[i]
+        b_low = b_low_arr[i]
+        c_prev = close_arr[i - 1]
+        c_curr = close_arr[i]
 
         # Final Lower Band (Support):
         # Basic lower band is raised or reset on breakdown
@@ -349,7 +391,7 @@ def compute_supertrend(
 
         # Trend direction determination with optional hysteresis buffer
         prev_trend = trend[i - 1]
-        buf = (float(atr.iloc[i]) * (float(band_buffer_pct) / 100.0)) if band_buffer_pct > 0 else 0.0
+        buf = (atr_arr[i] * buf_factor) if buf_factor > 0 else 0.0
 
         if prev_trend == 1:
             if c_curr < (final_lower[i] - buf):
@@ -370,12 +412,12 @@ def compute_supertrend(
                 supertrend[i] = final_upper[i]
                 signal[i] = None
 
-    data['supertrend'] = [round(float(x), 2) for x in supertrend]
-    data['supertrend_direction'] = trend
+    data['supertrend'] = np.round(supertrend, 2)
+    data['supertrend_direction'] = trend.tolist()
     data['supertrend_signal'] = signal
-    data['supertrend_upper'] = [round(float(x), 2) for x in final_upper]
-    data['supertrend_lower'] = [round(float(x), 2) for x in final_lower]
-    data['atr'] = [round(float(x), 2) for x in atr]
+    data['supertrend_upper'] = np.round(final_upper, 2)
+    data['supertrend_lower'] = np.round(final_lower, 2)
+    data['atr'] = np.round(atr_arr, 2)
 
     if cache_key is not None:
         if len(_COMPUTE_ST_CACHE) > 256:

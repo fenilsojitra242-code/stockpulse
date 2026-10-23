@@ -7,8 +7,8 @@ strictly from historical validation data without data leakage.
 import os
 import json
 import numpy as np
-from dataclasses import dataclass, asdict
-from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, Any, Optional
 
 REGISTRY_PATH = "data/processed/adaptive_thresholds.json"
 CANDIDATE_THRESHOLDS = [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]

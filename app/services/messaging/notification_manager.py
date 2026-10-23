@@ -1,11 +1,10 @@
-import os
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Set
 from sqlalchemy.orm import Session
 
-from app.database.models import Alert, AlertHistory
+from app.database.models import Alert
 from app.services.messaging.events import NotificationEventType
 from app.services.messaging.notification_service import notification_service
 
@@ -479,6 +478,8 @@ class NotificationManager:
             if event_key in cls._DEDUPLICATED_EVENT_KEYS:
                 print(f"[NotificationManager] Suppressed duplicate SuperTrend approaching alert: {event_key}")
                 return []
+            if len(cls._DEDUPLICATED_EVENT_KEYS) >= 5000:
+                cls._DEDUPLICATED_EVENT_KEYS = set(list(cls._DEDUPLICATED_EVENT_KEYS)[-2500:])
             cls._DEDUPLICATED_EVENT_KEYS.add(event_key)
 
         calc_dist_pct = distance_percent if distance_percent is not None else round((distance_points / max(0.01, current_price)) * 100.0, 4)
@@ -683,6 +684,8 @@ class NotificationManager:
             if event_key in cls._DEDUPLICATED_EVENT_KEYS:
                 print(f"[NotificationManager] Suppressed duplicate SuperTrend signal by event_key: {event_key}")
                 return []
+            if len(cls._DEDUPLICATED_EVENT_KEYS) >= 5000:
+                cls._DEDUPLICATED_EVENT_KEYS = set(list(cls._DEDUPLICATED_EVENT_KEYS)[-2500:])
             cls._DEDUPLICATED_EVENT_KEYS.add(event_key)
 
         data = {

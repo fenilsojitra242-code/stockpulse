@@ -11,12 +11,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
-import secrets
-
 from app.database.database import get_db
-from app.database.models import User, Alert, EmailOTP
-from app.services.email_validator import validate_email_authenticity
-from app.services.email_service import send_otp_email
+from app.database.models import User, Alert
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -87,7 +83,10 @@ def clear_auth_cookie(response: Response):
 def hash_password(password: str) -> str:
     """Hashes a raw password string using bcrypt."""
     salt = bcrypt.gensalt(rounds=12)
-    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+    pw_bytes = password.encode("utf-8")
+    if len(pw_bytes) > 72:
+        pw_bytes = pw_bytes[:72]
+    return bcrypt.hashpw(pw_bytes, salt).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -98,13 +97,16 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         hp = hashed_password.strip() if isinstance(hashed_password, str) else hashed_password
         h_bytes = hp.encode("utf-8") if isinstance(hp, str) else hp
         p_bytes = plain_password.encode("utf-8")
+        if len(p_bytes) > 72:
+            p_bytes = p_bytes[:72]
         if bcrypt.checkpw(p_bytes, h_bytes):
             return True
         if plain_password.strip() != plain_password:
-            if bcrypt.checkpw(plain_password.strip().encode("utf-8"), h_bytes):
+            p_strip = plain_password.strip().encode("utf-8")
+            if len(p_strip) > 72:
+                p_strip = p_strip[:72]
+            if bcrypt.checkpw(p_strip, h_bytes):
                 return True
-        if len(p_bytes) > 72 and bcrypt.checkpw(p_bytes[:72], h_bytes):
-            return True
         return False
     except Exception:
         return False
@@ -729,6 +731,23 @@ def login_user(req: LoginRequest, response: Response, db: Session = Depends(get_
         )
     ).first()
 
+    # Safe diagnostic logging (never logs passwords, hashes, tokens, or credentials)
+    try:
+        backend_name = db.bind.dialect.name if (db and db.bind) else "unknown"
+        if backend_name == "sqlite":
+            sanitized_target = "sqlite://local"
+        elif db and db.bind and hasattr(db.bind, "url") and db.bind.url:
+            sanitized_target = f"{backend_name}://{db.bind.url.host or 'cloud'}/{db.bind.url.database or ''}"
+        else:
+            sanitized_target = backend_name
+        total_db_users = db.query(User).count()
+        matched = bool(user)
+        has_hash = bool(user and user.password_hash)
+        pw_ok = verify_password(plain_pw, user.password_hash) if (user and has_hash) else False
+        print(f"[AUTH DIAGNOSTIC] DB: {backend_name} ({sanitized_target}) | Total DB Users: {total_db_users} | Lookup Matched: {matched} | Has Hash: {has_hash} | Password Verified: {pw_ok}")
+    except Exception as diag_err:
+        print(f"[AUTH DIAGNOSTIC LOG ERROR] {diag_err}")
+
     if not user or not user.password_hash:
         record_failed_login(rate_key)
         raise HTTPException(
@@ -805,3 +824,36 @@ def logout_user(response: Response):
     """
     clear_auth_cookie(response)
     return {"status": "SUCCESS", "message": "Signed out successfully"}
+
+
+@router.get("/diagnostic", status_code=status.HTTP_200_OK)
+def get_auth_diagnostic(db: Session = Depends(get_db)):
+    """
+    Safe public diagnostic endpoint to verify production database connection and persistence.
+    Never exposes passwords, hashes, tokens, or database credentials.
+    """
+    backend_name = db.bind.dialect.name if (db and db.bind) else "unknown"
+    if backend_name == "sqlite":
+        sanitized_db = "sqlite://local"
+    elif db and db.bind and hasattr(db.bind, "url") and db.bind.url:
+        sanitized_db = f"{backend_name}://{db.bind.url.host or 'cloud'}/{db.bind.url.database or ''}"
+    else:
+        sanitized_db = backend_name
+    total_users = db.query(User).count()
+    test_user_present = db.query(User).filter(func.lower(User.email) == "user@stockpulse.local").first() is not None
+    real_users_count = db.query(User).filter(func.lower(User.email) != "user@stockpulse.local").count()
+    is_db_url_set = bool(os.getenv("DATABASE_URL"))
+    is_persistent = (backend_name != "sqlite") or bool(os.getenv("PERSISTENT_DATA_DIR") or os.getenv("PERSISTENT_STORAGE_DIR"))
+
+    return {
+        "status": "DIAGNOSTIC_ACTIVE",
+        "database_backend": backend_name,
+        "sanitized_target": sanitized_db,
+        "database_url_configured": is_db_url_set,
+        "is_persistent": is_persistent,
+        "total_users_count": total_users,
+        "real_users_count": real_users_count,
+        "test_user_present": test_user_present,
+        "note": "Production database health check. Real user accounts require a persistent database (PostgreSQL or persistent disk) to survive Render restarts."
+    }
+

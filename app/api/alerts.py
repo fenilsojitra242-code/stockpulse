@@ -2,13 +2,12 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 from app.database.database import get_db
-from app.database.models import Alert, Stock, User, AlertHistory, Notification
+from app.database.models import Alert, Stock, User, Notification
 from app.schemas.alert import (
     AlertCreate,
-    AlertUpdate,
     AlertResponse,
     PredictRequest,
     PredictResponse,
@@ -108,8 +107,12 @@ def create_alert(
     )
     
     db.add(alert)
-    db.commit()
-    db.refresh(alert)
+    try:
+        db.commit()
+        db.refresh(alert)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Database transaction failed while creating alert")
 
     # Emit confirmation prediction active notification (sent to popup and dashboard feed)
     try:
@@ -248,7 +251,7 @@ def get_alert(
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    if alert.user_id and alert.user_id != current_user.id:
+    if alert.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Unauthorized to access this alert")
     return alert
 
@@ -263,7 +266,7 @@ def start_monitoring_alert(
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    if alert.user_id and alert.user_id != current_user.id:
+    if alert.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Unauthorized to modify this alert")
         
     now = datetime.utcnow()
@@ -309,7 +312,7 @@ def get_alert_notifications(
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    if alert.user_id and alert.user_id != current_user.id:
+    if alert.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Unauthorized to access notifications for this alert")
     items = db.query(Notification).filter(Notification.alert_id == alert_id, Notification.user_id == current_user.id).order_by(Notification.created_at.desc()).all()
     return items
@@ -331,7 +334,7 @@ def stop_monitoring_endpoint(
     target = db.query(Alert).filter(Alert.id == alert_id).first()
     if not target:
         raise HTTPException(status_code=404, detail="Alert not found")
-    if target.user_id and target.user_id != current_user.id:
+    if target.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Unauthorized to modify this alert")
 
     alert = stop_alert_monitoring(alert_id, db)
@@ -350,10 +353,14 @@ def delete_alert(
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    if alert.user_id and alert.user_id != current_user.id:
+    if alert.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Unauthorized to delete this alert")
     db.delete(alert)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Database transaction failed while deleting alert")
     return {"message": "Alert deleted successfully", "id": alert_id}
 
 
@@ -460,7 +467,7 @@ def extend_alert_window(
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    if alert.user_id and alert.user_id != current_user.id:
+    if alert.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Unauthorized to modify this alert")
     alert.warning_minutes = max(1, alert.warning_minutes + minutes)
     db.commit()
@@ -478,7 +485,7 @@ def reset_alert_reference(
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    if alert.user_id and alert.user_id != current_user.id:
+    if alert.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Unauthorized to modify this alert")
     from app.services.market_data import get_latest_market_snapshot
     snap = get_latest_market_snapshot(alert.symbol)

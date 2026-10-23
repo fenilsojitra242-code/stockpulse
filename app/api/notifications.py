@@ -1,13 +1,13 @@
 from datetime import datetime
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_
 
 from app.database.database import get_db
-from app.database.models import Notification, Alert, User
+from app.database.models import Notification, User
 from app.schemas.notification import NotificationResponse, NotificationListResponse
-from app.api.auth import get_current_user
+from app.api.auth import get_current_user, get_optional_current_user
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
@@ -21,19 +21,22 @@ def list_notifications(
     channel: Optional[str] = Query(None, description="Filter by channel"),
     unread_only: bool = Query(False, description="Filter unread only"),
     limit: int = Query(50, ge=1, le=200, description="Max notifications to return"),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ):
     """
     List historical and real-time notifications for the authenticated user as well as system notifications.
     """
     # Include user's own notifications plus system notifications (user_id IS NULL)
-    query = db.query(Notification).filter(
-        or_(
-            Notification.user_id == current_user.id,
-            Notification.user_id.is_(None)
+    if current_user:
+        query = db.query(Notification).filter(
+            or_(
+                Notification.user_id == current_user.id,
+                Notification.user_id.is_(None)
+            )
         )
-    )
+    else:
+        query = db.query(Notification).filter(Notification.user_id.is_(None))
 
     if alert_id is not None and isinstance(alert_id, int):
         query = query.filter(Notification.alert_id == alert_id)
@@ -57,11 +60,16 @@ def list_notifications(
     if unread_only is True:
         unread_count = total
     else:
-        unread_count = db.query(Notification.id).filter(
+        unread_filter = (
             or_(
                 Notification.user_id == current_user.id,
                 Notification.user_id.is_(None)
-            ),
+            )
+            if current_user
+            else Notification.user_id.is_(None)
+        )
+        unread_count = db.query(Notification.id).filter(
+            unread_filter,
             Notification.is_read == False
         ).count()
 
@@ -98,11 +106,15 @@ def mark_notification_as_read(
     item = db.query(Notification).filter(Notification.id == notification_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Notification not found")
-    if item.user_id and item.user_id != current_user.id:
+    if item.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Unauthorized to modify this notification")
     item.is_read = True
-    db.commit()
-    db.refresh(item)
+    try:
+        db.commit()
+        db.refresh(item)
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Database transaction failed")
     return item
 
 
@@ -113,13 +125,14 @@ def mark_all_notifications_read(
 ):
     """Mark all notifications as read for current user and system notifications."""
     count = db.query(Notification).filter(
-        or_(
-            Notification.user_id == current_user.id,
-            Notification.user_id.is_(None)
-        ),
+        Notification.user_id == current_user.id,
         Notification.is_read == False
     ).update({"is_read": True}, synchronize_session=False)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Database transaction failed")
     return {"message": "All notifications marked as read", "updated": count}
 
 
@@ -130,14 +143,14 @@ def clear_all_notifications(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Clear all notifications belonging to current user and system notifications from the feed."""
     count = db.query(Notification).filter(
-        or_(
-            Notification.user_id == current_user.id,
-            Notification.user_id.is_(None)
-        )
+        Notification.user_id == current_user.id
     ).delete(synchronize_session=False)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Database transaction failed")
     return {"message": "All notifications cleared successfully", "deleted": count}
 
 
@@ -184,7 +197,7 @@ def delete_notification(
     item = db.query(Notification).filter(Notification.id == notification_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Notification not found")
-    if item.user_id and item.user_id != current_user.id:
+    if item.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Unauthorized to delete this notification")
     db.delete(item)
     db.commit()

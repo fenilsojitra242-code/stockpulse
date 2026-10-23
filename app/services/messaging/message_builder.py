@@ -1,5 +1,5 @@
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from app.services.messaging.events import NotificationEventType
 
 # IST offset from UTC

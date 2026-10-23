@@ -1661,4 +1661,19 @@
     refreshCurrentStockSnapshot();
   });
 
+  // Clean up timers on navigation or page hide to avoid lingering background execution
+  function stopMonitoringPollers() {
+    if (pollSessionsTimer) {
+      clearInterval(pollSessionsTimer);
+      pollSessionsTimer = null;
+    }
+    if (pollStockSnapshotTimer) {
+      clearInterval(pollStockSnapshotTimer);
+      pollStockSnapshotTimer = null;
+    }
+  }
+
+  window.addEventListener('pagehide', stopMonitoringPollers);
+  window.addEventListener('beforeunload', stopMonitoringPollers);
+
 })();

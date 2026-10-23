@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, Literal, List
+from typing import Optional, Literal
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -166,6 +166,9 @@ class PredictResponse(BaseModel):
     status_label: str      # EARLY WARNING, MONITORING, INSUFFICIENT_CONFIDENCE
     explanation: str
     disclaimer: str
+    model_type: Optional[str] = "Random Forest"
+    is_fallback: Optional[bool] = False
+    model_status: Optional[str] = "LOADED"
     feasibility: Optional[dict] = None
 
 

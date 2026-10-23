@@ -4,7 +4,7 @@ import time
 import joblib
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Tuple
+from typing import List, Tuple
 from datetime import datetime
 
 from sklearn.linear_model import LogisticRegression

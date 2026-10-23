@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, Index
 from sqlalchemy.orm import relationship
 from app.database.database import Base
 
@@ -119,6 +119,10 @@ class AlertHistory(Base):
     alert = relationship("Alert", back_populates="history")
     user = relationship("User")
 
+    __table_args__ = (
+        Index("ix_alert_history_user_triggered", "user_id", "triggered_at"),
+    )
+
 
 class SystemSetting(Base):
     __tablename__ = "system_settings"
@@ -151,6 +155,10 @@ class Notification(Base):
 
     alert = relationship("Alert", back_populates="notifications")
     user = relationship("User", back_populates="notifications")
+
+    __table_args__ = (
+        Index("ix_notifications_user_created", "user_id", "created_at"),
+    )
 
 
 class EmailOTP(Base):

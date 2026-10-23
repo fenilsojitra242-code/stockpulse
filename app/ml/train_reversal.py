@@ -51,7 +51,6 @@ from app.services.feature_engine import (
     SUPERTREND_REVERSAL_FEATURE_NAMES,
     sanitize_candles
 )
-from app.services.market_regime import classify_market_regime
 
 MODEL_OUTPUT_PATH = "app/ml/reversal_model.joblib"
 METRICS_OUTPUT_PATH = "app/ml/reversal_metrics.json"

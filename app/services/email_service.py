@@ -246,7 +246,7 @@ The StockPulse Security Team
         except Exception as e:
             err_msg = str(e)
             print(f"[EmailService] SMTP delivery failed to {to_email}: {err_msg}")
-            print(f"[EmailService] LOGGED OTP for {to_email}: {otp_code}")
+            print(f"[EmailService] Notice: Outbound OTP delivery failed for {to_email}. Ensure SMTP/Brevo credentials are set.")
 
             is_cloud_blocked = any(k in err_msg.lower() for k in ("101", "unreachable", "timed out", "connection refused"))
             if is_cloud_blocked:

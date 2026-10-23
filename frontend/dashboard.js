@@ -187,18 +187,38 @@
     '1Y': '1-Year Historical Performance'
   };
 
+  let notifPollTimer = null;
+  let activeSessionsPollTimer = null;
+
   // --- INITIALIZATION ---
-  document.addEventListener('DOMContentLoaded', () => {
+  function initDashboard() {
     initChart();
     setupEventHandlers();
     loadAvailableStocks();
     fetchStockData(state.symbol, state.timeRange, true);
     startLivePolling();
     fetchNotifications();
-    setInterval(fetchNotifications, 10000);
+    if (notifPollTimer) clearInterval(notifPollTimer);
+    notifPollTimer = setInterval(fetchNotifications, 10000);
     fetchActiveSessions();
-    setInterval(fetchActiveSessions, 4000);
+    if (activeSessionsPollTimer) clearInterval(activeSessionsPollTimer);
+    activeSessionsPollTimer = setInterval(fetchActiveSessions, 4000);
     initUserSession();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initDashboard);
+  } else {
+    initDashboard();
+  }
+
+  window.addEventListener('beforeunload', () => {
+    if (notifPollTimer) clearInterval(notifPollTimer);
+    if (activeSessionsPollTimer) clearInterval(activeSessionsPollTimer);
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    if (activeStockFetchController) {
+      try { activeStockFetchController.abort(); } catch (e) {}
+    }
   });
 
   // --- CHART SETUP WITH CUSTOM CURRENT-PRICE INDICATOR ---
@@ -1518,11 +1538,11 @@
 
   // Client-side cache for instantaneous 0ms display on stock switch & range toggle
   const clientDashboardCache = new Map();
+  let activeStockFetchController = null;
+  let activeStockFetchSeq = 0;
 
   // --- DATA FETCHING & LIVE STOCK VIEW UPDATES ---
   async function fetchStockData(symbol, timeRange, showLoadingOverlay = false) {
-    if (state.isFetching) return;
-
     const cacheKey = `${symbol}_${timeRange}`;
     const cachedEntry = clientDashboardCache.get(cacheKey);
 
@@ -1532,6 +1552,18 @@
       showLoadingOverlay = false;
     }
 
+    if (showLoadingOverlay) {
+      // User explicitly changed stock or time range: abort prior in-flight request
+      if (activeStockFetchController) {
+        try { activeStockFetchController.abort(); } catch (e) {}
+      }
+    } else {
+      // Background poll tick: avoid stacking if a fetch is already running
+      if (state.isFetching) return;
+    }
+
+    const thisSeq = ++activeStockFetchSeq;
+    activeStockFetchController = new AbortController();
     state.isFetching = true;
 
     if (showLoadingOverlay) {
@@ -1541,11 +1573,15 @@
     }
 
     try {
-      const response = await fetch(`/api/stocks/${encodeURIComponent(symbol)}?range=${encodeURIComponent(timeRange)}`);
+      const response = await fetch(`/api/stocks/${encodeURIComponent(symbol)}?range=${encodeURIComponent(timeRange)}`, {
+        signal: activeStockFetchController.signal
+      });
       if (!response.ok) {
         throw new Error(`HTTP error ${response.status}`);
       }
       const data = await response.json();
+
+      if (thisSeq !== activeStockFetchSeq) return; // Superseded by a newer selection
 
       if (data.status === 'UNAVAILABLE' || !data.price) {
         if (!cachedEntry) renderUnavailableState();
@@ -1556,12 +1592,17 @@
       clientDashboardCache.set(cacheKey, data);
       renderStockDashboard(data);
     } catch (err) {
+      if (err.name === 'AbortError' || thisSeq !== activeStockFetchSeq) {
+        return;
+      }
       console.error('[StockPulse] Data fetch error:', err);
       if (!cachedEntry) renderUnavailableState();
     } finally {
-      state.isFetching = false;
-      if (showLoadingOverlay) {
-        elements.chartLoading.classList.remove('show');
+      if (thisSeq === activeStockFetchSeq) {
+        state.isFetching = false;
+        if (showLoadingOverlay) {
+          elements.chartLoading.classList.remove('show');
+        }
       }
     }
   }

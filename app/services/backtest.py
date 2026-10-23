@@ -1,8 +1,6 @@
 import numpy as np
-import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 from app.services.market_data import normalize_ticker
 from app.services.prediction import predict_target_probability

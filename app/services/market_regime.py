@@ -1,6 +1,4 @@
-import numpy as np
-import pandas as pd
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from app.services.feature_engine import sanitize_candles, compute_atr, compute_rsi, compute_macd
 
 

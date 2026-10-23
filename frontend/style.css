@@ -88,6 +88,7 @@ body {
 }
 
 .floating-nav {
+  position: relative;
   pointer-events: auto;
   max-width: 1280px;
   width: 100%;
@@ -5874,3 +5875,108 @@ body.dark-mode .hud-threshold-item {
   border-color: #334155;
   color: #f8fafc;
 }
+
+/* ==========================================================================
+   PORTFOLIO POLISH: TICKER CHIPS, SEARCH DROPDOWN & RESPONSIVE TOUCH
+   ========================================================================== */
+.ticker-chip-btn {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  padding: 5px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.ticker-chip-btn:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  color: #0f172a;
+  transform: translateY(-1px);
+}
+
+.ticker-chip-btn.active {
+  background: #2563eb !important;
+  color: #ffffff !important;
+  border-color: #2563eb !important;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
+}
+
+#search-dropdown,
+.control-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 12px 28px -4px rgba(15, 23, 42, 0.12), 0 4px 10px -2px rgba(15, 23, 42, 0.05);
+  z-index: 1000;
+  max-height: 300px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.search-result-item {
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid #f1f5f9;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: background 0.15s ease;
+}
+
+.search-result-item:last-child {
+  border-bottom: none;
+}
+
+.search-result-item:hover {
+  background: #f8fafc;
+}
+
+.history-table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: var(--radius-md);
+}
+
+.dark-mode .ticker-chip-btn {
+  background: #1e293b;
+  border-color: #334155;
+  color: #cbd5e1;
+}
+
+.dark-mode .ticker-chip-btn:hover {
+  background: #334155;
+  color: #f8fafc;
+}
+
+.dark-mode .ticker-chip-btn.active {
+  background: #2563eb !important;
+  color: #ffffff !important;
+  border-color: #2563eb !important;
+}
+
+.dark-mode #search-dropdown,
+.dark-mode .control-dropdown {
+  background: #1e293b;
+  border-color: #334155;
+}
+
+.dark-mode .search-result-item {
+  border-bottom-color: #334155;
+}
+
+.dark-mode .search-result-item:hover {
+  background: #334155;
+}
+

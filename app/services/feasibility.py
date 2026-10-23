@@ -127,7 +127,7 @@ def evaluate_target_feasibility(
     if market_snapshot is None:
         market_snapshot = get_latest_market_snapshot(clean_sym)
 
-    curr_price = float(market_snapshot.get("price") or 100.0)
+    curr_price = float(market_snapshot.get("price") or 0.0)
     prev_close = float(market_snapshot.get("previous_close") or curr_price)
     curr_change = float(market_snapshot.get("change_pct", 0.0) or 0.0)
 

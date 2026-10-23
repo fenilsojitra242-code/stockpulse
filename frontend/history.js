@@ -24,17 +24,18 @@
 
   async function loadHistory() {
     try {
-      // 1. Fetch History records
-      const res = await fetch('/api/history?limit=100');
-      if (res.ok) {
-        allHistory = await res.json();
+      const [resHistory, resStats] = await Promise.all([
+        fetch('/api/history?limit=100'),
+        fetch('/api/history/stats')
+      ]);
+
+      if (resHistory.ok) {
+        allHistory = await resHistory.json();
         renderTable();
       }
 
-      // 2. Fetch Performance KPIs
-      const statsRes = await fetch('/api/history/stats');
-      if (statsRes.ok) {
-        const stats = await statsRes.json();
+      if (resStats.ok) {
+        const stats = await resStats.json();
         renderKPIs(stats);
       }
     } catch (err) {

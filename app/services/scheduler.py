@@ -7,13 +7,15 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from app.database.database import SessionLocal
 from app.services.alert_engine import evaluate_active_alerts
 
+import threading
+
 _SCHEDULER: BackgroundScheduler = None
 _LAST_RUN_TIME = None
 _RUN_COUNT = 0
 _SKIPPED_RUNS = 0
 _LAST_CYCLE_DURATION_MS = 0.0
 _LAST_PER_SYMBOL_STATS = {}
-_JOB_LOCK = None
+_JOB_LOCK = threading.Lock()
 
 
 def scheduled_monitoring_job():
@@ -23,9 +25,6 @@ def scheduled_monitoring_job():
     never create a backlog of prediction jobs.
     """
     global _LAST_RUN_TIME, _RUN_COUNT, _JOB_LOCK, _SKIPPED_RUNS, _LAST_CYCLE_DURATION_MS
-    if _JOB_LOCK is None:
-        import threading
-        _JOB_LOCK = threading.Lock()
     if not _JOB_LOCK.acquire(blocking=False):
         _SKIPPED_RUNS += 1
         print(f"[Scheduler] Previous monitoring evaluation still running; skipping tick (skipped count: {_SKIPPED_RUNS}).")
@@ -40,6 +39,10 @@ def scheduled_monitoring_job():
         if results:
             print(f"[Scheduler] Tick #{_RUN_COUNT}: Evaluated {len(results)} alerts.")
     except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         print(f"[Scheduler] Error during evaluation tick: {e}")
     finally:
         db.close()

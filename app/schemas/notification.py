@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_serializer
+from typing import Optional, List
+from pydantic import BaseModel, field_serializer
 
 
 class NotificationBase(BaseModel):

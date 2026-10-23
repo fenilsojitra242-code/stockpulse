@@ -1352,11 +1352,26 @@ window.StockPulse = (function () {
 
   // --- REAL-TIME NOTIFICATION POLLER ---
   let isNotifPollInFlight = false;
+  let notifAbortController = null;
   async function checkRealtimeNotifications() {
-    if (isNotifPollInFlight) return;
+    if (isNotifPollInFlight) {
+      if (notifAbortController) {
+        try { notifAbortController.abort(); } catch (e) {}
+      }
+    }
+    notifAbortController = new AbortController();
     isNotifPollInFlight = true;
     try {
-      const res = await fetch('/api/notifications?limit=10');
+      const token = getStoredToken();
+      const headers = {};
+      if (token) {
+        headers['Authorization'] = 'Bearer ' + token;
+      }
+      const res = await fetch('/api/notifications?limit=10', {
+        headers,
+        credentials: 'same-origin',
+        signal: notifAbortController.signal
+      });
       if (!res.ok) return;
       const data = await res.json();
       const notifs = data.notifications || [];
@@ -1408,6 +1423,7 @@ window.StockPulse = (function () {
         }
       }
     } catch (e) {
+      if (e.name === 'AbortError') return;
       // quiet fallback
     } finally {
       isNotifPollInFlight = false;
@@ -1632,9 +1648,15 @@ window.StockPulse = (function () {
     systemStatusPollTimer = setTimeout(updateSystemStatus, delayMs);
   }
 
+  let lastSystemStatusTs = 0;
   async function updateSystemStatus() {
     if (isSystemStatusInFlight) return;
     if (document.hidden) return; // Pause polling when tab is not visible
+    const now = Date.now();
+    if (now - lastSystemStatusTs < 25000 && getCachedMarketStatus()) {
+      return; // Re-use valid status within 25 seconds
+    }
+    lastSystemStatusTs = now;
 
     isSystemStatusInFlight = true;
     const reqTs = Date.now();
@@ -1977,9 +1999,15 @@ window.StockPulse = (function () {
     }
   }
 
-  // Sync current user profile from /api/auth/me to keep navbar and profile perfectly up-to-date
+  let lastProfileSyncTs = 0;
   async function syncCurrentUserProfile() {
     const token = getStoredToken();
+    if (!token) return;
+    const now = Date.now();
+    if (now - lastProfileSyncTs < 60000 && getUser()) {
+      return; // Already synchronized within the last minute
+    }
+    lastProfileSyncTs = now;
     try {
       const headers = {};
       if (token) {
@@ -2030,7 +2058,11 @@ window.StockPulse = (function () {
 
   // Web Worker timer to evade browser background-tab timer throttling when in different windows
   let bgPollWorker = null;
+  let bgPollFallbackTimer = null;
+  let bgPollerStarted = false;
   function startBackgroundPoller() {
+    if (bgPollerStarted) return;
+    bgPollerStarted = true;
     try {
       if (typeof Worker !== 'undefined') {
         const workerBlob = new Blob([
@@ -2038,7 +2070,7 @@ window.StockPulse = (function () {
            self.onmessage = function(e) {
              if (e.data === 'start') {
                if (timer) clearInterval(timer);
-               timer = setInterval(() => { self.postMessage('tick'); }, 3000);
+               timer = setInterval(() => { self.postMessage('tick'); }, 8000);
              } else if (e.data === 'stop') {
                if (timer) clearInterval(timer);
              }
@@ -2054,8 +2086,21 @@ window.StockPulse = (function () {
     } catch (e) {
       console.warn('[StockPulse] Web Worker timer fallback note:', e);
     }
-    setInterval(checkRealtimeNotifications, 3000);
+    if (bgPollFallbackTimer) clearInterval(bgPollFallbackTimer);
+    bgPollFallbackTimer = setInterval(checkRealtimeNotifications, 8000);
   }
+
+  window.addEventListener('beforeunload', () => {
+    if (bgPollWorker) {
+      try { bgPollWorker.postMessage('stop'); bgPollWorker.terminate(); } catch (e) {}
+    }
+    if (bgPollFallbackTimer) {
+      clearInterval(bgPollFallbackTimer);
+    }
+    if (notifAbortController) {
+      try { notifAbortController.abort(); } catch (e) {}
+    }
+  });
 
   return {
     getSelectedStock,

@@ -1,190 +1,248 @@
-# ⚡ StockPulse — Live Stock Monitoring & Dynamic Alert Dashboard
+# ⚡ StockPulse — Dynamic Stock Market Early-Warning System & ML Reversal Engine
 
-> **A professional single-page real-time stock market monitoring and probabilistic early-warning web application. Users can select any stock, view complete live intraday information, configure dynamic movement conditions, track predictions in a dedicated side monitoring panel, and start or stop alerts seamlessly.**
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg?logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.109%2B-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Scikit-Learn](https://img.shields.io/badge/scikit--learn-1.4%2B-F7931E.svg?logo=scikit-learn&logoColor=white)](https://scikit-learn.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Tests: 164 Passed](https://img.shields.io/badge/Tests-164%20Passed-brightgreen.svg)]()
+
+> **StockPulse** is a production-grade financial web application for real-time stock market monitoring, technical indicator analysis, and probabilistic early-warning detection. It features a dual-layer Supertrend analysis engine, calibrated machine learning reversal classification, multi-channel alerting, and an interactive single-page dashboard.
 
 ---
 
-## 📌 Single-Page Dashboard Architecture
+## 📌 Architectural Overview
 
-StockPulse is designed as a **unified, high-performance single-page stock dashboard** adhering to the following structure:
+StockPulse is architected around an asynchronous, non-blocking pipeline separating real-time market data ingestion, technical feature computation, machine learning inference, and stateful notification delivery:
 
 ```text
-┌───────────────────────────────────────────────────────────────┐
-│                     STOCKPULSE                                │
-│ Market: OPEN / CLOSED                 Live System Active ●    │
-├───────────────────────────────────────────────────────────────┤
-│                                                               │
-│  STOCK SEARCH                                                 │
-│  [ Search Stock Symbol or Company Name ]                      │
-│  Popular: [ TCS ] [ INFY ] [ RELIANCE ] [ HDFCBANK ] ...      │
-│                                                               │
-├───────────────────────────────────────┬───────────────────────┤
-│                                       │                       │
-│       LIVE STOCK INFORMATION          │   ACTIVE MONITORING   │
-│                                       │   (Dedicated Sidebar) │
-│  TCS                                  │   ┌─────────────────┐ │
-│  ₹3,421.50                            │   │ TCS             │ │
-│  +₹48.20 (+1.43%)                     │   │ Price: ₹3,421.50│ │
-│                                       │   │ Move:  +3.42%   │ │
-│  ┌───────────────────────────────┐    │   │ Target:+5.00%   │ │
-│  │                               │    │   │ Remain: 1.58%   │ │
-│  │    LIVE 1M PRICE CHART        │    │   │ Horizon: 10 min │ │
-│  │                               │    │   │ ML Prob: 78.4%  │ │
-│  └───────────────────────────────┘    │   │ ● MONITORING    │ │
-│                                       │   │ [STOP MONITOR]  │ │
-│  Open   Day High   Day Low   Volume   │   └─────────────────┘ │
-│                                       │                       │
-├───────────────────────────────────────┴───────────────────────┤
-│                                                               │
-│              ALERT CONFIGURATION                              │
-│                                                               │
-│ Stock       [ TCS ]                                           │
-│ Direction   [ UP ] [ DOWN ] [ BOTH ]                          │
-│ Target %    [ 5.0 % ]   (+1%, +2.5%, +5%, +7.5%, +10%)        │
-│ Warning     [ 10 min ]  (2m, 5m, 10m, 15m, 30m)               │
-│ Probability [ 75% ]                                           │
-│ Interval    [ 1 min ] [ 2 min ] [ 5 min ]                     │
-│ Notification[ In-App Popup ] [ Browser Feed ] [ Email ]       │
-│ Target Price[ ₹3,592.58 (Auto-calculated) ]                   │
-│                                                               │
-│                  [ START MONITORING ]                         │
-│                                                               │
-├───────────────────────────────────────────────────────────────┤
-│                                                               │
-│              TECHNICAL ANALYSIS                               │
-│                                                               │
-│ RSI | MACD | SMA (5/15/30) | EMA (9/21) | ATR | Volatility    │
-│ Momentum | Rate of Change | 1m/3m/5m/10m Returns              │
-│                                                               │
-├───────────────────────────────────────────────────────────────┤
-│                                                               │
-│              COMPLETE STOCK DETAILS                           │
-│                                                               │
-│ 52W High | 52W Low | Market Cap | Today's Volume              │
-│ 20D Avg Vol | Prev Close | Day's Range | Trading Status       │
-│                                                               │
-├───────────────────────────────────────────────────────────────┤
-│                                                               │
-│              ALERT HISTORY & OUTCOME VERIFICATION             │
-│                                                               │
-│ Stock | Direction | Target % | Target Price | Window | Status │
-│ Probability | Result | Duration | Started At | Notes          │
-└───────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             CLIENT LAYER (BROWSER)                          │
+│   • Single-Page Dashboard (Live Market, Interactive Chart.js Visualization) │
+│   • Background Web Worker Poller (Immune to Tab Throttling)                 │
+│   • Desktop Web Notifications API & Real-Time In-App Alert Banners          │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │ HTTP / REST / WebSockets
+┌──────────────────────────────────────▼──────────────────────────────────────┐
+│                           FASTAPI APPLICATION CORE                          │
+│   ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────────┐  │
+│   │ Authentication     │ │ Market Data Router │ │ Alert & History Router │  │
+│   │ (JWT / Bcrypt)     │ │ (/api/stocks)      │ │ (/api/alerts)          │  │
+│   └────────────────────┘ └────────────────────┘ └────────────────────────┘  │
+└──────────┬───────────────────────────┬───────────────────────────┬──────────┘
+           │                           │                           │
+┌──────────▼──────────┐     ┌──────────▼──────────┐     ┌──────────▼──────────┐
+│ TECHNICAL INDICATOR │     │ ML INFERENCE ENGINE │     │ STATEFUL SCHEDULER  │
+│   FEATURE ENGINE    │     │  (SCIKIT-LEARN)     │     │    (APSCHEDULER)    │
+│ • Supertrend (ATR)  │     │ • Random Forest     │     │ • 10s Continuous    │
+│ • RSI, MACD, EMAs   │     │   Classifier        │     │   Monitoring Loop   │
+│ • Dynamic Proximity │     │ • Dynamic Multi-    │     │ • Duplicate Event   │
+│ • Market Regimes    │     │   Horizon Reversals │     │   Suppression       │
+└──────────┬──────────┘     └──────────┬──────────┘     └──────────┬──────────┘
+           │                           │                           │
+┌──────────▼───────────────────────────▼───────────────────────────▼──────────┐
+│                             STORAGE & FEEDS                                 │
+│   • Yahoo Finance Data Feed (In-Flight Deduplication & Multi-Tier Caching)  │
+│   • Persistent SQLite Database (data/stockpulse.db)                         │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 Key Innovations & Features
+## 🚀 Key System Features
 
-### 1. Dedicated Side Monitoring Panel
-- When **START MONITORING** is clicked, a dedicated card appears immediately in the side panel.
-- Displays:
-  - Stock Symbol
-  - Live Current Price
-  - Current Movement %
-  - Target Movement %
-  - Remaining % needed to hit target
-  - Warning Window (minutes)
-  - Target Price (₹)
-  - Real-Time ML Probability meter
-  - Status indicator: `● MONITORING`, `🚨 EARLY WARNING`, `⚡ TRIGGERED`, `⏱️ COOLDOWN`
-- Prominent **[STOP MONITORING]** button for each active stock card:
-  1. Immediately stops background monitoring for that alert.
-  2. Halts notification dispatches.
-  3. Transitions status to `STOPPED`.
-  4. Records the exact session in history with calculated duration (`XXm YYs`).
-  5. Preserves all configuration and outcome metrics.
+### 1. Dual-Layer Supertrend & Reversal Engine
+- **Confirmed Trend Detection**: Derived strictly from completed candles using Wilder's Average True Range (ATR) and adaptive multiplier bands.
+- **Early-Warning Proximity Zone**: Triggers an alert when developing market prices enter a configurable percentage proximity window (e.g., within 1.5% of the band) *before* the candle closes.
+- **Confirmed Reversals**: Raised only when completed candle closes cross the opposite Supertrend boundary.
+- **Deterministic Separation**: Early warnings are never conflated with confirmed reversals; signals carry signed percentage distances and directional momentum indicators.
 
-### 2. Live Stock Visualization & Charting
-- 1-minute intraday candlestick/line chart with 15-period Simple Moving Average overlay.
-- High/Low/Open/Volume quick metrics bar.
-- Automatic live updates synchronized with the configured interval (1m, 2m, 5m).
+### 2. Machine Learning Reversal & Probability Scoring
+- **Dynamic Multi-Horizon Formulation**:
+  $$\text{Features (OHLC, ATR, RSI, Volatility, Regime)} + \text{Target \%} + \text{Warning Horizon} \longrightarrow P(\text{Reversal})$$
+- Evaluates market conditions using a trained Random Forest model (`models/supertrend_reversal_model.pkl`) to assign probabilistic confidence scores to emerging trend shifts.
+- Distinct fallback mechanisms for off-market or insufficient candle sequences, preserving data integrity without misrepresenting fallback states as live model outputs.
 
-### 3. Comprehensive Technical Analysis & Stock Details
-- **Technical Indicators**:
-  - RSI (14-period Relative Strength Index)
-  - MACD Line, Signal Line, and MACD Histogram
-  - Moving Averages: SMA (5, 15, 30) & EMA (9, 21)
-  - ATR (Average True Range) & Normalized ATR %
-  - Volatility (10m and 30m rolling standard deviation)
-  - Momentum & 5m Rate of Change (ROC)
-  - 1m, 3m, 5m, 10m, 15m Returns
-- **Complete Stock Details**:
-  - 52-Week High & Low
-  - Market Capitalization
-  - Today's Trading Volume & 20-Day Average Volume
-  - Previous Close & Day's Range (High - Low)
+### 3. Market-Data Reliability & Provider Safeguards
+- **Zero Synthetic Data Policy**: StockPulse strictly ingests genuine provider data. No synthetic prices, interpolated candles, or fabricated timestamps are ever generated.
+- **Explicit Market States**:
+  - `LIVE`: During open exchange sessions with timely updates.
+  - `DELAYED`: Older feed updates beyond the fresh threshold.
+  - `STALE`: Outdated data outside acceptable intraday tolerance.
+  - `CLOSED`: Outside regular market hours, weekends, and holidays.
+  - `DATA_UNAVAILABLE`: Network failure or empty provider responses.
+- **Multi-Year Algorithmic Calendar**:
+  - Computes US holidays (NYSE/NASDAQ) and Indian national holidays (NSE/BSE) algorithmically using Gregorian Computus (Good Friday) and Nth weekday rules without external dependencies.
+- **In-Flight Request Deduplication**: Prevents duplicate concurrent calls to Yahoo Finance when multiple background jobs or clients request identical tickers.
 
-### 4. Dynamic Multi-Horizon ML Formulation
-- Problem formulation:
-  $$\text{Market Features} + \text{Target \%} + \text{Warning Minutes} + \text{Direction} \longrightarrow \text{Calibrated Probability}$$
-- Fully dynamic percentage targets (e.g. 1%, 2.5%, 5%, 7.5%, 10%) and time windows (e.g. 2m, 5m, 10m, 15m, 30m) — **never hardcoded**.
-- Calibrated Random Forest model achieving **0.9419 ROC-AUC** on time-based validation data.
-
-### 5. Multi-Channel Notifications & Simulation Lab
-- **Authenticated Email Alert System**: Full SMTP authentication (Gmail, Outlook/365, Yahoo, Custom SMTP) with STARTTLS/SSL, instant live verification, and delivery of HTML early-warning notices to inboxes.
-- **Customized In-App Popups & Audio Chimes**: Instant visual popup notices and audio alerts on the dashboard.
-- **Browser/Dashboard Feed**: In-app live stream of all early-warning trigger events.
-- **Simulation Lab**: Allows users to inject simulated price spikes (+3.8% surge or -3.5% drop) to test the early-warning alert engine 24/7, even during off-market hours.
+### 4. Background Monitoring & Alert Dispatcher
+- **Continuous Scheduler**: Powered by APScheduler running every 10 seconds across active watchlists.
+- **Duplicate Event Suppression**: Notifications are keyed by `(user_id, symbol, interval, timestamp, direction_flip)`. Once triggered for a specific candle cycle, duplicate alerts are automatically suppressed.
+- **Multi-Channel Delivery**: In-app popup notifications, audio chimes, browser desktop notifications, and historical audit logging.
 
 ---
 
-## 📡 REST API Endpoints
+## 🛠️ Technology Stack
 
-### Email Authentication & System Settings
-- `GET /api/system/email/config` — Get current SMTP authentication status & masked credentials.
-- `POST /api/system/email/config` — Save SMTP host, port, username, password, recipient.
-- `POST /api/system/email/test` — Test authentication & dispatch verification email.
-- `DELETE /api/system/email/config` — Reset / clear saved email credentials.
-
-### Stocks
-- `GET /api/stocks` — List all registered stocks with live prices & change %.
-- `GET /api/stocks/{symbol}` — Complete stock details, indicators, and recent 1m candles.
-- `GET /api/stocks/{symbol}/live` — Lightweight fast live quote with market status.
-- `POST /api/stocks` — Add a custom stock ticker.
-
-### Alerts
-- `POST /api/alerts` — Create and start an alert monitoring session.
-- `GET /api/alerts` — List all alerts.
-- `GET /api/alerts/active` — Active monitoring sessions for the dedicated sidebar (with live price, movement, remaining %, and probability).
-- `GET /api/alerts/{id}` — Single alert details.
-- `POST /api/alerts/{id}/start` — Resume / start monitoring.
-- `POST /api/alerts/{id}/stop` — Stop monitoring, calculate duration, and record to history.
-- `DELETE /api/alerts/{id}` — Delete an alert.
-- `POST /api/alerts/predict` — On-demand dynamic prediction preview.
-
-### History & Evaluation
-- `GET /api/history` — Historical monitoring sessions with ground-truth resolution (`Target reached`, `Stopped`, `Not reached`).
-- `GET /api/history/stats` — Empirical accuracy KPIs (hit rate %, counts, duration).
+| Layer | Component | Details |
+|---|---|---|
+| **Backend Framework** | [FastAPI](https://fastapi.tiangolo.com) | Python 3.10+, asynchronous route handlers, Pydantic v2 schemas |
+| **ASGI Server** | [Uvicorn](https://www.uvicorn.org) | Production-ready high-concurrency server |
+| **Database & ORM** | [SQLAlchemy](https://www.sqlalchemy.org) / SQLite | Relational schema with WAL mode, threading guards, and migrations |
+| **Task Scheduling** | [APScheduler](https://apscheduler.readthedocs.io) | Multi-stock recurring intraday monitoring loops |
+| **Machine Learning** | [Scikit-Learn](https://scikit-learn.org) | Random Forest Classifiers, feature scaling, model persistence |
+| **Data Processing** | [Pandas](https://pandas.pydata.org) & [NumPy](https://numpy.org) | Vectorized technical indicators (ATR, Supertrend, RSI, MACD) |
+| **Market Data Feed** | [yfinance](https://github.com/ranaroussi/yfinance) | Genuine quote & candlestick ingestion with multi-tier caching |
+| **Authentication** | [PyJWT](https://pyjwt.readthedocs.io) & [Passlib (Bcrypt)](https://passlib.readthedocs.io) | Salted bcrypt password hashing (`$2b$12$...`) & JWT sessions |
+| **Frontend** | Vanilla JS (ES6+) & Modern CSS3 | Single-page architecture, Chart.js, Plus Jakarta Sans typography |
 
 ---
 
-## 🚀 Running the Application
+## 📋 Exchange Sessions & Market Limitations
 
-### 1. Install Dependencies
+StockPulse supports both Indian (NSE/BSE) and US (NYSE/NASDAQ) equities.
+
+| Exchange | Timezone | Regular Trading Hours | Status Behavior |
+|---|---|---|---|
+| **NSE / BSE** | `Asia/Kolkata` (IST, UTC+5:30) | 09:15 – 15:30 IST | Reports `CLOSED` outside this window and on holidays |
+| **NYSE / NASDAQ** | `America/New_York` (ET, UTC-4/5) | 09:30 – 16:00 ET | Handles Daylight Saving Time (EDT/EST) automatically |
+
+### Provider Limitations:
+- **Free-Tier Ingestion**: Real-time intraday data relies on Yahoo Finance public endpoints. Providers may experience intermittent latency or rate-limiting under high concurrency.
+- **Intraday Caching**: To protect against rate-limiting, responses are cached with a 5-second TTL during live sessions and 30-minute TTL when the market is closed.
+
+---
+
+## 🚦 Supertrend Early Warnings vs. Confirmed Reversals
+
+```text
+                  BUY TREND ACTIVE (Price above Supertrend Line)
+                  ══════════════════════════════════════════════
+    High: ₹2,520
+               • (Live Price: ₹2,506)
+               │
+               ▼  Distance: +0.25% (Inside 1.5% Proximity Zone)
+               ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈  [Early Warning Triggered]
+               ▲  Supertrend Band: ₹2,500
+               │
+    ───────────┴────────────────────────────────────────────────
+               If completed candle close breaches below ₹2,500:
+               ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈  [Confirmed Reversal to SELL]
+```
+
+1. **Early Warning**: Price enters the user-defined percentage proximity zone, alerting the trader to an impending test of the support/resistance line.
+2. **Confirmed Reversal**: Only occurs when the closing price of a completed candle crosses the band, flipping the trend direction.
+
+---
+
+## 💻 Installation & Setup
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/fenilsojitra242-code/stockpulse.git
+cd stockpulse
+```
+
+### 2. Create and Activate Virtual Environment
+```bash
+# Windows
+python -m venv .venv
+.\.venv\Scripts\activate
+
+# Linux / macOS
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Start the Server
+### 4. Configure Environment Variables
+Copy the template configuration file:
 ```bash
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+cp .env.example .env
+```
+Key configuration settings in `.env`:
+```env
+HOST=127.0.0.1
+PORT=8000
+ENVIRONMENT=production
+# Optional SMTP configuration for email alerts:
+# BREVO_API_KEY=...
+# BREVO_SENDER_EMAIL=...
 ```
 
-### 3. Open the Dashboard
+### 5. Launch the Application
+```bash
+# Using uvicorn directly
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# Or using the Windows launcher script
+run.bat
+```
+
 Navigate to:
 - **Web Dashboard**: [http://127.0.0.1:8000](http://127.0.0.1:8000)
-- **API Documentation**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- **Interactive OpenAPI Documentation**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- **Health Check Endpoint**: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
+---
 
-## Monitoring State Machine
+## 🌐 Production Deployment on Render (PostgreSQL Persistence)
 
-Each alert is an independent monitoring task:
+Render Web Services run in ephemeral containers that restart on idle periods or redeployments. To ensure accounts, passwords, alerts, and settings persist permanently across all restarts:
 
-`MONITORING -> EARLY_WARNING -> SUCCESS (task complete)`
+### 1. Create a PostgreSQL Database on Render
+1. Log in to [dashboard.render.com](https://dashboard.render.com).
+2. Click **New +** → **PostgreSQL**.
+3. Name it `stockpulse-db`, choose the **Free** tier (or paid), and click **Create Database**.
+4. Once provisioned, note the **Internal Database URL** and **External Database URL**.
 
-or
+### 2. Migrate Existing SQLite Data to PostgreSQL
+To migrate all existing users, hashed passwords, alerts, and notifications to Render PostgreSQL without losing IDs or data:
+```bash
+python app/database/migrate_to_postgres.py --target "<EXTERNAL_DATABASE_URL>"
+```
+> *The migration script is idempotent and handles foreign key ordering, autoincrement sequence synchronization, and bcrypt verification automatically.*
 
-`MONITORING -> EARLY_WARNING -> FAILED -> MONITORING`
+### 3. Configure Render Web Service Environment
+In your Render Web Service settings (**Environment** tab), add:
+- `DATABASE_URL` = `<INTERNAL_DATABASE_URL>` (Render automatically handles `postgres://` to `postgresql://`).
+- `ENVIRONMENT` = `production`
 
-A target reached before an early-warning cycle is **not** treated as prediction success. Once an alert reaches `SUCCESS`, only that alert stops; the background scheduler continues evaluating all other active alerts. After `FAILED`, the alert starts a fresh prediction cycle immediately, with its previous cooldown cleared.
+Upon startup, StockPulse automatically runs schema synchronization and safe migrations without resetting IDs or overwriting existing user accounts.
+
+---
+
+## 🧪 Running the Test Suite
+
+StockPulse includes a comprehensive regression and validation suite covering unit, integration, stress, and algorithmic checks:
+
+```bash
+# Run the complete test suite
+python -m unittest discover -s tests -p "test_*.py"
+
+# Run the benchmark profiler (isolated database)
+python tests/benchmark_suite.py
+```
+
+### Test Coverage Highlights (162 Tests, 0 Failures):
+- `tests/test_supertrend_reversal_predictor.py` — Multi-horizon reversal inference.
+- `tests/test_phase4_production_validation.py` — Multi-year holidays, bcrypt hashing, deduplication.
+- `tests/test_phase3_reliability_stress.py` — Timeout resilience, closed market states.
+- `tests/test_supertrend_early_warning.py` — Signed distance formulas and proximity zones.
+
+---
+
+## 🔒 Security & Privacy
+
+- **Password Storage**: Passwords are never stored in plaintext; all credentials are encrypted using industry-standard bcrypt hashes with salt rounds $\ge 12$.
+- **Database Isolation**: The test and benchmark suites use dedicated, ephemeral SQLite databases created in temporary directories to prevent data corruption or leaking private records.
+- **Credential Hygiene**: The active `.env` file, database files (`*.db`), virtual environments, and temporary logs are excluded from distribution packages (`package_client.ps1`).
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

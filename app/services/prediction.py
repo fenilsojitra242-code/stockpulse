@@ -1,15 +1,13 @@
 import os
 import time
 import copy
-import joblib
+import threading
 import numpy as np
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple
 from app.services.feature_engine import (
     create_dynamic_features_vector,
-    FEATURE_NAMES,
     extract_supertrend_reversal_feature_vector,
     calculate_reversal_risk_score,
-    SUPERTREND_REVERSAL_FEATURE_NAMES,
     get_candle_sequence_key
 )
 from app.services.market_data import get_latest_market_snapshot
@@ -18,10 +16,14 @@ from app.services.diagnostic_logger import diagnostic_logger
 
 _MODEL_CACHE = None
 _MODEL_MTIME = 0.0
+_LAST_MODEL_MTIME_CHECK = 0.0
+_MODEL_LOAD_LOCK = threading.Lock()
 MODEL_PATH = "app/ml/model.joblib"
 
 _REVERSAL_MODEL_CACHE = None
 _REVERSAL_MODEL_MTIME = 0.0
+_LAST_REVERSAL_MTIME_CHECK = 0.0
+_REVERSAL_MODEL_LOAD_LOCK = threading.Lock()
 REVERSAL_MODEL_PATH = "app/ml/reversal_model.joblib"
 
 _PREDICT_ST_REVERSAL_CACHE: Dict[Tuple, Dict[str, Any]] = {}
@@ -50,59 +52,70 @@ _MODEL_DIAGNOSTICS: Dict[str, Any] = {
 
 
 def load_model():
-    """Load cached model artifact or load from disk with mtime invalidation."""
-    global _MODEL_CACHE, _MODEL_MTIME, _MODEL_DIAGNOSTICS
+    """Load cached model artifact or load from disk with mtime invalidation (thread-safe)."""
+    global _MODEL_CACHE, _MODEL_MTIME, _MODEL_DIAGNOSTICS, _LAST_MODEL_MTIME_CHECK
+    now_mono = time.monotonic()
+    if _MODEL_CACHE is not None and (now_mono - _LAST_MODEL_MTIME_CHECK < 1.0):
+        return _MODEL_CACHE
+
     mtime = os.path.getmtime(MODEL_PATH) if os.path.exists(MODEL_PATH) else 0.0
+    _LAST_MODEL_MTIME_CHECK = now_mono
     if _MODEL_CACHE is not None and mtime == _MODEL_MTIME:
         return _MODEL_CACHE
 
-    if not os.path.exists(MODEL_PATH):
-        _MODEL_DIAGNOSTICS["target_model"] = {
-            "status": "FILE_MISSING",
-            "loaded": False,
-            "error": f"Model artifact not found at {MODEL_PATH}",
-            "model_name": None,
-            "path": MODEL_PATH,
-            "mtime": 0.0,
-            "load_duration_ms": 0.0
-        }
-        return None
+    with _MODEL_LOAD_LOCK:
+        mtime = os.path.getmtime(MODEL_PATH) if os.path.exists(MODEL_PATH) else 0.0
+        if _MODEL_CACHE is not None and mtime == _MODEL_MTIME:
+            return _MODEL_CACHE
 
-    t0 = time.perf_counter()
-    try:
-        loaded = joblib.load(MODEL_PATH)
-        dur = (time.perf_counter() - t0) * 1000.0
-        if not isinstance(loaded, dict) or "model" not in loaded:
-            raise ValueError(f"Corrupt model artifact: expected dict with 'model' key, got {type(loaded)}")
-        _MODEL_CACHE = loaded
-        _MODEL_MTIME = mtime
-        _PREDICT_TARGET_PROB_CACHE.clear()
-        name = _MODEL_CACHE.get("model_name", "Unknown")
-        _MODEL_DIAGNOSTICS["target_model"] = {
-            "status": "LOADED",
-            "loaded": True,
-            "error": None,
-            "model_name": name,
-            "path": MODEL_PATH,
-            "mtime": mtime,
-            "load_duration_ms": round(dur, 2)
-        }
-        print(f"[PredictionService] Loaded model: {name} in {dur:.2f}ms")
-        return _MODEL_CACHE
-    except Exception as e:
-        dur = (time.perf_counter() - t0) * 1000.0
-        _MODEL_CACHE = None
-        _MODEL_DIAGNOSTICS["target_model"] = {
-            "status": "CORRUPT",
-            "loaded": False,
-            "error": str(e),
-            "model_name": None,
-            "path": MODEL_PATH,
-            "mtime": mtime,
-            "load_duration_ms": round(dur, 2)
-        }
-        print(f"[PredictionService] Error loading model from {MODEL_PATH}: {e}")
-        return None
+        if not os.path.exists(MODEL_PATH):
+            _MODEL_DIAGNOSTICS["target_model"] = {
+                "status": "FILE_MISSING",
+                "loaded": False,
+                "error": f"Model artifact not found at {MODEL_PATH}",
+                "model_name": None,
+                "path": MODEL_PATH,
+                "mtime": 0.0,
+                "load_duration_ms": 0.0
+            }
+            return None
+
+        t0 = time.perf_counter()
+        try:
+            import joblib
+            loaded = joblib.load(MODEL_PATH)
+            dur = (time.perf_counter() - t0) * 1000.0
+            if not isinstance(loaded, dict) or "model" not in loaded:
+                raise ValueError(f"Corrupt model artifact: expected dict with 'model' key, got {type(loaded)}")
+            _MODEL_CACHE = loaded
+            _MODEL_MTIME = mtime
+            _PREDICT_TARGET_PROB_CACHE.clear()
+            name = _MODEL_CACHE.get("model_name", "Unknown")
+            _MODEL_DIAGNOSTICS["target_model"] = {
+                "status": "LOADED",
+                "loaded": True,
+                "error": None,
+                "model_name": name,
+                "path": MODEL_PATH,
+                "mtime": mtime,
+                "load_duration_ms": round(dur, 2)
+            }
+            print(f"[PredictionService] Loaded model: {name} in {dur:.2f}ms")
+            return _MODEL_CACHE
+        except Exception as e:
+            dur = (time.perf_counter() - t0) * 1000.0
+            _MODEL_CACHE = None
+            _MODEL_DIAGNOSTICS["target_model"] = {
+                "status": "CORRUPT",
+                "loaded": False,
+                "error": str(e),
+                "model_name": None,
+                "path": MODEL_PATH,
+                "mtime": mtime,
+                "load_duration_ms": round(dur, 2)
+            }
+            print(f"[PredictionService] Error loading model from {MODEL_PATH}: {e}")
+            return None
 
 
 def calculate_statistical_barrier_probability(
@@ -169,7 +182,7 @@ def predict_target_probability(
     clean_sym_upper = symbol.strip().upper()
     abs_target_percent = abs(float(target_percent))
     dir_upper = direction.upper()
-    model_mtime = os.path.getmtime(MODEL_PATH) if os.path.exists(MODEL_PATH) else 0.0
+    model_mtime = _MODEL_MTIME if _MODEL_CACHE is not None else (os.path.getmtime(MODEL_PATH) if os.path.exists(MODEL_PATH) else 0.0)
     feat_tuple = tuple(sorted((str(k), round(float(v), 4)) for k, v in features.items() if isinstance(v, (int, float, np.floating, np.integer)) and not np.isnan(v))) if isinstance(features, dict) else ()
     cache_key = (
         clean_sym_upper,
@@ -186,8 +199,10 @@ def predict_target_probability(
         return copy.deepcopy(_PREDICT_TARGET_PROB_CACHE[cache_key])
 
     model_artifact = load_model()
+    ml_evaluated = False
 
     def evaluate_single_direction(dir_str: str) -> float:
+        nonlocal ml_evaluated
         stat_prob = calculate_statistical_barrier_probability(
             market_features=features,
             target_percent=abs_target_percent,
@@ -215,6 +230,7 @@ def predict_target_probability(
                 # An ML prob of 0.01 represents weak/counter-trend signal (0.10)
                 conviction = float(np.clip(0.40 + (proba - 0.045) * 7.5, 0.04, 0.94))
                 blended = 0.60 * conviction + 0.40 * stat_prob
+                ml_evaluated = True
                 return float(np.clip(blended, 0.02, 0.95))
             except Exception as e:
                 print(f"[PredictionService] Inference error, fallback to statistical: {e}")
@@ -282,16 +298,21 @@ def predict_target_probability(
 
     target_sign = "+" if active_direction == "UP" else "-"
 
+    model_name = model_artifact.get("model_name", "Random Forest") if model_artifact is not None else None
+    model_type = model_name if ml_evaluated else "STATISTICAL_FALLBACK"
+    is_fallback = not ml_evaluated
+
     if threshold_status == "INSUFFICIENT_CONFIDENCE":
         thresh_note = "Early warning suppressed: Minimum validation precision/recall criteria not met for this configuration."
     else:
         thresh_pct = f"{adaptive_threshold * 100:.0f}%" if adaptive_threshold else "N/A"
         thresh_note = f"Automatic adaptive threshold: {thresh_pct} ({'Exceeded' if is_alert_worthy else 'Below threshold'})."
 
+    fallback_note = " [Statistical barrier baseline active; ML artifact not loaded]" if is_fallback else ""
     explanation = (
         f"{symbol} is showing {ret_5m}% return over last 5m (RSI: {rsi}, Volume: {vol_ratio}x 20-SMA). "
         f"Requires {req_velocity}%/min velocity to reach target {target_sign}{abs_target_percent:.2f}% in {warning_minutes}m. "
-        f"Model probability: {int(chosen_prob * 100)}% ({prediction_label}). {thresh_note}"
+        f"Model probability: {int(chosen_prob * 100)}% ({prediction_label}). {thresh_note}{fallback_note}"
     )
 
     res = {
@@ -314,6 +335,9 @@ def predict_target_probability(
         "threshold_status": threshold_status,
         "is_alert_worthy": is_alert_worthy,
         "threshold_evaluation": threshold_eval,
+        "model_type": model_type,
+        "is_fallback": is_fallback,
+        "model_status": "LOADED" if ml_evaluated else "FALLBACK",
         "features_summary": {
             "return_1m": round(features.get("return_1m", 0.0), 2),
             "return_5m": ret_5m,
@@ -334,64 +358,75 @@ def predict_target_probability(
 
 
 def load_reversal_model() -> Optional[Dict[str, Any]]:
-    """Load cached Supertrend reversal model artifact or load from disk with mtime invalidation."""
-    global _REVERSAL_MODEL_CACHE, _REVERSAL_MODEL_MTIME, _MODEL_DIAGNOSTICS
+    """Load cached Supertrend reversal model artifact or load from disk with mtime invalidation (thread-safe)."""
+    global _REVERSAL_MODEL_CACHE, _REVERSAL_MODEL_MTIME, _MODEL_DIAGNOSTICS, _LAST_REVERSAL_MTIME_CHECK
+    now_mono = time.monotonic()
+    if _REVERSAL_MODEL_CACHE is not None and (now_mono - _LAST_REVERSAL_MTIME_CHECK < 1.0):
+        return _REVERSAL_MODEL_CACHE
+
     mtime = os.path.getmtime(REVERSAL_MODEL_PATH) if os.path.exists(REVERSAL_MODEL_PATH) else 0.0
+    _LAST_REVERSAL_MTIME_CHECK = now_mono
     if _REVERSAL_MODEL_CACHE is not None and mtime == _REVERSAL_MODEL_MTIME:
         return _REVERSAL_MODEL_CACHE
 
-    if not os.path.exists(REVERSAL_MODEL_PATH):
-        _MODEL_DIAGNOSTICS["reversal_model"] = {
-            "status": "FILE_MISSING",
-            "loaded": False,
-            "error": f"Reversal model artifact not found at {REVERSAL_MODEL_PATH}",
-            "model_name": None,
-            "path": REVERSAL_MODEL_PATH,
-            "mtime": 0.0,
-            "load_duration_ms": 0.0
-        }
-        return None
+    with _REVERSAL_MODEL_LOAD_LOCK:
+        mtime = os.path.getmtime(REVERSAL_MODEL_PATH) if os.path.exists(REVERSAL_MODEL_PATH) else 0.0
+        if _REVERSAL_MODEL_CACHE is not None and mtime == _REVERSAL_MODEL_MTIME:
+            return _REVERSAL_MODEL_CACHE
 
-    t0 = time.perf_counter()
-    try:
-        loaded = joblib.load(REVERSAL_MODEL_PATH)
-        dur = (time.perf_counter() - t0) * 1000.0
-        if not isinstance(loaded, dict) or "model" not in loaded:
-            raise ValueError(f"Corrupt reversal model artifact: expected dict with 'model' key, got {type(loaded)}")
-        _REVERSAL_MODEL_CACHE = loaded
-        _REVERSAL_MODEL_MTIME = mtime
-        _PREDICT_ST_REVERSAL_CACHE.clear()
-        clf = _REVERSAL_MODEL_CACHE.get("model")
-        if hasattr(clf, "estimator") and hasattr(clf.estimator, "n_jobs"):
-            clf.estimator.n_jobs = 1
-        elif hasattr(clf, "n_jobs"):
-            clf.n_jobs = 1
-        name = _REVERSAL_MODEL_CACHE.get("model_name", "Unknown")
-        _MODEL_DIAGNOSTICS["reversal_model"] = {
-            "status": "LOADED",
-            "loaded": True,
-            "error": None,
-            "model_name": name,
-            "path": REVERSAL_MODEL_PATH,
-            "mtime": mtime,
-            "load_duration_ms": round(dur, 2)
-        }
-        print(f"[PredictionService] Loaded Supertrend reversal model: {name} in {dur:.2f}ms")
-        return _REVERSAL_MODEL_CACHE
-    except Exception as e:
-        dur = (time.perf_counter() - t0) * 1000.0
-        _REVERSAL_MODEL_CACHE = None
-        _MODEL_DIAGNOSTICS["reversal_model"] = {
-            "status": "CORRUPT",
-            "loaded": False,
-            "error": str(e),
-            "model_name": None,
-            "path": REVERSAL_MODEL_PATH,
-            "mtime": mtime,
-            "load_duration_ms": round(dur, 2)
-        }
-        print(f"[PredictionService] Error loading reversal model from {REVERSAL_MODEL_PATH}: {e}")
-        return None
+        if not os.path.exists(REVERSAL_MODEL_PATH):
+            _MODEL_DIAGNOSTICS["reversal_model"] = {
+                "status": "FILE_MISSING",
+                "loaded": False,
+                "error": f"Reversal model artifact not found at {REVERSAL_MODEL_PATH}",
+                "model_name": None,
+                "path": REVERSAL_MODEL_PATH,
+                "mtime": 0.0,
+                "load_duration_ms": 0.0
+            }
+            return None
+
+        t0 = time.perf_counter()
+        try:
+            import joblib
+            loaded = joblib.load(REVERSAL_MODEL_PATH)
+            dur = (time.perf_counter() - t0) * 1000.0
+            if not isinstance(loaded, dict) or "model" not in loaded:
+                raise ValueError(f"Corrupt reversal model artifact: expected dict with 'model' key, got {type(loaded)}")
+            _REVERSAL_MODEL_CACHE = loaded
+            _REVERSAL_MODEL_MTIME = mtime
+            _PREDICT_ST_REVERSAL_CACHE.clear()
+            clf = _REVERSAL_MODEL_CACHE.get("model")
+            if hasattr(clf, "estimator") and hasattr(clf.estimator, "n_jobs"):
+                clf.estimator.n_jobs = 1
+            elif hasattr(clf, "n_jobs"):
+                clf.n_jobs = 1
+            name = _REVERSAL_MODEL_CACHE.get("model_name", "Unknown")
+            _MODEL_DIAGNOSTICS["reversal_model"] = {
+                "status": "LOADED",
+                "loaded": True,
+                "error": None,
+                "model_name": name,
+                "path": REVERSAL_MODEL_PATH,
+                "mtime": mtime,
+                "load_duration_ms": round(dur, 2)
+            }
+            print(f"[PredictionService] Loaded Supertrend reversal model: {name} in {dur:.2f}ms")
+            return _REVERSAL_MODEL_CACHE
+        except Exception as e:
+            dur = (time.perf_counter() - t0) * 1000.0
+            _REVERSAL_MODEL_CACHE = None
+            _MODEL_DIAGNOSTICS["reversal_model"] = {
+                "status": "CORRUPT",
+                "loaded": False,
+                "error": str(e),
+                "model_name": None,
+                "path": REVERSAL_MODEL_PATH,
+                "mtime": mtime,
+                "load_duration_ms": round(dur, 2)
+            }
+            print(f"[PredictionService] Error loading reversal model from {REVERSAL_MODEL_PATH}: {e}")
+            return None
 
 
 def prewarm_models() -> Dict[str, Any]:
@@ -414,6 +449,13 @@ def prewarm_models() -> Dict[str, Any]:
 def get_model_diagnostics() -> Dict[str, Any]:
     """Returns telemetry of both prediction models."""
     return copy.deepcopy(_MODEL_DIAGNOSTICS)
+
+
+def is_prewarm_complete() -> bool:
+    """Returns True if background model pre-warming has concluded."""
+    diag = _MODEL_DIAGNOSTICS
+    return diag.get("target_model", {}).get("status") in ("LOADED", "MISSING", "FAILED") and \
+           diag.get("reversal_model", {}).get("status") in ("LOADED", "MISSING", "FAILED")
 
 
 def predict_supertrend_reversal(
@@ -444,7 +486,7 @@ def predict_supertrend_reversal(
     horizon = int(horizon_minutes) if horizon_minutes in (1, 2, 5) else 5
 
     ckey = get_candle_sequence_key(candles_or_df)
-    rev_model_mtime = os.path.getmtime(REVERSAL_MODEL_PATH) if os.path.exists(REVERSAL_MODEL_PATH) else 0.0
+    rev_model_mtime = _REVERSAL_MODEL_MTIME if _REVERSAL_MODEL_CACHE is not None else (os.path.getmtime(REVERSAL_MODEL_PATH) if os.path.exists(REVERSAL_MODEL_PATH) else 0.0)
     cache_key = (
         ckey,
         symbol.strip().upper(),
@@ -470,7 +512,7 @@ def predict_supertrend_reversal(
         multiplier=multiplier
     )
 
-    cp = float(current_price if current_price is not None else feat_dict.get('close', 100.0))
+    cp = float(current_price if current_price is not None else feat_dict.get('close', 0.0))
     st_p = float(supertrend_price if supertrend_price is not None else feat_dict.get('supertrend', cp))
     atr_val = float(atr_value if atr_value is not None else feat_dict.get('atr_14', 1.0))
     dist_pts = round(abs(cp - st_p), 2)

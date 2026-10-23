@@ -1,13 +1,13 @@
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from app.database.database import SessionLocal
 from app.database.models import Notification, Alert
-from app.services.messaging.events import NotificationEventType, NotificationPriority, get_default_priority
+from app.services.messaging.events import get_default_priority
 from app.services.messaging.message_builder import MessageBuilder
 from app.services.messaging.providers.base import NotificationProvider
 from app.services.messaging.providers.dashboard import DashboardNotifier

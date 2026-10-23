@@ -150,6 +150,13 @@ for i in range(n_candles):
         "volume": 5000 + i * 10
     })
 
+# Synchronize with background pre-warming so ML unpickling does not starve GIL during benchmark
+from app.services.prediction import is_prewarm_complete
+for _ in range(40):
+    if is_prewarm_complete():
+        break
+    time.sleep(0.5)
+
 # 6. Supertrend Calculation Duration (Cold vs Warm)
 # Reset cache for clean cold-run timing
 from app.services.feature_engine import _ANALYZE_ST_CACHE, _COMPUTE_ST_CACHE
@@ -239,7 +246,8 @@ rev_prob_cold = predict_supertrend_reversal(
 )
 t_rev_cold = (time.perf_counter() - t0_rev_cold) * 1000.0
 
-t0_rev_warm = time.perf_counter()
+# 7.2.1 Cache-Hit inference
+t0_rev_hit = time.perf_counter()
 for _ in range(iterations_ml):
     rev_prob = predict_supertrend_reversal(
         candles_or_df=candle_list,
@@ -249,8 +257,34 @@ for _ in range(iterations_ml):
         supertrend_price=candle_list[-1]["price"] - 5.0,
         symbol="RELIANCE"
     )
-t_rev_warm = (time.perf_counter() - t0_rev_warm) / iterations_ml * 1000.0
-print(f"[7.2] ML predict_supertrend_reversal: Cold = {t_rev_cold:.2f} ms | Warm = {t_rev_warm:.3f} ms")
+t_rev_hit = (time.perf_counter() - t0_rev_hit) / iterations_ml * 1000.0
+
+# 7.2.2 Cache-Miss inference (Fresh candle sequences requiring full feature extraction & scoring)
+iterations_miss = 10
+t0_rev_miss = time.perf_counter()
+for step in range(iterations_miss):
+    fresh_seq = list(candle_list)
+    fresh_seq.append({
+        "time": f"03:{31+step:02d} PM",
+        "full_time": f"2026-10-15T15:{31+step:02d}:00",
+        "price": round(candle_list[-1]["price"] + step * 0.5, 2),
+        "open": round(candle_list[-1]["price"] + step * 0.5 - 0.2, 2),
+        "high": round(candle_list[-1]["price"] + step * 0.5 + 0.8, 2),
+        "low": round(candle_list[-1]["price"] + step * 0.5 - 0.8, 2),
+        "close": round(candle_list[-1]["price"] + step * 0.5, 2),
+        "volume": 6000
+    })
+    predict_supertrend_reversal(
+        candles_or_df=fresh_seq,
+        confirmed_direction="BUY",
+        horizon_minutes=5,
+        current_price=fresh_seq[-1]["price"],
+        supertrend_price=fresh_seq[-1]["price"] - 5.0,
+        symbol="RELIANCE"
+    )
+t_rev_miss = (time.perf_counter() - t0_rev_miss) / iterations_miss * 1000.0
+
+print(f"[7.2] ML predict_supertrend_reversal: Cold = {t_rev_cold:.2f} ms | Cache-Hit = {t_rev_hit:.4f} ms | Cache-Miss (Full ML Scoring) = {t_rev_miss:.2f} ms")
 
 
 # 2. Homepage Response Time

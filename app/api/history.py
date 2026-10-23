@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 
@@ -48,5 +48,9 @@ def clear_history(
 ):
     """Clear alert history records belonging to current user."""
     db.query(AlertHistory).filter(AlertHistory.user_id == current_user.id).delete()
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Database transaction failed")
     return {"message": "Alert history cleared"}

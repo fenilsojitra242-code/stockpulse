@@ -1,15 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 
 from app.database.database import get_db
 from app.database.models import Stock, User
-from app.schemas.stock import StockResponse, StockCreate
 from app.api.auth import get_current_user
 from app.services.market_data import (
     get_stock_visualization_data,
     get_available_stocks_list,
-    get_clean_symbol,
     get_market_status,
     get_stock_data_status
 )
@@ -381,9 +379,7 @@ def test_supertrend_notification(
     Simulates / triggers a real-time SuperTrend notification for the stock
     so the user can immediately experience the Audio, Voice, and HUD popup alert.
     """
-    from app.services.market_data import get_stock_visualization_data
     from app.services.messaging import notification_manager
-    from app.database.models import Alert
 
     vis = get_stock_visualization_data(symbol, time_range="1D")
     curr_price = float(vis.get("price", 4120.0))

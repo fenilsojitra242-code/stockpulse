@@ -4,10 +4,26 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import pandas as pd
 import numpy as np
-import yfinance as yf
 from typing import Dict, Optional, Tuple, List, Any
 
 import threading
+
+# Lazy loader for yfinance to defer heavy imports until required
+_YF_MODULE = None
+
+def _get_yf():
+    """Lazily import and cache yfinance on first use."""
+    global _YF_MODULE
+    if _YF_MODULE is None:
+        import yfinance as _yf
+        _YF_MODULE = _yf
+    return _YF_MODULE
+
+def __getattr__(name: str):
+    """Module-level attribute fallback for backward compatibility with tests/external code."""
+    if name == "yf":
+        return _get_yf()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Indian Standard Time (IST) ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
@@ -17,6 +33,7 @@ _RANGE_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _FAST_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
 _SNAPSHOT_FEATURES_CACHE: Dict[Tuple, Dict[str, float]] = {}
 _NEGATIVE_LOOKUP_CACHE: Dict[str, Any] = {}
+_RESOLVED_TICKER_CACHE: Dict[str, str] = {}
 
 CACHE_TTL_INTRADAY = 5      # seconds during open market (frequent fresh updates)
 CACHE_TTL_HISTORICAL = 180  # 3 minutes for 5D, 1M, etc.
@@ -150,34 +167,175 @@ NSE_HOLIDAYS = {
 }
 
 
-def get_market_status(as_of: Optional[datetime] = None) -> Tuple[str, str]:
+# US Eastern Time (ET) ZoneInfo (automatically handles EST UTC-5 and EDT UTC-4 daylight saving)
+US_ET = ZoneInfo("America/New_York")
+
+# Official NYSE / NASDAQ Trading Holidays (2025 - 2026)
+US_HOLIDAYS = {
+    # 2025
+    "2025-01-01",  # New Year's Day
+    "2025-01-20",  # Martin Luther King, Jr. Day
+    "2025-02-17",  # Washington's Birthday (Presidents' Day)
+    "2025-04-18",  # Good Friday
+    "2025-05-26",  # Memorial Day
+    "2025-06-19",  # Juneteenth National Independence Day
+    "2025-07-04",  # Independence Day
+    "2025-09-01",  # Labor Day
+    "2025-11-27",  # Thanksgiving Day
+    "2025-12-25",  # Christmas Day
+    # 2026
+    "2026-01-01",  # New Year's Day
+    "2026-01-19",  # Martin Luther King, Jr. Day
+    "2026-02-16",  # Washington's Birthday (Presidents' Day)
+    "2026-04-03",  # Good Friday
+    "2026-05-25",  # Memorial Day
+    "2026-06-19",  # Juneteenth National Independence Day
+    "2026-07-03",  # Independence Day (Observed)
+    "2026-09-07",  # Labor Day
+    "2026-11-26",  # Thanksgiving Day
+    "2026-12-25",  # Christmas Day
+}
+
+def _calculate_easter(year: int):
+    """Anonymous Gregorian computus algorithm for Western Easter."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    from datetime import date
+    return date(year, month, day)
+
+
+def _get_nth_weekday_of_month(year: int, month: int, weekday: int, n: int):
+    from datetime import date, timedelta
+    d = date(year, month, 1)
+    offset = (weekday - d.weekday()) % 7
+    d += timedelta(days=offset)
+    d += timedelta(weeks=n - 1)
+    return d
+
+
+def _get_last_weekday_of_month(year: int, month: int, weekday: int):
+    from datetime import date, timedelta
+    next_month = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    d = next_month - timedelta(days=1)
+    offset = (d.weekday() - weekday) % 7
+    return d - timedelta(days=offset)
+
+
+def _get_observed_us_holiday(d):
+    from datetime import timedelta
+    if d.weekday() == 5:
+        return d - timedelta(days=1)
+    elif d.weekday() == 6:
+        return d + timedelta(days=1)
+    return d
+
+
+def is_exchange_holiday(target_date, is_us: bool = False) -> bool:
     """
-    Returns authoritative market status: 'OPEN', 'CLOSED', or 'STATUS UNKNOWN', and formatted IST time.
-    NSE/BSE Trading Hours: Monday to Friday, 09:15 to 15:30 IST, excluding exchange holidays.
+    Robust holiday verification across calendar years:
+    - Matches official published schedules for 2025 and 2026.
+    - Accurately extends to future calendar years (2027+) via federal & exchange rules.
+    """
+    from datetime import date, timedelta
+    d_obj = target_date if isinstance(target_date, date) else target_date.date()
+    d_str = d_obj.strftime("%Y-%m-%d")
+    year = d_obj.year
+
+    if is_us:
+        if d_str in US_HOLIDAYS:
+            return True
+        easter_d = _calculate_easter(year)
+        good_friday = easter_d - timedelta(days=2)
+        us_dyn_holidays = {
+            _get_observed_us_holiday(date(year, 1, 1)),                  # New Year's Day
+            _get_nth_weekday_of_month(year, 1, 0, 3),                 # MLK Day (3rd Mon Jan)
+            _get_nth_weekday_of_month(year, 2, 0, 3),                 # Presidents' Day (3rd Mon Feb)
+            good_friday,                                              # Good Friday
+            _get_last_weekday_of_month(year, 5, 0),                   # Memorial Day (Last Mon May)
+            _get_observed_us_holiday(date(year, 6, 19)),                 # Juneteenth
+            _get_observed_us_holiday(date(year, 7, 4)),                  # Independence Day
+            _get_nth_weekday_of_month(year, 9, 0, 1),                 # Labor Day (1st Mon Sep)
+            _get_nth_weekday_of_month(year, 11, 3, 4),                # Thanksgiving (4th Thu Nov)
+            _get_observed_us_holiday(date(year, 12, 25))                 # Christmas Day
+        }
+        return d_obj in us_dyn_holidays
+    else:
+        if d_str in NSE_HOLIDAYS:
+            return True
+        easter_d = _calculate_easter(year)
+        good_friday = easter_d - timedelta(days=2)
+        fixed_nse_holidays = {
+            date(year, 1, 26),   # Republic Day
+            date(year, 4, 14),   # Dr. Ambedkar Jayanti
+            good_friday,         # Good Friday
+            date(year, 5, 1),    # Maharashtra Day
+            date(year, 8, 15),   # Independence Day
+            date(year, 10, 2),   # Mahatma Gandhi Jayanti
+            date(year, 12, 25)   # Christmas
+        }
+        return d_obj in fixed_nse_holidays
+
+
+def is_us_symbol(symbol: Optional[str]) -> bool:
+    """Determine whether a symbol belongs to US exchange (NYSE/NASDAQ)."""
+    if not symbol:
+        return False
+    s = str(symbol).strip().upper()
+    if s.endswith(".NS") or s.endswith(".BO"):
+        return False
+    us_tickers = {"AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "SPY", "QQQ", "PRX", "PROSY"}
+    if s in us_tickers:
+        return True
+    if "." not in s and "^" not in s and s in STOCK_METADATA and STOCK_METADATA[s].get("market_cap", "").startswith("$"):
+        return True
+    return False
+
+
+def get_market_status(as_of: Optional[Any] = None, symbol: Optional[str] = None) -> Tuple[str, str]:
+    """
+    Returns authoritative market status: 'OPEN', 'CLOSED', or 'STATUS UNKNOWN', and formatted exchange time.
+    - Indian (NSE/BSE): Mon-Fri 09:15-15:30 IST, excluding official NSE_HOLIDAYS & national holidays.
+    - US (NYSE/NASDAQ): Mon-Fri 09:30-16:00 US Eastern Time (ET/EDT), excluding official US_HOLIDAYS.
     Completely independent of individual provider connectivity or single API request success.
     """
     try:
+        is_us = is_us_symbol(symbol)
+        tz = US_ET if is_us else IST
         if as_of:
-            now_ist = as_of.astimezone(IST) if as_of.tzinfo else as_of.replace(tzinfo=IST)
+            now_dt = as_of.astimezone(tz) if hasattr(as_of, "astimezone") and as_of.tzinfo else as_of.replace(tzinfo=tz)
         else:
-            now_ist = datetime.now(IST)
+            now_dt = datetime.now(tz)
 
-        time_str = now_ist.strftime("%I:%M:%S %p")
-        date_str = now_ist.strftime("%Y-%m-%d")
+        time_str = now_dt.strftime("%I:%M:%S %p")
 
-        # 1. Exchange Holiday Check
-        if date_str in NSE_HOLIDAYS:
+        if is_exchange_holiday(now_dt.date(), is_us=is_us):
             return "CLOSED", time_str
 
-        # 2. Weekend Check (Saturday=5, Sunday=6)
-        if now_ist.weekday() >= 5:
+        # Weekend Check (Saturday=5, Sunday=6)
+        if now_dt.weekday() >= 5:
             return "CLOSED", time_str
 
-        # 3. Regular Trading Hours: 09:15 to 15:30 IST
-        market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
-        market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+        # Regular Trading Hours
+        if is_us:
+            market_open = now_dt.replace(hour=9, minute=30, second=0, microsecond=0)
+            market_close = now_dt.replace(hour=16, minute=0, second=0, microsecond=0)
+        else:
+            market_open = now_dt.replace(hour=9, minute=15, second=0, microsecond=0)
+            market_close = now_dt.replace(hour=15, minute=30, second=0, microsecond=0)
 
-        if market_open <= now_ist <= market_close:
+        if market_open <= now_dt <= market_close:
             return "OPEN", time_str
         else:
             return "CLOSED", time_str
@@ -208,76 +366,11 @@ def format_market_cap(mcap: Optional[float], currency: str = "INR") -> str:
 
 
 def generate_fallback_candles(symbol: str, range_key: str) -> pd.DataFrame:
-    """Generates realistic deterministic intraday/historical candles for unlisted/custom stocks."""
-    now_ist = datetime.now(IST)
-    import hashlib
-    h = int(hashlib.md5(symbol.encode()).hexdigest()[:8], 16)
-    base_price = 150.0 + float(h % 2800)
-    
-    rows = []
-    if range_key == "1D":
-        start_time = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
-        end_time = min(now_ist, now_ist.replace(hour=15, minute=30, second=0, microsecond=0))
-        if end_time < start_time:
-            end_time = start_time + timedelta(hours=6, minutes=15)
-            
-        cur = start_time
-        curr_p = base_price
-        idx = 0
-        while cur <= end_time:
-            idx += 1
-            change_p = np.sin(idx * 0.15 + (h % 10)) * (base_price * 0.003) + np.cos(idx * 0.05) * (base_price * 0.002)
-            c_close = round(base_price + change_p, 2)
-            c_open = round(curr_p, 2)
-            c_high = round(max(c_open, c_close) + abs(change_p) * 0.15 + 0.1, 2)
-            c_low = round(min(c_open, c_close) - abs(change_p) * 0.15 - 0.1, 2)
-            vol = int(5000 + abs(np.sin(idx)) * 25000)
-            rows.append({
-                "time": cur,
-                "open": c_open,
-                "high": c_high,
-                "low": c_low,
-                "close": c_close,
-                "volume": vol
-            })
-            curr_p = c_close
-            cur += timedelta(minutes=1)
-    else:
-        days = 5 if range_key == "5D" else (30 if range_key == "1M" else (180 if range_key == "6M" else 365))
-        delta = timedelta(minutes=5) if range_key == "5D" else timedelta(days=1)
-        cur = now_ist - (delta * days)
-        curr_p = base_price
-        idx = 0
-        while cur <= now_ist:
-            idx += 1
-            change_p = np.sin(idx * 0.2 + (h % 7)) * (base_price * 0.015)
-            c_close = round(base_price + change_p, 2)
-            c_open = round(curr_p, 2)
-            c_high = round(max(c_open, c_close) + abs(change_p) * 0.25 + 0.2, 2)
-            c_low = round(min(c_open, c_close) - abs(change_p) * 0.25 - 0.2, 2)
-            vol = int(50000 + abs(np.sin(idx)) * 200000)
-            rows.append({
-                "time": cur,
-                "open": c_open,
-                "high": c_high,
-                "low": c_low,
-                "close": c_close,
-                "volume": vol
-            })
-            curr_p = c_close
-            cur += delta
+    """Returns an empty candles DataFrame when provider data is unavailable.
+    Never fabricates artificial prices, sine-waves, or synthetic timestamps.
+    """
+    return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
-    if not rows:
-        rows.append({
-            "time": now_ist,
-            "open": base_price,
-            "high": base_price + 1.0,
-            "low": base_price - 1.0,
-            "close": base_price,
-            "volume": 10000
-        })
-    df_res = pd.DataFrame(rows).set_index("time")
-    return df_res
 
 
 def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[str, Any]:
@@ -299,7 +392,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
     now_ts = time.time()
 
     # Determine dynamic TTL based on market open/closed status
-    market_status_val, _ = get_market_status()
+    market_status_val, _ = get_market_status(symbol=norm_sym)
     is_market_open = (market_status_val == "OPEN")
 
     if not is_market_open:
@@ -327,9 +420,10 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                     if latest_ts:
                         try:
                             latest_dt = datetime.fromisoformat(latest_ts)
+                            target_tz = US_ET if is_us_symbol(norm_sym) else IST
                             if not latest_dt.tzinfo:
-                                latest_dt = latest_dt.replace(tzinfo=IST)
-                            age = max(0, int((datetime.now(IST) - latest_dt).total_seconds()))
+                                latest_dt = latest_dt.replace(tzinfo=target_tz)
+                            age = max(0, int((datetime.now(timezone.utc) - latest_dt.astimezone(timezone.utc)).total_seconds()))
                             data_copy["data_age_seconds"] = age
                             if age <= 180:
                                 data_copy["data_status"] = "LIVE"
@@ -361,6 +455,23 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
             data_copy["trading_status"] = "Normal Trading" if is_market_open else "Market Closed"
             if not is_market_open:
                 data_copy["data_status"] = "CLOSED"
+            else:
+                latest_ts = data_copy.get("latest_market_timestamp")
+                if latest_ts:
+                    try:
+                        latest_dt = datetime.fromisoformat(latest_ts)
+                        if not latest_dt.tzinfo:
+                            latest_dt = latest_dt.replace(tzinfo=IST)
+                        age = max(0, int((datetime.now(IST) - latest_dt).total_seconds()))
+                        data_copy["data_age_seconds"] = age
+                        if age <= 180:
+                            data_copy["data_status"] = "LIVE"
+                        elif age <= 900:
+                            data_copy["data_status"] = "DELAYED"
+                        else:
+                            data_copy["data_status"] = "STALE"
+                    except Exception:
+                        pass
             return data_copy
 
     range_config = {
@@ -418,8 +529,11 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
     try:
         # Determine candidate tickers to fetch (deduplicated):
         raw_upper = symbol.strip().upper()
+        resolved_prev = _RESOLVED_TICKER_CACHE.get(clean_sym)
         mapped = TICKER_ALIASES.get(raw_upper, TICKER_ALIASES.get(clean_sym))
         candidates_raw = []
+        if resolved_prev:
+            candidates_raw.append(resolved_prev)
         if mapped:
             candidates_raw.extend([mapped, f"{clean_sym}.NS", f"{clean_sym}.BO"])
         elif "." in raw_upper or "^" in raw_upper:
@@ -438,7 +552,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
 
         for cand_idx, cand in enumerate(candidate_syms):
             try:
-                t = yf.Ticker(cand)
+                t = _get_yf().Ticker(cand)
                 # Primary candidate gets YFINANCE_PRIMARY_TIMEOUT; secondary fallbacks get shorter YFINANCE_SECONDARY_TIMEOUT
                 cand_timeout = YFINANCE_PRIMARY_TIMEOUT if cand_idx == 0 else YFINANCE_SECONDARY_TIMEOUT
                 df_cand = t.history(period=cfg["period"], interval=cfg["interval"], auto_adjust=False, timeout=cand_timeout)
@@ -476,6 +590,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                     best_df = df_cand
                     best_ticker = t
                     best_chosen_sym = cand
+                    _RESOLVED_TICKER_CACHE[clean_sym] = cand
                     break
             except Exception as e_cand:
                 had_network_exception = True
@@ -581,6 +696,8 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                         fi_market_cap = getattr(fi, 'market_cap', None) or getattr(fi, 'marketCap', None)
                         fi_avg_vol = getattr(fi, 'three_month_average_volume', None) or getattr(fi, 'ten_day_average_volume', None)
 
+                        if len(_FAST_INFO_CACHE) > 512:
+                            _FAST_INFO_CACHE.pop(next(iter(_FAST_INFO_CACHE)), None)
                         _FAST_INFO_CACHE[clean_sym] = {
                             "ts": now_ts,
                             "currency": fi_currency,
@@ -607,7 +724,7 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
                 pass
 
         # Authoritative market status check (timezone, holidays, weekends, trading hours)
-        market_status_val, ist_time_str = get_market_status(server_time)
+        market_status_val, ist_time_str = get_market_status(server_time, symbol=norm_sym)
         is_market_currently_open = (market_status_val == "OPEN")
 
         day_open = float(df['open'].iloc[0])
@@ -667,17 +784,17 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
 
         if fi_year_high is not None and isinstance(fi_year_high, (int, float, np.floating, np.integer)) and not np.isnan(fi_year_high):
             high_52w = round(float(fi_year_high), 2)
-        elif meta.get("52w_high"):
-            high_52w = float(meta["52w_high"])
+        elif range_key == "1Y" and not df.empty and 'high' in df and len(df) >= 200:
+            high_52w = round(float(df['high'].max()), 2)
         else:
-            high_52w = round(curr_price * 1.25, 2)
+            high_52w = None
 
         if fi_year_low is not None and isinstance(fi_year_low, (int, float, np.floating, np.integer)) and not np.isnan(fi_year_low):
             low_52w = round(float(fi_year_low), 2)
-        elif meta.get("52w_low"):
-            low_52w = float(meta["52w_low"])
+        elif range_key == "1Y" and not df.empty and 'low' in df and len(df) >= 200:
+            low_52w = round(float(df['low'].min()), 2)
         else:
-            low_52w = round(curr_price * 0.75, 2)
+            low_52w = None
 
         if fi_market_cap is not None and isinstance(fi_market_cap, (int, float, np.floating, np.integer)) and not np.isnan(fi_market_cap):
             market_cap_str = format_market_cap(fi_market_cap, fi_currency)
@@ -689,30 +806,42 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         else:
             avg_vol_str = meta.get("avg_vol", "N/A")
 
-        # Format chart candles chronologically with deduplication (Section 10)
+        # Format chart candles chronologically with deduplication (vectorized conversion)
         chart_points = []
         seen_stamps = set()
-        for dt, row in df.iterrows():
-            dt_ist = dt.astimezone(IST) if hasattr(dt, "astimezone") else pd.Timestamp(dt, tz=IST)
-            if range_key in {"1D", "5D"}:
-                time_label = dt_ist.strftime("%I:%M %p")
+        n_rows = len(df)
+        if n_rows > 0:
+            dts = df.index
+            if hasattr(dts, "tz") and dts.tz is not None:
+                dts_ist = dts.tz_convert(IST)
             else:
-                time_label = dt_ist.strftime("%d %b")
+                dts_ist = dts.tz_localize(IST)
 
-            iso_key = dt_ist.isoformat()
-            if iso_key in seen_stamps:
-                continue
-            seen_stamps.add(iso_key)
+            date_fmt = "%I:%M %p" if range_key in {"1D", "5D"} else "%d %b"
+            time_labels = dts_ist.strftime(date_fmt).tolist()
+            iso_keys = [ts.isoformat() for ts in dts_ist]
 
-            chart_points.append({
-                "time": time_label,
-                "full_time": iso_key,
-                "price": round(float(row['close']), 2),
-                "open": round(float(row['open']), 2),
-                "high": round(float(row['high']), 2),
-                "low": round(float(row['low']), 2),
-                "volume": int(row['volume']) if 'volume' in row else 0
-            })
+            close_vals = np.round(df['close'].to_numpy(dtype=float), 2).tolist()
+            open_vals = np.round(df['open'].to_numpy(dtype=float), 2).tolist()
+            high_vals = np.round(df['high'].to_numpy(dtype=float), 2).tolist()
+            low_vals = np.round(df['low'].to_numpy(dtype=float), 2).tolist()
+            vol_vals = df['volume'].to_numpy(dtype=int).tolist() if 'volume' in df else [0] * n_rows
+
+            for i in range(n_rows):
+                iso_key = iso_keys[i]
+                if iso_key in seen_stamps:
+                    continue
+                seen_stamps.add(iso_key)
+
+                chart_points.append({
+                    "time": time_labels[i],
+                    "full_time": iso_key,
+                    "price": close_vals[i],
+                    "open": open_vals[i],
+                    "high": high_vals[i],
+                    "low": low_vals[i],
+                    "volume": vol_vals[i]
+                })
 
         exchange_label = "NSE" if ".NS" in norm_sym else ("BSE" if ".BO" in norm_sym else "NASDAQ")
         # Real-time server sync timestamp for active frontend polling clock
@@ -804,6 +933,8 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
             result["supertrend"] = None
 
         # Cache result
+        if len(_RANGE_CACHE) > 512:
+            _RANGE_CACHE.pop(next(iter(_RANGE_CACHE)), None)
         _RANGE_CACHE[cache_id] = {
             "data": result,
             "timestamp": now_ts
@@ -811,6 +942,8 @@ def get_stock_visualization_data(symbol: str, time_range: str = "1D") -> Dict[st
         return result
 
     except Exception as e:
+        if len(_NEGATIVE_LOOKUP_CACHE) > 512:
+            _NEGATIVE_LOOKUP_CACHE.pop(next(iter(_NEGATIVE_LOOKUP_CACHE)), None)
         _NEGATIVE_LOOKUP_CACHE[clean_sym] = {
             "timestamp": now_ts,
             "reason": "TRANSIENT",
@@ -1009,25 +1142,45 @@ def get_cached_latest_market_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
     }
 
 
+_SNAPSHOT_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
 def get_latest_market_snapshot(symbol: str) -> Dict[str, Any]:
     """Get latest snapshot for alert evaluation and ML features."""
+    clean_sym_upper = symbol.strip().upper()
+    data = get_stock_visualization_data(symbol, time_range="1D")
+    latest_ts = str(data.get("latest_market_timestamp"))
+    curr_price = round(float(data.get("price") or 0.0), 2)
+    candles = data.get("candles", [])
+    candle_count = len(candles)
+
+    # Fast cached snapshot check: reuse if underlying candles and price have not changed
+    cached_entry = _SNAPSHOT_CACHE.get(clean_sym_upper)
+    if (
+        cached_entry is not None
+        and cached_entry.get("_ts") == latest_ts
+        and cached_entry.get("_price") == curr_price
+        and cached_entry.get("_count") == candle_count
+    ):
+        snap_copy = cached_entry["snapshot"].copy()
+        snap_copy["data_status"] = data.get("data_status", "LIVE")
+        snap_copy["data_age_seconds"] = data.get("data_age_seconds", 0)
+        snap_copy["last_updated"] = data.get("last_updated", "")
+        return snap_copy
+
     try:
         from app.services.feature_engine import compute_market_features
     except ImportError:
         compute_market_features = None
 
-    data = get_stock_visualization_data(symbol, time_range="1D")
-    candles = data.get("candles", [])
     features = {}
-    
-    clean_sym_upper = symbol.strip().upper()
     from app.services.feature_engine import get_candle_sequence_key
     ckey = get_candle_sequence_key(candles)
     feat_key = (
         clean_sym_upper,
-        str(data.get("latest_market_timestamp")),
+        latest_ts,
         ckey,
-        round(float(data.get("price", 0.0)), 2)
+        curr_price
     )
 
     if feat_key in _SNAPSHOT_FEATURES_CACHE:
@@ -1045,18 +1198,17 @@ def get_latest_market_snapshot(symbol: str) -> Dict[str, Any]:
         except Exception as fe_err:
             print(f"[MarketData] Error computing features for {symbol}: {fe_err}")
 
-
-    return {
+    result = {
         "symbol": data.get("symbol", symbol),
         "name": data.get("name", symbol),
-        "price": data.get("price", 100.0),
-        "previous_close": data.get("previous_close", 100.0),
-        "price_change": data.get("price_change", 0.0),
-        "change_pct": data.get("change_pct", 0.0),
-        "volume": data.get("raw_volume", 0),
-        "open": data.get("open", 100.0),
-        "high": data.get("day_high", 100.0),
-        "low": data.get("day_low", 100.0),
+        "price": data.get("price") or 0.0,
+        "previous_close": data.get("previous_close") or 0.0,
+        "price_change": data.get("price_change") or 0.0,
+        "change_pct": data.get("change_pct") or 0.0,
+        "volume": data.get("raw_volume") or 0,
+        "open": data.get("open") or 0.0,
+        "high": data.get("day_high") or 0.0,
+        "low": data.get("day_low") or 0.0,
         "last_updated": data.get("last_updated", ""),
         "latest_market_timestamp": data.get("latest_market_timestamp"),
         "data_received_at": data.get("data_received_at"),
@@ -1066,6 +1218,17 @@ def get_latest_market_snapshot(symbol: str) -> Dict[str, Any]:
         "features": features,
         "candles": candles
     }
+
+    if len(_SNAPSHOT_CACHE) > 256:
+        _SNAPSHOT_CACHE.pop(next(iter(_SNAPSHOT_CACHE)))
+    _SNAPSHOT_CACHE[clean_sym_upper] = {
+        "_ts": latest_ts,
+        "_price": curr_price,
+        "_count": candle_count,
+        "snapshot": result.copy()
+    }
+
+    return result
 
 
 def inject_simulation_tick(symbol: str, target_movement_pct: float, momentum_direction: str = "UP") -> Dict[str, Any]:
@@ -1085,7 +1248,7 @@ def fetch_intraday_candles(symbol: str, period: str = "5d", interval: str = "1m"
     """
     norm_sym = normalize_ticker(symbol)
     try:
-        ticker = yf.Ticker(norm_sym)
+        ticker = _get_yf().Ticker(norm_sym)
         df = ticker.history(period=period, interval=interval, auto_adjust=False, timeout=8)
         if df.empty and period == "5d" and interval == "1m":
             df = ticker.history(period="7d", interval="1m", auto_adjust=False, timeout=8)
