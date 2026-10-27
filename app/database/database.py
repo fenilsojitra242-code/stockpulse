@@ -1,74 +1,126 @@
 import os
 import re
+from typing import Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from sqlalchemy import event
 
+def validate_storage_directory(dir_path: str, is_persistent_configured: bool = False) -> str:
+    """
+    Validates that the database directory exists or can be created, and is writable.
+    If is_persistent_configured is True, raises a clear RuntimeError on failure to prevent
+    silently falling back to an ephemeral or invalid storage location.
+    """
+    abs_dir = os.path.abspath(dir_path)
+    if os.path.exists(abs_dir):
+        if not os.path.isdir(abs_dir):
+            raise RuntimeError(f"Configured persistent storage path is not a directory: {abs_dir}")
+        probe_file = os.path.join(abs_dir, f".stockpulse_probe_{os.getpid()}")
+        try:
+            with open(probe_file, "w") as f:
+                f.write("probe")
+            os.remove(probe_file)
+        except Exception as e:
+            raise RuntimeError(f"Configured persistent storage directory is not writable: {abs_dir} ({type(e).__name__})")
+    else:
+        try:
+            os.makedirs(abs_dir, exist_ok=True)
+        except Exception as e:
+            if is_persistent_configured:
+                raise RuntimeError(f"Failed to create configured persistent storage directory: {abs_dir} ({type(e).__name__})")
+            raise
+    return abs_dir
+
+
 # Establish consistent, absolute database path based on project root or persistent storage
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-# Check for persistent storage mount directory (e.g. Render, Railway, Docker persistent volume)
+# Resolve DATABASE_URL / DATABASE_PATH: Support Neon PostgreSQL, Render Persistent Disk (/var/data), and local SQLite
+raw_db_url = os.getenv("DATABASE_URL")
+explicit_db_path = os.getenv("DATABASE_PATH") or os.getenv("SQLITE_DATABASE_PATH")
 persistent_dir = (
     os.getenv("PERSISTENT_DATA_DIR")
     or os.getenv("PERSISTENT_STORAGE_DIR")
     or os.getenv("STOCKPULSE_DATA_DIR")
     or os.getenv("DATA_DIR")
 )
-if persistent_dir and os.path.isabs(persistent_dir):
-    DEFAULT_DB_FILE = os.path.join(persistent_dir, "stockpulse.db")
-elif persistent_dir:
-    DEFAULT_DB_FILE = os.path.abspath(os.path.join(BASE_DIR, persistent_dir, "stockpulse.db"))
-else:
-    DEFAULT_DB_FILE = os.path.join(BASE_DIR, "data", "stockpulse.db")
 
-os.makedirs(os.path.dirname(DEFAULT_DB_FILE), exist_ok=True)
-
-raw_db_url = os.getenv("DATABASE_URL")
-if not raw_db_url:
-    DATABASE_URL = f"sqlite:///{DEFAULT_DB_FILE.replace(chr(92), '/')}"
-elif raw_db_url.startswith("postgres://"):
+if raw_db_url and (raw_db_url.startswith("postgres://") or raw_db_url.startswith("postgresql://") or raw_db_url.startswith("postgresql+")):
     # SQLAlchemy 2.0 requires postgresql://
-    DATABASE_URL = raw_db_url.replace("postgres://", "postgresql://", 1)
-elif raw_db_url.startswith("sqlite:///"):
-    path_part = raw_db_url[10:]
-    # Check if Windows absolute path (e.g. C:/... or C:\...)
-    import re
-    if re.match(r'^[a-zA-Z]:[/\\].*', path_part):
-        abs_db_file = os.path.abspath(path_part)
-    elif path_part.startswith("/"):
-        abs_db_file = os.path.abspath(path_part)
+    if raw_db_url.startswith("postgres://"):
+        DATABASE_URL = raw_db_url.replace("postgres://", "postgresql://", 1)
     else:
-        rel_path = path_part.replace("./", "")
-        abs_db_file = os.path.abspath(os.path.join(BASE_DIR, rel_path))
-    os.makedirs(os.path.dirname(abs_db_file), exist_ok=True)
-    DATABASE_URL = f"sqlite:///{abs_db_file.replace(chr(92), '/')}"
+        DATABASE_URL = raw_db_url
+    DEFAULT_DB_FILE = None
+    is_sqlite = False
+    is_persistent_configured = False
 else:
-    DATABASE_URL = raw_db_url
+    is_sqlite = True
+    if explicit_db_path:
+        is_persistent_configured = True
+        if explicit_db_path.endswith(".db") or explicit_db_path.endswith(".sqlite"):
+            DEFAULT_DB_FILE = os.path.abspath(explicit_db_path) if os.path.isabs(explicit_db_path) else os.path.abspath(os.path.join(BASE_DIR, explicit_db_path))
+        else:
+            DEFAULT_DB_FILE = os.path.abspath(os.path.join(explicit_db_path, "stockpulse.db")) if os.path.isabs(explicit_db_path) else os.path.abspath(os.path.join(BASE_DIR, explicit_db_path, "stockpulse.db"))
+    elif persistent_dir:
+        is_persistent_configured = True
+        if os.path.isabs(persistent_dir):
+            DEFAULT_DB_FILE = os.path.join(persistent_dir, "stockpulse.db")
+        else:
+            DEFAULT_DB_FILE = os.path.abspath(os.path.join(BASE_DIR, persistent_dir, "stockpulse.db"))
+    elif os.path.exists("/var/data") and os.path.isdir("/var/data"):
+        # Auto-detect Render Persistent Disk mounted at /var/data if present
+        DEFAULT_DB_FILE = "/var/data/stockpulse.db"
+        is_persistent_configured = True
+    else:
+        DEFAULT_DB_FILE = os.path.join(BASE_DIR, "data", "stockpulse.db")
+        is_persistent_configured = False
 
-def get_database_file_path() -> str:
-    """Returns the canonical absolute filesystem path of the active SQLite database."""
+    if explicit_db_path:
+        validate_storage_directory(os.path.dirname(DEFAULT_DB_FILE), is_persistent_configured=is_persistent_configured)
+        DATABASE_URL = f"sqlite:///{DEFAULT_DB_FILE.replace(chr(92), '/')}"
+    elif not raw_db_url:
+        validate_storage_directory(os.path.dirname(DEFAULT_DB_FILE), is_persistent_configured=is_persistent_configured)
+        DATABASE_URL = f"sqlite:///{DEFAULT_DB_FILE.replace(chr(92), '/')}"
+    elif raw_db_url.startswith("sqlite:///"):
+        path_part = raw_db_url[10:]
+        if re.match(r'^[a-zA-Z]:[/\\].*', path_part):
+            abs_db_file = os.path.abspath(path_part)
+        elif path_part.startswith("/"):
+            abs_db_file = os.path.abspath(path_part)
+        else:
+            rel_path = path_part.replace("./", "")
+            abs_db_file = os.path.abspath(os.path.join(BASE_DIR, rel_path))
+        validate_storage_directory(os.path.dirname(abs_db_file), is_persistent_configured=is_persistent_configured)
+        DATABASE_URL = f"sqlite:///{abs_db_file.replace(chr(92), '/')}"
+    else:
+        DATABASE_URL = raw_db_url
+
+
+def get_database_file_path() -> Optional[str]:
+    """Returns canonical absolute filesystem path if using SQLite, else None."""
     if DATABASE_URL.startswith("sqlite:///"):
         path_part = DATABASE_URL[10:].split("?")[0]
         return os.path.abspath(path_part)
-    return os.path.abspath(DEFAULT_DB_FILE)
+    if DEFAULT_DB_FILE:
+        return os.path.abspath(DEFAULT_DB_FILE)
+    return None
 
 
-if DATABASE_URL.startswith("sqlite:///"):
+if is_sqlite:
     sqlite_target_file = get_database_file_path()
-    try:
-        os.makedirs(os.path.dirname(sqlite_target_file), exist_ok=True)
-    except Exception:
-        pass
-    print(f"[StockPulse] SQLite Database connected at: {sqlite_target_file}")
+    if sqlite_target_file:
+        validate_storage_directory(os.path.dirname(sqlite_target_file), is_persistent_configured=is_persistent_configured)
+        print(f"[StockPulse] SQLite Database connected at: {sqlite_target_file}")
 else:
     # Log database scheme with credentials securely masked
-    masked_url = re.sub(r':([^@]+)@', ':***@', DATABASE_URL)
+    masked_url = re.sub(r'://([^:@]+):([^@]+)@', r'://\1:***@', DATABASE_URL)
     print(f"[StockPulse] Database connected with URL: {masked_url}")
 
 # For SQLite, check_same_thread=False allows multi-threaded access across FastAPI and APScheduler
-# For PostgreSQL / others, enable connection pooling with pre-ping to handle Render cloud connection drops
-if DATABASE_URL.startswith("sqlite"):
+# For PostgreSQL / Neon Free, enable connection pooling with pre-ping to handle cold starts & 5-minute auto-suspend
+if is_sqlite:
     connect_args = {"check_same_thread": False, "timeout": 30}
     engine = create_engine(
         DATABASE_URL,
@@ -78,14 +130,15 @@ if DATABASE_URL.startswith("sqlite"):
 else:
     engine = create_engine(
         DATABASE_URL,
-        pool_pre_ping=True,
-        pool_recycle=300,
-        pool_size=10,
-        max_overflow=20,
+        pool_pre_ping=True,  # Reconnect automatically when Neon wakes up from auto-suspend
+        pool_recycle=240,    # Discard idle connections before Neon's 5-minute timeout
+        pool_size=5,         # Lightweight connection footprint for Render Free 512MB RAM
+        max_overflow=10,
+        pool_timeout=30,
         echo=False
     )
 
-if DATABASE_URL.startswith("sqlite"):
+if is_sqlite:
     @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
@@ -121,18 +174,18 @@ def run_db_migrations(db_engine):
 
         table_migrations = {
             "alerts": [
-                ("enable_supertrend", "BOOLEAN DEFAULT 1"),
+                ("enable_supertrend", "BOOLEAN DEFAULT TRUE"),
                 ("supertrend_proximity_percent", "FLOAT DEFAULT 0.50"),
                 ("supertrend_proximity_points", "FLOAT DEFAULT 1.0"),
                 ("last_supertrend_direction", "VARCHAR(10)"),
                 ("last_supertrend_price", "FLOAT"),
-                ("supertrend_approaching_sent", "BOOLEAN DEFAULT 0"),
+                ("supertrend_approaching_sent", "BOOLEAN DEFAULT FALSE"),
                 ("user_id", "INTEGER"),
             ],
             "users": [
                 ("username", "VARCHAR(50)"),
                 ("password_hash", "VARCHAR(255)"),
-                ("is_verified", "BOOLEAN DEFAULT 1"),
+                ("is_verified", "BOOLEAN DEFAULT TRUE"),
             ],
             "notifications": [
                 ("user_id", "INTEGER"),

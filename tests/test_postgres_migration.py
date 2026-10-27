@@ -25,7 +25,7 @@ from app.database.models import (
 )
 from app.database.database import run_db_migrations
 from app.api.auth import hash_password, verify_password, seed_default_user_if_needed
-from app.database.migrate_to_postgres import migrate_sqlite_to_postgres
+from app.database.migrate_to_postgres import migrate_sqlite_to_postgres, mask_url
 
 
 class TestDatabasePostgresMigrationCompatibility(unittest.TestCase):
@@ -75,8 +75,6 @@ class TestDatabasePostgresMigrationCompatibility(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        if hasattr(cls, "src_engine"):
-            cls.src_engine.dispose()
         try:
             cls.temp_dir.cleanup()
         except Exception:
@@ -85,7 +83,8 @@ class TestDatabasePostgresMigrationCompatibility(unittest.TestCase):
     def test_01_migration_preserves_exact_ids_and_passwords(self):
         """Verify migration tool successfully copies all tables and preserves credentials."""
         target_url = f"sqlite:///{self.target_sqlite}"
-        migrate_sqlite_to_postgres(self.source_sqlite, target_url, verify_only=False)
+        res = migrate_sqlite_to_postgres(self.source_sqlite, target_url, verify_only=False)
+        self.assertEqual(res["status"], "SUCCESS")
 
         tgt_engine = create_engine(target_url)
         TgtSession = sessionmaker(bind=tgt_engine)
@@ -103,17 +102,42 @@ class TestDatabasePostgresMigrationCompatibility(unittest.TestCase):
             self.assertEqual(a1.user_id, 1)
             self.assertEqual(a1.symbol, "TCS")
 
-    def test_02_migration_is_idempotent_no_duplicate_insertion(self):
-        """Running migration repeatedly must not duplicate records or crash on existing IDs."""
+    def test_02_migration_conflict_guard_when_target_has_data(self):
+        """Re-running migration on non-empty target without --allow-merge must halt with conflict error."""
         target_url = f"sqlite:///{self.target_sqlite}"
-        # Second execution: should recognize existing records and preserve them
-        migrate_sqlite_to_postgres(self.source_sqlite, target_url, verify_only=False)
+        with self.assertRaises(RuntimeError) as ctx:
+            migrate_sqlite_to_postgres(self.source_sqlite, target_url, verify_only=False, allow_merge=False)
+        self.assertIn("already contains data", str(ctx.exception))
+
+    def test_03_migration_is_idempotent_with_allow_merge(self):
+        """Running migration with allow_merge=True must preserve existing records without duplicates."""
+        target_url = f"sqlite:///{self.target_sqlite}"
+        res = migrate_sqlite_to_postgres(self.source_sqlite, target_url, verify_only=False, allow_merge=True)
+        self.assertEqual(res["status"], "SUCCESS")
 
         tgt_engine = create_engine(target_url)
         TgtSession = sessionmaker(bind=tgt_engine)
         with TgtSession() as db:
             user_count = db.query(User).count()
             self.assertEqual(user_count, 2)
+
+    def test_04_verify_only_dry_run_mode(self):
+        """Verify --verify-only performs preflight checks without writing data."""
+        fresh_target = os.path.join(self.temp_dir.name, "fresh_target.db")
+        target_url = f"sqlite:///{fresh_target}"
+        res = migrate_sqlite_to_postgres(self.source_sqlite, target_url, verify_only=True)
+        self.assertEqual(res["status"], "SUCCESS")
+        self.assertEqual(res["mode"], "VERIFY_ONLY")
+        self.assertEqual(res["source_counts"]["users"], 2)
+
+    def test_05_url_masking_security(self):
+        """Verifies that database URLs mask user credentials properly."""
+        url = "postgresql://myuser:supersecretpass@ep-cool-butterfly-123456.us-east-2.aws.neon.tech/neondb?sslmode=require"
+        masked = mask_url(url)
+        self.assertNotIn("supersecretpass", masked)
+        self.assertIn(":***@", masked)
+        self.assertIn("myuser", masked)
+        self.assertIn("ep-cool-butterfly-123456", masked)
 
 
 if __name__ == "__main__":

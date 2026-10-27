@@ -17,6 +17,9 @@ from app.database.database import (
     get_database_file_path,
     checkpoint_db,
     run_db_migrations,
+    validate_storage_directory,
+    persistent_dir,
+    is_persistent_configured,
 )
 from app.api.stocks import router as stocks_router, seed_default_stocks_if_needed
 from app.api.alerts import router as alerts_router
@@ -31,9 +34,23 @@ import threading
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup:
-    active_db_file = get_database_file_path()
-    print(f"[StockPulse] Initializing database at: {active_db_file}...")
-    os.makedirs(os.path.dirname(active_db_file), exist_ok=True)
+    if engine.dialect.name == "sqlite":
+        active_db_file = get_database_file_path()
+        print(f"[StockPulse] Initializing SQLite database at: {active_db_file}...")
+        if active_db_file:
+            validate_storage_directory(os.path.dirname(active_db_file), is_persistent_configured=is_persistent_configured)
+    else:
+        masked_url = re.sub(r'://([^:@]+):([^@]+)@', r'://\1:***@', str(engine.url))
+        print(f"[StockPulse] Initializing PostgreSQL database: {masked_url}...")
+        try:
+            from sqlalchemy import text
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            print("[StockPulse] PostgreSQL database connection verified.")
+        except Exception as conn_err:
+            masked_err = re.sub(r'://([^:@]+):([^@]+)@', r'://\1:***@', str(conn_err))
+            print(f"[StockPulse FATAL] PostgreSQL connection failed: {masked_err}")
+            raise RuntimeError(f"Database connection failed: {masked_err}") from None
 
     Base.metadata.create_all(bind=engine)
     run_db_migrations(engine)
@@ -72,12 +89,19 @@ async def lifespan(app: FastAPI):
     print("[StockPulse] Shutting down scheduler...")
     stop_scheduler()
 
-    # Ensure SQLite WAL log is cleanly flushed into main stockpulse.db file
-    try:
-        checkpoint_db(engine)
-        print("[StockPulse] SQLite WAL checkpointed successfully on shutdown.")
-    except Exception as e:
-        print(f"[StockPulse] Shutdown WAL checkpoint note: {e}")
+    # Safely close database connections: SQLite WAL flush or PostgreSQL pool disposal
+    if engine.dialect.name == "sqlite":
+        try:
+            checkpoint_db(engine)
+            print("[StockPulse] SQLite WAL checkpointed successfully on shutdown.")
+        except Exception as e:
+            print(f"[StockPulse] Shutdown WAL checkpoint note: {e}")
+    else:
+        try:
+            engine.dispose()
+            print("[StockPulse] PostgreSQL connection pool safely disposed on shutdown.")
+        except Exception as e:
+            print(f"[StockPulse] Shutdown connection disposal note: {e}")
 
 
 app = FastAPI(

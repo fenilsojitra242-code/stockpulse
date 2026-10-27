@@ -1,13 +1,27 @@
 """
 StockPulse SQLite to PostgreSQL Migration CLI & Automation Utility
 Safely migrates all user accounts, password hashes, alerts, history, notifications,
-and settings from local SQLite to Render PostgreSQL without altering IDs or passwords.
+and settings from local SQLite to Neon/Render PostgreSQL without altering IDs or passwords.
+
+Safety Guarantees:
+1. Flushes source SQLite WAL and runs PRAGMA integrity_check before reading.
+2. Creates an automated pre-migration backup of the SQLite database.
+3. Masks all connection passwords and credentials in logs.
+4. Preserves exact primary key IDs, foreign keys, timestamps, booleans, and bcrypt hashes.
+5. In dependency-safe topological order: users -> stocks -> settings -> alerts -> history -> notifs -> otps.
+6. Synchronizes PostgreSQL auto-increment sequences via pg_get_serial_sequence().
+7. Verifies table-by-table row counts before and after migration.
+8. Halts if target PostgreSQL already contains records unless --allow-merge is passed.
+9. Supports --dry-run / --verify-only mode.
 """
 
 import os
 import sys
 import re
+import sqlite3
 import argparse
+from datetime import datetime
+from typing import Dict, Any, List, Optional
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
@@ -39,10 +53,59 @@ TABLE_ORDER = [
 
 def mask_url(url: str) -> str:
     """Masks database credentials for safe logging."""
-    return re.sub(r':([^@]+)@', ':***@', url)
+    if not url:
+        return "None"
+    return re.sub(r'://([^:@]+):([^@]+)@', r'://\1:***@', url)
 
 
-def migrate_sqlite_to_postgres(sqlite_path: str, pg_url: str, verify_only: bool = False):
+def check_sqlite_integrity(db_path: str) -> bool:
+    """Verifies SQLite database integrity."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA integrity_check")
+        rows = cursor.fetchall()
+        return bool(rows and rows[0][0] == "ok")
+    finally:
+        conn.close()
+
+
+def flush_sqlite_wal(db_path: str) -> None:
+    """Checkpoints WAL frames back into main .db file."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def create_sqlite_backup(source_path: str) -> str:
+    """Creates a verified timestamped backup of the source SQLite database."""
+    flush_sqlite_wal(source_path)
+    backup_dir = os.path.join(os.path.dirname(os.path.abspath(source_path)), "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = os.path.join(backup_dir, f"stockpulse_pre_postgres_{timestamp}.db")
+
+    src = sqlite3.connect(source_path)
+    dst = sqlite3.connect(backup_file)
+    try:
+        src.backup(dst)
+        dst.commit()
+    finally:
+        dst.close()
+        src.close()
+    return backup_file
+
+
+def migrate_sqlite_to_postgres(
+    sqlite_path: str,
+    pg_url: str,
+    verify_only: bool = False,
+    allow_merge: bool = False
+) -> Dict[str, Any]:
     """
     Executes a strict, transactional migration from SQLite to PostgreSQL.
     Preserves exact IDs, timestamps, foreign keys, and password hashes.
@@ -50,72 +113,106 @@ def migrate_sqlite_to_postgres(sqlite_path: str, pg_url: str, verify_only: bool 
     if not os.path.exists(sqlite_path):
         raise FileNotFoundError(f"Source SQLite database not found at: {sqlite_path}")
 
-    # Normalize PostgreSQL URL if given with postgres:// scheme
+    if os.path.getsize(sqlite_path) == 0:
+        raise ValueError(f"Source SQLite database at {sqlite_path} is an empty file (0 bytes).")
+
+    # Normalize PostgreSQL URL
     if pg_url.startswith("postgres://"):
         pg_url = pg_url.replace("postgres://", "postgresql://", 1)
 
     print("=" * 70)
     print("StockPulse — SQLite to PostgreSQL Migration Tool")
     print("=" * 70)
-    print(f"Source SQLite DB : {os.path.abspath(sqlite_path)}")
-    print(f"Target Postgres  : {mask_url(pg_url)}")
+    print(f"Source SQLite DB : {os.path.abspath(sqlite_path)} ({os.path.getsize(sqlite_path):,} bytes)")
+    print(f"Target Database  : {mask_url(pg_url)}")
+    print(f"Mode             : {'VERIFY ONLY / DRY RUN' if verify_only else 'MIGRATE & VERIFY'}")
     print("=" * 70)
 
-    # 1. Connect to Source SQLite
+    # 1. Source SQLite validation & backup
+    print("[1/6] Checkpointing source SQLite WAL & verifying integrity...")
+    flush_sqlite_wal(sqlite_path)
+    if not check_sqlite_integrity(sqlite_path):
+        raise RuntimeError(f"Source SQLite database failed integrity check: {sqlite_path}")
+    print("      Source integrity check: OK")
+
+    backup_path = None
+    if not verify_only:
+        backup_path = create_sqlite_backup(sqlite_path)
+        print(f"      Pre-migration backup created: {backup_path}")
+
+    # 2. Connect to Source SQLite
     src_engine = create_engine(f"sqlite:///{os.path.abspath(sqlite_path).replace(chr(92), '/')}")
     SrcSession = sessionmaker(bind=src_engine)
     src_db = SrcSession()
 
-    # 2. Connect to Target PostgreSQL
+    # 3. Connect to Target PostgreSQL
+    print("[2/6] Connecting to target PostgreSQL database...")
     tgt_engine = create_engine(
         pg_url,
         pool_pre_ping=True,
+        pool_recycle=240,
         echo=False
     )
-    TgtSession = sessionmaker(bind=tgt_engine)
+    with tgt_engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    print("      PostgreSQL connectivity verified.")
 
     try:
-        # Create schema on target
-        print("[1/5] Ensuring target database tables exist...")
+        # Initialize schema
+        print("[3/6] Ensuring target database tables and indexes exist...")
         Base.metadata.create_all(bind=tgt_engine)
         run_db_migrations(tgt_engine)
-        print("  -> Schema initialized successfully.")
+        print("      Target schema verified.")
 
+        TgtSession = sessionmaker(bind=tgt_engine)
         tgt_db = TgtSession()
 
         # Check existing row counts on target
-        print("\n[2/5] Inspecting target database status before migration...")
+        print("\n[4/6] Inspecting row counts before migration:")
+        source_counts = {}
+        target_counts_initial = {}
         for model_cls, tbl_name in TABLE_ORDER:
-            tgt_count = tgt_db.query(model_cls).count()
-            src_count = src_db.query(model_cls).count()
-            print(f"  - Table '{tbl_name}': Source={src_count} rows | Target={tgt_count} rows")
+            s_cnt = src_db.query(model_cls).count()
+            t_cnt = tgt_db.query(model_cls).count()
+            source_counts[tbl_name] = s_cnt
+            target_counts_initial[tbl_name] = t_cnt
+            print(f"      - Table '{tbl_name:18s}': Source={s_cnt:5d} | Target={t_cnt:5d}")
+
+        # Safety conflict check: if target already has rows and allow_merge is False
+        has_existing_target_data = any(c > 0 for c in target_counts_initial.values())
+        if has_existing_target_data and not verify_only and not allow_merge:
+            raise RuntimeError(
+                f"Target PostgreSQL database already contains data: {target_counts_initial}.\n"
+                f"Migration halted to prevent unintended duplicate records or conflicting IDs.\n"
+                f"To authorize merging/appending new records, pass --allow-merge."
+            )
 
         if verify_only:
-            print("\n[INFO] --verify-only specified. Skipping data migration.")
-            return
+            print("\n[INFO] --verify-only / --dry-run specified. Skipping write operations.")
+            return {
+                "status": "SUCCESS",
+                "mode": "VERIFY_ONLY",
+                "source_counts": source_counts,
+                "target_counts": target_counts_initial,
+            }
 
-        print("\n[3/5] Migrating tables preserving foreign keys and exact IDs...")
-
-        # Disable foreign key checks during migration if dialect supports it
-        # Or migrate in strict topological dependency order (TABLE_ORDER)
+        # 4. Migrate tables in topological order
+        print("\n[5/6] Migrating tables preserving foreign keys and exact IDs...")
         for model_cls, tbl_name in TABLE_ORDER:
             src_rows = src_db.query(model_cls).all()
             if not src_rows:
-                print(f"  -> Table '{tbl_name}': 0 rows to migrate.")
+                print(f"      -> Table '{tbl_name}': 0 rows to migrate.")
                 continue
 
             migrated_count = 0
             skipped_count = 0
 
-            # Determine primary key column(s)
             mapper = inspect(model_cls)
             pk_cols = [c.name for c in mapper.primary_key]
 
             for row in src_rows:
-                # Extract clean attribute dict
                 data = {c.name: getattr(row, c.name) for c in mapper.columns}
 
-                # Check if row already exists on target by PK
                 if len(pk_cols) == 1:
                     pk_val = data[pk_cols[0]]
                     existing = tgt_db.query(model_cls).filter(getattr(model_cls, pk_cols[0]) == pk_val).first()
@@ -131,58 +228,75 @@ def migrate_sqlite_to_postgres(sqlite_path: str, pg_url: str, verify_only: bool 
                     migrated_count += 1
 
             tgt_db.commit()
-            print(f"  -> Table '{tbl_name}': Migrated {migrated_count} new rows ({skipped_count} existing rows preserved).")
+            print(f"      -> Table '{tbl_name}': Migrated {migrated_count} new rows ({skipped_count} existing rows preserved).")
 
             # Reset PostgreSQL autoincrement sequence for tables with integer ID
             if "id" in pk_cols and tgt_engine.dialect.name == "postgresql":
                 try:
                     with tgt_engine.connect() as conn:
-                        max_id_res = conn.execute(text(f"SELECT COALESCE(MAX(id), 0) + 1 FROM {tbl_name}")).scalar()
-                        seq_name = f"{tbl_name}_id_seq"
-                        conn.execute(text(f"SELECT setval('{seq_name}', {max_id_res}, false)"))
-                        conn.commit()
+                        seq_res = conn.execute(text(f"SELECT pg_get_serial_sequence('{tbl_name}', 'id')")).scalar()
+                        if seq_res:
+                            max_id_res = conn.execute(text(f"SELECT COALESCE(MAX(id), 0) FROM {tbl_name}")).scalar()
+                            if max_id_res > 0:
+                                conn.execute(text(f"SELECT setval('{seq_res}', {max_id_res}, true)"))
+                            else:
+                                conn.execute(text(f"SELECT setval('{seq_res}', 1, false)"))
+                            conn.commit()
                 except Exception as seq_err:
-                    print(f"     (Note adjusting sequence for {tbl_name}: {seq_err})")
+                    print(f"         (Note adjusting sequence for {tbl_name}: {seq_err})")
 
-        print("\n[4/5] Verification of Migrated Records on PostgreSQL:")
+        # 5. Verification
+        print("\n[6/6] Verifying migrated records and authentication integrity on PostgreSQL:")
         all_passed = True
+        final_target_counts = {}
         for model_cls, tbl_name in TABLE_ORDER:
             src_cnt = src_db.query(model_cls).count()
             tgt_cnt = tgt_db.query(model_cls).count()
+            final_target_counts[tbl_name] = tgt_cnt
             status = "MATCH" if tgt_cnt >= src_cnt else "MISMATCH"
-            print(f"  - Table '{tbl_name:15}': Source={src_cnt:5} | Target={tgt_cnt:5} [{status}]")
+            print(f"      - Table '{tbl_name:18s}': Source={src_cnt:5d} | Target={tgt_cnt:5d} [{status}]")
             if tgt_cnt < src_cnt:
                 all_passed = False
 
         # Specific user accounts verification
         src_users = src_db.query(User.id, User.username, User.email).all()
-        print(f"\n[5/5] Checking user credentials preservation ({len(src_users)} users):")
+        print(f"\n      Checking user credentials preservation ({len(src_users)} users):")
         for uid, uname, uemail in src_users:
             tgt_u = tgt_db.query(User).filter(User.id == uid).first()
             if tgt_u and tgt_u.email == uemail and tgt_u.password_hash:
-                print(f"  - User ID={uid:2} ({uemail}): Intact with bcrypt hash")
+                print(f"      - User ID={uid:2d} ({uemail}): Intact with bcrypt hash")
             else:
-                print(f"  - [WARNING] User ID={uid:2} ({uemail}): Missing or invalid!")
+                print(f"      - [WARNING] User ID={uid:2d} ({uemail}): Missing or invalid!")
                 all_passed = False
 
         tgt_db.close()
         src_db.close()
 
-        print("=" * 70)
+        print("\n" + "=" * 70)
         if all_passed:
-            print("Migration completed successfully! All records and credentials verified.")
+            print("MIGRATION COMPLETED SUCCESSFULLY! All records and credentials verified.")
         else:
             print("Migration completed with warnings. Please check the logs above.")
         print("=" * 70)
 
+        return {
+            "status": "SUCCESS" if all_passed else "WARNING",
+            "source": os.path.abspath(sqlite_path),
+            "target": mask_url(pg_url),
+            "backup": backup_path,
+            "source_counts": source_counts,
+            "target_counts": final_target_counts,
+        }
+
     except Exception as e:
         print(f"\n[ERROR] Migration failed: {e}")
-        import traceback
-        traceback.print_exc()
         raise
+    finally:
+        src_engine.dispose()
+        tgt_engine.dispose()
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="StockPulse SQLite to PostgreSQL Migration Tool")
     parser.add_argument(
         "--source",
@@ -196,14 +310,34 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--verify-only",
+        "--dry-run",
         action="store_true",
+        dest="verify_only",
         help="Only verify connectivity and schemas without copying data"
+    )
+    parser.add_argument(
+        "--allow-merge",
+        action="store_true",
+        help="Allow merging records into a target database that already contains rows"
     )
     args = parser.parse_args()
 
     if not args.target:
         print("[ERROR] Target database URL is required via --target or DATABASE_URL environment variable.")
-        print("Usage: python app/database/migrate_to_postgres.py --target postgresql://user:pass@host/dbname")
+        print("Usage: python -m app.database.migrate_to_postgres --target postgresql://user:pass@host/dbname")
         sys.exit(1)
 
-    migrate_sqlite_to_postgres(args.source, args.target, verify_only=args.verify_only)
+    try:
+        migrate_sqlite_to_postgres(
+            args.source,
+            args.target,
+            verify_only=args.verify_only,
+            allow_merge=args.allow_merge
+        )
+    except Exception as e:
+        print(f"\n[FATAL ERROR] Migration aborted: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
