@@ -189,29 +189,56 @@ Navigate to:
 
 ---
 
-## 🌐 Production Deployment on Render (PostgreSQL Persistence)
+## 🌐 Production Deployment on Render
 
-Render Web Services run in ephemeral containers that restart on idle periods or redeployments. To ensure accounts, passwords, alerts, and settings persist permanently across all restarts:
+Render Web Services run in ephemeral containers that restart on idle periods or redeployments. To ensure accounts, passwords, alerts, and settings persist permanently across all restarts, StockPulse supports two production persistence architectures:
 
-### 1. Create a PostgreSQL Database on Render
-1. Log in to [dashboard.render.com](https://dashboard.render.com).
-2. Click **New +** → **PostgreSQL**.
-3. Name it `stockpulse-db`, choose the **Free** tier (or paid), and click **Create Database**.
-4. Once provisioned, note the **Internal Database URL** and **External Database URL**.
+### Option A: Render Persistent Disk (SQLite — Recommended for Single-Instance)
 
-### 2. Migrate Existing SQLite Data to PostgreSQL
-To migrate all existing users, hashed passwords, alerts, and notifications to Render PostgreSQL without losing IDs or data:
-```bash
-python app/database/migrate_to_postgres.py --target "<EXTERNAL_DATABASE_URL>"
-```
-> *The migration script is idempotent and handles foreign key ordering, autoincrement sequence synchronization, and bcrypt verification automatically.*
+> **Important**: Render Persistent Disks require a Render **Starter** plan ($7/mo + $0.25/GB disk) because Render Free Web Services do not support attaching persistent disks.
 
-### 3. Configure Render Web Service Environment
-In your Render Web Service settings (**Environment** tab), add:
-- `DATABASE_URL` = `<INTERNAL_DATABASE_URL>` (Render automatically handles `postgres://` to `postgresql://`).
+#### 1. Configure Persistent Disk in Render Dashboard
+1. Go to your Web Service in [dashboard.render.com](https://dashboard.render.com).
+2. Upgrade service plan to **Starter** ($7/mo).
+3. Navigate to **Disks** tab → Click **Add Disk**.
+4. Configure disk settings:
+   - **Name**: `stockpulse-data`
+   - **Mount Path**: `/var/data`
+   - **Size**: `1 GB` (or more as needed)
+5. Save changes.
+
+#### 2. Set Environment Variables
+In the **Environment** tab, add:
+- `DATABASE_PATH` = `/var/data/stockpulse.db`
+- `PERSISTENT_DATA_DIR` = `/var/data`
 - `ENVIRONMENT` = `production`
 
-Upon startup, StockPulse automatically runs schema synchronization and safe migrations without resetting IDs or overwriting existing user accounts.
+*(Alternatively, connect your Git repository and deploy using the included `render.yaml` Blueprint which configures the disk and environment variables automatically).*
+
+#### 3. Migrate Existing Users & Data to Persistent Storage
+If you have an existing local or pre-existing SQLite database (`data/stockpulse.db`):
+```bash
+# Migrate to persistent disk with WAL flush, integrity checks, and backup:
+python app/database/migrate_to_persistent_disk.py --source data/stockpulse.db --target /var/data/stockpulse.db
+```
+
+---
+
+### Option B: Managed PostgreSQL (Render Postgres or Neon Free)
+
+#### 1. Create a PostgreSQL Database
+1. In [dashboard.render.com](https://dashboard.render.com), click **New +** → **PostgreSQL** (or create a free Neon database at [neon.tech](https://neon.tech)).
+2. Name it `stockpulse-db` and provision it.
+3. Copy the **Internal Database URL** (for Render) or connection string.
+
+#### 2. Migrate Existing SQLite Data to PostgreSQL
+```bash
+python app/database/migrate_to_postgres.py --target "<DATABASE_URL>"
+```
+
+#### 3. Configure Render Web Service Environment
+- `DATABASE_URL` = `<DATABASE_URL>`
+- `ENVIRONMENT` = `production`
 
 ---
 
