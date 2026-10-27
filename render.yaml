@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: stockpulse
+    runtime: python
+    region: oregon
+    plan: starter  # Note: Render Persistent Disks require Starter plan or higher ($7/mo + $0.25/GB disk)
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: stockpulse-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_PATH
+        value: /var/data/stockpulse.db
+      - key: PERSISTENT_DATA_DIR
+        value: /var/data
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: SECRET_KEY
+        generateValue: true
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: ENVIRONMENT
+        value: production
