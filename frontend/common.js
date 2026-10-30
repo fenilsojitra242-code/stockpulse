@@ -101,12 +101,19 @@ window.StockPulse = (function () {
     return false;
   }
 
-  // Retrieve JWT access token from localStorage safely
+  // Retrieve JWT access token from localStorage or cookie safely
   function getStoredToken() {
     try {
       const t = localStorage.getItem(STORAGE_KEY_TOKEN);
       if (t && typeof t === 'string') {
         const trimmed = t.trim();
+        if (trimmed && trimmed !== 'undefined' && trimmed !== 'null' && trimmed !== 'none') {
+          return trimmed;
+        }
+      }
+      const cookieToken = getCookie('stockpulse_access_token');
+      if (cookieToken && typeof cookieToken === 'string') {
+        const trimmed = cookieToken.trim();
         if (trimmed && trimmed !== 'undefined' && trimmed !== 'null' && trimmed !== 'none') {
           return trimmed;
         }

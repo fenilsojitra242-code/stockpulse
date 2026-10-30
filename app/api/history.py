@@ -20,13 +20,19 @@ def get_alert_history(
     db: Session = Depends(get_db)
 ):
     """Retrieve historical alerts with verified actual outcomes (isolated to current user)."""
+    limit_val = getattr(limit, "default", limit)
+    try:
+        actual_limit = int(limit_val)
+    except Exception:
+        actual_limit = 50
+
     query = db.query(AlertHistory).filter(AlertHistory.user_id == current_user.id)
     if symbol:
         query = query.filter(AlertHistory.symbol == symbol.upper())
     if result:
         query = query.filter(AlertHistory.result == result.upper())
         
-    return query.order_by(AlertHistory.triggered_at.desc()).limit(limit).all()
+    return query.order_by(AlertHistory.triggered_at.desc()).limit(actual_limit).all()
 
 
 @router.get("/stats")
@@ -48,9 +54,5 @@ def clear_history(
 ):
     """Clear alert history records belonging to current user."""
     db.query(AlertHistory).filter(AlertHistory.user_id == current_user.id).delete()
-    try:
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Database transaction failed")
-    return {"message": "Alert history cleared"}
+    db.commit()
+    return {"status": "SUCCESS", "message": "Alert history cleared successfully"}
