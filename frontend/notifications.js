@@ -70,11 +70,13 @@
 
     if (!filtered || filtered.length === 0) {
       el.notifList.innerHTML = '';
+      el.notifList.style.display = 'none';
       if (el.emptyState) el.emptyState.style.display = 'block';
       return;
     }
 
     if (el.emptyState) el.emptyState.style.display = 'none';
+    el.notifList.style.display = 'block';
     el.notifList.innerHTML = '';
 
     filtered.forEach(notif => {
