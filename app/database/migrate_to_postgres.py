@@ -120,6 +120,17 @@ def migrate_sqlite_to_postgres(
     if pg_url.startswith("postgres://"):
         pg_url = pg_url.replace("postgres://", "postgresql://", 1)
 
+    # Automatic DBAPI driver resolution (psycopg v3 vs psycopg2)
+    if pg_url.startswith("postgresql://"):
+        try:
+            import psycopg  # noqa: F401
+        except ImportError:
+            try:
+                import psycopg2  # noqa: F401
+                pg_url = pg_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+            except ImportError:
+                pass
+
     print("=" * 70)
     print("StockPulse — SQLite to PostgreSQL Migration Tool")
     print("=" * 70)
@@ -198,6 +209,10 @@ def migrate_sqlite_to_postgres(
 
         # 4. Migrate tables in topological order
         print("\n[5/6] Migrating tables preserving foreign keys and exact IDs...")
+        valid_user_ids = {u.id for u in tgt_db.query(User.id).all()}
+        valid_stock_ids = {s.id for s in tgt_db.query(Stock.id).all()}
+        valid_alert_ids = {a.id for a in tgt_db.query(Alert.id).all()}
+
         for model_cls, tbl_name in TABLE_ORDER:
             src_rows = src_db.query(model_cls).all()
             if not src_rows:
@@ -206,29 +221,65 @@ def migrate_sqlite_to_postgres(
 
             migrated_count = 0
             skipped_count = 0
+            sanitized_fks = 0
 
             mapper = inspect(model_cls)
             pk_cols = [c.name for c in mapper.primary_key]
 
-            for row in src_rows:
-                data = {c.name: getattr(row, c.name) for c in mapper.columns}
+            # Fast in-memory lookup of existing primary keys to prevent repeated DB queries and autoflushes
+            if len(pk_cols) == 1:
+                pk_attr = getattr(model_cls, pk_cols[0])
+                existing_pks = {val[0] for val in tgt_db.query(pk_attr).all()}
+            else:
+                existing_pks = set(
+                    tuple(val) for val in tgt_db.query(*[getattr(model_cls, k) for k in pk_cols]).all()
+                )
 
-                if len(pk_cols) == 1:
-                    pk_val = data[pk_cols[0]]
-                    existing = tgt_db.query(model_cls).filter(getattr(model_cls, pk_cols[0]) == pk_val).first()
-                else:
-                    filter_conds = [getattr(model_cls, k) == data[k] for k in pk_cols]
-                    existing = tgt_db.query(model_cls).filter(*filter_conds).first()
+            with tgt_db.no_autoflush:
+                for row in src_rows:
+                    data = {c.name: getattr(row, c.name) for c in mapper.columns}
 
-                if existing:
-                    skipped_count += 1
-                else:
-                    new_obj = model_cls(**data)
-                    tgt_db.add(new_obj)
-                    migrated_count += 1
+                    if len(pk_cols) == 1:
+                        is_existing = data[pk_cols[0]] in existing_pks
+                    else:
+                        is_existing = tuple(data[k] for k in pk_cols) in existing_pks
+
+                    if is_existing:
+                        skipped_count += 1
+                    else:
+                        # Sanitize orphaned foreign keys from SQLite (e.g. deleted test users)
+                        if "user_id" in data and data["user_id"] is not None and data["user_id"] not in valid_user_ids:
+                            data["user_id"] = None
+                            sanitized_fks += 1
+
+                        if "stock_id" in data and data["stock_id"] is not None and data["stock_id"] not in valid_stock_ids:
+                            data["stock_id"] = None
+                            sanitized_fks += 1
+
+                        if "alert_id" in data and data["alert_id"] is not None and data["alert_id"] not in valid_alert_ids:
+                            data["alert_id"] = None
+                            sanitized_fks += 1
+
+                        new_obj = model_cls(**data)
+                        tgt_db.add(new_obj)
+                        migrated_count += 1
+                        if len(pk_cols) == 1:
+                            existing_pks.add(data[pk_cols[0]])
+                        else:
+                            existing_pks.add(tuple(data[k] for k in pk_cols))
 
             tgt_db.commit()
-            print(f"      -> Table '{tbl_name}': Migrated {migrated_count} new rows ({skipped_count} existing rows preserved).")
+
+            # Refresh parent IDs for downstream foreign key validation
+            if model_cls == User:
+                valid_user_ids = {u.id for u in tgt_db.query(User.id).all()}
+            elif model_cls == Stock:
+                valid_stock_ids = {s.id for s in tgt_db.query(Stock.id).all()}
+            elif model_cls == Alert:
+                valid_alert_ids = {a.id for a in tgt_db.query(Alert.id).all()}
+
+            sanitize_note = f" (Sanitized {sanitized_fks} orphaned foreign keys to NULL)" if sanitized_fks > 0 else ""
+            print(f"      -> Table '{tbl_name}': Migrated {migrated_count} new rows ({skipped_count} existing rows preserved).{sanitize_note}")
 
             # Reset PostgreSQL autoincrement sequence for tables with integer ID
             if "id" in pk_cols and tgt_engine.dialect.name == "postgresql":

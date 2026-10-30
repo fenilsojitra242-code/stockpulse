@@ -3,18 +3,12 @@ services:
     name: stockpulse
     runtime: python
     region: oregon
-    plan: starter  # Note: Render Persistent Disks require Starter plan or higher ($7/mo + $0.25/GB disk)
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    disk:
-      name: stockpulse-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
-      - key: DATABASE_PATH
-        value: /var/data/stockpulse.db
-      - key: PERSISTENT_DATA_DIR
-        value: /var/data
+      - key: DATABASE_URL
+        sync: false  # Configure your PostgreSQL connection string in the Render Dashboard
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: SECRET_KEY

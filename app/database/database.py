@@ -52,6 +52,18 @@ if raw_db_url and (raw_db_url.startswith("postgres://") or raw_db_url.startswith
         DATABASE_URL = raw_db_url.replace("postgres://", "postgresql://", 1)
     else:
         DATABASE_URL = raw_db_url
+
+    # Automatic DBAPI driver resolution (psycopg v3 vs psycopg2)
+    if DATABASE_URL.startswith("postgresql://"):
+        try:
+            import psycopg  # noqa: F401
+        except ImportError:
+            try:
+                import psycopg2  # noqa: F401
+                DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+            except ImportError:
+                pass
+
     DEFAULT_DB_FILE = None
     is_sqlite = False
     is_persistent_configured = False
