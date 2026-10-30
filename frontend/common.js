@@ -64,11 +64,8 @@ window.StockPulse = (function () {
       fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin', keepalive: true }).catch(() => {});
     } catch (e) {}
 
-    if (reason === 'manual_logout') {
-      window.location.replace('/login?logout=true');
-    } else {
-      renderNavbarUserPill();
-    }
+    const targetUrl = reason === 'session_timeout' ? '/login?session_timeout=true' : '/login?logout=true';
+    window.location.replace(targetUrl);
   }
 
   function checkSessionTimeout() {
@@ -118,11 +115,18 @@ window.StockPulse = (function () {
     return null;
   }
 
-  // 1. Check session timeout quietly upon opening site
-  checkSessionTimeout();
+  // 1. Immediately evaluate session timeout upon opening site
+  if (checkSessionTimeout()) {
+    window.location.replace('/login?session_timeout=true');
+    return {};
+  }
 
-  // 2. Open access: authentication session requirement removed
-  // Users can freely browse /live, /monitoring, /details, /history, /notifications without logging in.
+  // 2. Strict authentication gate: redirect unauthenticated users to /login immediately
+  const existingToken = getStoredToken();
+  if (!existingToken && !isAuthPage) {
+    window.location.replace('/login');
+    return {};
+  }
 
   // 3. User activity & background timeout watcher
   if (!isAuthPage) {
@@ -191,13 +195,13 @@ window.StockPulse = (function () {
 
       const response = await originalFetch(resource, init);
 
-      // Only invalidate session if the dedicated profile check returns 401
+      // Handle 401 Unauthorized by returning to /login for authenticated user endpoints
       if (response.status === 401 && !isAuthPage) {
         const urlStr = typeof resource === 'string' ? resource : (resource.url || '');
-        if (urlStr.includes('/api/auth/me')) {
+        if (urlStr.includes('/api/auth/me') || urlStr.includes('/api/alerts') || urlStr.includes('/api/notifications')) {
           localStorage.removeItem(STORAGE_KEY_TOKEN);
           localStorage.removeItem(STORAGE_KEY_USER);
-          renderNavbarUserPill();
+          window.location.replace('/login?session_expired=true');
         }
       }
       return response;
@@ -2027,7 +2031,7 @@ window.StockPulse = (function () {
         if (token) {
           localStorage.removeItem(STORAGE_KEY_TOKEN);
           localStorage.removeItem(STORAGE_KEY_USER);
-          renderNavbarUserPill();
+          window.location.replace('/login?session_expired=true');
         }
       }
     } catch (e) {}

@@ -2,7 +2,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
@@ -27,7 +27,7 @@ from app.api.alerts import router as alerts_router
 from app.api.history import router as history_router
 from app.api.system import router as system_router
 from app.api.notifications import router as notifications_router
-from app.api.auth import router as auth_router, seed_default_user_if_needed
+from app.api.auth import router as auth_router, seed_default_user_if_needed, COOKIE_NAME, decode_access_token
 from app.services.scheduler import start_scheduler, stop_scheduler
 import threading
 
@@ -176,9 +176,23 @@ def serve_favicon_png():
     return FileResponse(os.path.join(FRONTEND_DIR, "favicon.png"), media_type="image/png")
 
 
+def is_request_authenticated(request: Request) -> bool:
+    """Verifies if incoming request carries a valid session cookie or bearer token."""
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+    if token and decode_access_token(token):
+        return True
+    return False
+
+
 @app.get("/")
-def serve_dashboard():
-    """Serve the main StockPulse web dashboard (Live Market & Charts)."""
+def serve_dashboard(request: Request):
+    """Serve the main StockPulse web dashboard if authenticated, otherwise redirect to /login."""
+    if not is_request_authenticated(request):
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
     index_path = os.path.join(FRONTEND_DIR, "live.html")
     if not os.path.exists(index_path):
         index_path = os.path.join(FRONTEND_DIR, "index.html")
@@ -196,8 +210,10 @@ def serve_login_page():
 
 
 @app.get("/live")
-def serve_live_page():
-    """Serve the dedicated Live Market & Price Chart page."""
+def serve_live_page(request: Request):
+    """Serve the dedicated Live Market & Price Chart page if authenticated, otherwise redirect to /login."""
+    if not is_request_authenticated(request):
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
     p = os.path.join(FRONTEND_DIR, "live.html")
     if not os.path.exists(p):
         p = os.path.join(FRONTEND_DIR, "index.html")
@@ -205,15 +221,19 @@ def serve_live_page():
 
 
 @app.get("/monitoring")
-def serve_monitoring_page():
-    """Serve the dedicated Dynamic Monitoring & Alerts Configuration page."""
+def serve_monitoring_page(request: Request):
+    """Serve the dedicated Dynamic Monitoring & Alerts Configuration page if authenticated."""
+    if not is_request_authenticated(request):
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
     return FileResponse(os.path.join(FRONTEND_DIR, "monitoring.html"))
 
 
 @app.get("/details")
 @app.get("/stock-info")
-def serve_details_page():
-    """Serve the dedicated Stock Details & Key Market Statistics page."""
+def serve_details_page(request: Request):
+    """Serve the dedicated Stock Details & Key Market Statistics page if authenticated."""
+    if not is_request_authenticated(request):
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
     return FileResponse(os.path.join(FRONTEND_DIR, "details.html"))
 
 
@@ -231,16 +251,20 @@ def redirect_dashboard():
 
 @app.get("/history")
 @app.get("/alert-history")
-def serve_history_page():
-    """Serve the dedicated Alert History & Outcome Verification page."""
+def serve_history_page(request: Request):
+    """Serve the dedicated Alert History & Outcome Verification page if authenticated."""
+    if not is_request_authenticated(request):
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
     return FileResponse(os.path.join(FRONTEND_DIR, "history.html"))
 
 
 @app.get("/notifications")
 @app.get("/notifications-view")
 @app.get("/notifications-page")
-def serve_notifications_page():
-    """Serve the dedicated Real-time System Notifications page."""
+def serve_notifications_page(request: Request):
+    """Serve the dedicated Real-time System Notifications page if authenticated."""
+    if not is_request_authenticated(request):
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
     return FileResponse(os.path.join(FRONTEND_DIR, "notifications.html"))
 
 
