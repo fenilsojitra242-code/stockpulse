@@ -27,16 +27,15 @@ def list_notifications(
     """
     List historical and real-time notifications for the authenticated user as well as system notifications.
     """
-    # Include user's own notifications plus system notifications (user_id IS NULL)
-    if current_user:
-        query = db.query(Notification).filter(
-            or_(
-                Notification.user_id == current_user.id,
-                Notification.user_id.is_(None)
-            )
-        )
-    else:
-        query = db.query(Notification).filter(Notification.user_id.is_(None))
+    # Strict user isolation: User 1 only sees User 1's notifications, User 2 only sees User 2's notifications
+    if not current_user:
+        return {
+            "total": 0,
+            "unread_count": 0,
+            "notifications": []
+        }
+
+    query = db.query(Notification).filter(Notification.user_id == current_user.id)
 
     if alert_id is not None and isinstance(alert_id, int):
         query = query.filter(Notification.alert_id == alert_id)
@@ -51,25 +50,27 @@ def list_notifications(
     if unread_only is True:
         query = query.filter(Notification.is_read == False)
 
-    items = query.order_by(desc(Notification.created_at)).limit(limit).all()
-    if len(items) < limit:
+    # Resolve limit if invoked directly in python without FastAPI dependency injection
+    limit_val = getattr(limit, 'default', limit)
+    try:
+        actual_limit = int(limit_val)
+    except Exception:
+        actual_limit = 50
+
+    unread_val = getattr(unread_only, 'default', unread_only)
+    is_unread_only = bool(unread_val) if not hasattr(unread_val, 'default') else False
+
+    items = query.order_by(desc(Notification.created_at)).limit(actual_limit).all()
+    if len(items) < actual_limit:
         total = len(items)
     else:
         total = query.count()
 
-    if unread_only is True:
+    if is_unread_only:
         unread_count = total
     else:
-        unread_filter = (
-            or_(
-                Notification.user_id == current_user.id,
-                Notification.user_id.is_(None)
-            )
-            if current_user
-            else Notification.user_id.is_(None)
-        )
         unread_count = db.query(Notification.id).filter(
-            unread_filter,
+            Notification.user_id == current_user.id,
             Notification.is_read == False
         ).count()
 
@@ -193,12 +194,16 @@ def delete_notification(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Delete a single notification by ID (user-isolated)."""
+    """Delete a single notification by ID (strict user-isolated, fast & idempotent)."""
     item = db.query(Notification).filter(Notification.id == notification_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Notification not found")
-    if item.user_id != current_user.id:
+        return {"message": "Notification already deleted or not found", "id": notification_id}
+    if item.user_id and item.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Unauthorized to delete this notification")
     db.delete(item)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Database transaction failed")
     return {"message": "Notification deleted successfully", "id": notification_id}

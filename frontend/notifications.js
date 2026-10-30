@@ -158,7 +158,9 @@
           }
           return;
         }
-        if (e.target.closest('.btn-delete-single')) {
+        const delBtn = e.target.closest('.btn-delete-single');
+        if (delBtn) {
+          e.preventDefault();
           e.stopPropagation();
           deleteSingleNotification(notif.id);
           return;
@@ -212,21 +214,33 @@
 
   async function clearAllNotifications() {
     if (!confirm('Are you sure you want to clear all notifications?')) return;
+    // Optimistic instant clear
+    allNotifications = [];
+    if (el.unreadTotalBadge) el.unreadTotalBadge.style.display = 'none';
+    renderNotifications();
     try {
       await fetch('/api/notifications/clear', { method: 'POST' });
-      allNotifications = [];
-      if (el.unreadTotalBadge) el.unreadTotalBadge.style.display = 'none';
-      renderNotifications();
     } catch (e) {
       console.warn('[Notifications] Error clearing notifications:', e);
     }
   }
 
   async function deleteSingleNotification(id) {
+    // Optimistic instant UI removal (0ms latency)
+    const idx = allNotifications.findIndex(n => n.id === id);
+    if (idx !== -1) {
+      const removed = allNotifications.splice(idx, 1)[0];
+      if (!removed.is_read && el.unreadTotalBadge) {
+        const currentUnread = parseInt(el.unreadTotalBadge.textContent, 10) || 1;
+        const newUnread = Math.max(0, currentUnread - 1);
+        el.unreadTotalBadge.textContent = `${newUnread} Unread`;
+        el.unreadTotalBadge.style.display = newUnread > 0 ? 'inline-block' : 'none';
+      }
+      renderNotifications();
+    }
+    // Asynchronous backend deletion
     try {
       await fetch(`/api/notifications/${id}`, { method: 'DELETE' });
-      allNotifications = allNotifications.filter(n => n.id !== id);
-      renderNotifications();
     } catch (e) {
       console.warn('[Notifications] Error deleting notification:', e);
     }
