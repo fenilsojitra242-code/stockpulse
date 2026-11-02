@@ -21,7 +21,29 @@
   }
 
   function syncPopularChips(sym) {
-    const targetSym = (sym || currentSymbol || '').toUpperCase().replace(/\.(NS|BO)$/, '');
+    let targetSym = sym;
+    if (!targetSym) {
+      try {
+        const _params = new URLSearchParams(window.location.search);
+        targetSym = _params.get('symbol') || _params.get('stock');
+      } catch (e) {}
+    }
+    if (!targetSym && window.StockPulse && window.StockPulse.getSelectedStock) {
+      targetSym = window.StockPulse.getSelectedStock();
+    }
+    if (!targetSym && typeof localStorage !== 'undefined') {
+      try {
+        const uStr = localStorage.getItem('stockpulse_user_profile');
+        if (uStr) {
+          const u = JSON.parse(uStr);
+          if (u && u.id) targetSym = localStorage.getItem('stockpulse_selected_stock_u' + u.id);
+        }
+      } catch (e) {}
+      if (!targetSym) targetSym = localStorage.getItem('stockpulse_selected_stock');
+    }
+    if (!targetSym) targetSym = currentSymbol || 'TCS';
+    targetSym = targetSym.toUpperCase().replace(/\.(NS|BO)$/, '');
+
     const chipBtns = document.querySelectorAll('.ticker-chip-btn');
     if (!chipBtns || !chipBtns.length) return;
     chipBtns.forEach(btn => {
@@ -29,11 +51,27 @@
       const cleanBSym = bSym ? bSym.toUpperCase().replace(/\.(NS|BO)$/, '') : '';
       if (cleanBSym && cleanBSym === targetSym) {
         btn.classList.add('active');
+        btn.style.setProperty('background', '#2563eb', 'important');
+        btn.style.setProperty('color', '#ffffff', 'important');
+        btn.style.setProperty('border-color', '#2563eb', 'important');
       } else {
         btn.classList.remove('active');
+        btn.style.removeProperty('background');
+        btn.style.removeProperty('color');
+        btn.style.removeProperty('border-color');
       }
     });
   }
+
+  // Immediately synchronize popular chips upon script parse
+  try {
+    if (document.readyState !== 'loading') {
+      syncPopularChips(currentSymbol);
+    } else {
+      document.addEventListener('DOMContentLoaded', () => syncPopularChips(currentSymbol));
+    }
+  } catch (e) {}
+
   let currentTimeRange = '1D';
   let currentChartMode = 'candles'; // Sole premier chart mode: Candlestick
   let cachedCandles = [];
@@ -551,7 +589,10 @@
     if (symEl && symEl.textContent !== nextSym) symEl.textContent = nextSym;
     if (exchEl && exchEl.textContent !== nextExch) exchEl.textContent = nextExch;
     if (nameEl && nameEl.textContent !== nextName) nameEl.textContent = nextName;
-    syncPopularChips(nextSym);
+    if (nextSym) {
+      currentSymbol = nextSym.toUpperCase().replace(/\.(NS|BO)$/, '');
+      syncPopularChips(currentSymbol);
+    }
 
     // Market status and closure state based on authoritative exchange session
     const isClosed = data.market_status === 'CLOSED';

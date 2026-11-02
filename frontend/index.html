@@ -112,16 +112,33 @@
         <script>
           (function() {
             try {
-              var s = (new URLSearchParams(window.location.search)).get('symbol') || (new URLSearchParams(window.location.search)).get('stock');
+              var p = new URLSearchParams(window.location.search);
+              var s = p.get('symbol') || p.get('stock');
               if (!s && window.StockPulse && window.StockPulse.getSelectedStock) s = window.StockPulse.getSelectedStock();
+              if (!s) {
+                var uStr = localStorage.getItem('stockpulse_user_profile');
+                if (uStr) {
+                  try {
+                    var u = JSON.parse(uStr);
+                    if (u && u.id) s = localStorage.getItem('stockpulse_selected_stock_u' + u.id);
+                  } catch(e) {}
+                }
+              }
               if (!s && typeof localStorage !== 'undefined') s = localStorage.getItem('stockpulse_selected_stock');
               var clean = (s || 'TCS').toUpperCase().replace(/\.(NS|BO)$/, '');
               document.querySelectorAll('.ticker-chip-btn').forEach(function(btn) {
                 var bSym = btn.getAttribute('data-symbol');
-                if (bSym && bSym.toUpperCase().replace(/\.(NS|BO)$/, '') === clean) {
+                var cBSym = bSym ? bSym.toUpperCase().replace(/\.(NS|BO)$/, '') : '';
+                if (cBSym === clean) {
                   btn.classList.add('active');
+                  btn.style.setProperty('background', '#2563eb', 'important');
+                  btn.style.setProperty('color', '#ffffff', 'important');
+                  btn.style.setProperty('border-color', '#2563eb', 'important');
                 } else {
                   btn.classList.remove('active');
+                  btn.style.removeProperty('background');
+                  btn.style.removeProperty('color');
+                  btn.style.removeProperty('border-color');
                 }
               });
             } catch(e) {}
@@ -390,8 +407,8 @@
   </footer>
 
   <!-- Application Logic -->
-  <script src="/static/common.js?v=10"></script>
-  <script src="/static/live.js?v=10"></script>
+  <script src="/static/common.js?v=12"></script>
+  <script src="/static/live.js?v=12"></script>
 </body>
 
 </html>

@@ -188,6 +188,14 @@ def is_request_authenticated(request: Request) -> bool:
     return False
 
 
+def _html_response(filepath: str) -> FileResponse:
+    res = FileResponse(filepath)
+    res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    res.headers["Pragma"] = "no-cache"
+    res.headers["Expires"] = "0"
+    return res
+
+
 @app.get("/")
 def serve_dashboard(request: Request):
     """Serve the main StockPulse web dashboard if authenticated, otherwise redirect to /login."""
@@ -197,7 +205,7 @@ def serve_dashboard(request: Request):
     if not os.path.exists(index_path):
         index_path = os.path.join(FRONTEND_DIR, "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path)
+        return _html_response(index_path)
     return {"message": "StockPulse API is running. Frontend not yet found."}
 
 
@@ -206,7 +214,7 @@ def serve_dashboard(request: Request):
 @app.get("/signin")
 def serve_login_page():
     """Serve the dedicated StockPulse Login & Account Creation page."""
-    return FileResponse(os.path.join(FRONTEND_DIR, "login.html"))
+    return _html_response(os.path.join(FRONTEND_DIR, "login.html"))
 
 
 @app.get("/live")
@@ -217,7 +225,7 @@ def serve_live_page(request: Request):
     p = os.path.join(FRONTEND_DIR, "live.html")
     if not os.path.exists(p):
         p = os.path.join(FRONTEND_DIR, "index.html")
-    return FileResponse(p)
+    return _html_response(p)
 
 
 @app.get("/monitoring")
@@ -225,7 +233,7 @@ def serve_monitoring_page(request: Request):
     """Serve the dedicated Dynamic Monitoring & Alerts Configuration page if authenticated."""
     if not is_request_authenticated(request):
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    return FileResponse(os.path.join(FRONTEND_DIR, "monitoring.html"))
+    return _html_response(os.path.join(FRONTEND_DIR, "monitoring.html"))
 
 
 @app.get("/details")
@@ -234,7 +242,7 @@ def serve_details_page(request: Request):
     """Serve the dedicated Stock Details & Key Market Statistics page if authenticated."""
     if not is_request_authenticated(request):
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    return FileResponse(os.path.join(FRONTEND_DIR, "details.html"))
+    return _html_response(os.path.join(FRONTEND_DIR, "details.html"))
 
 
 @app.get("/technical")
@@ -255,7 +263,7 @@ def serve_history_page(request: Request):
     """Serve the dedicated Alert History & Outcome Verification page if authenticated."""
     if not is_request_authenticated(request):
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    return FileResponse(os.path.join(FRONTEND_DIR, "history.html"))
+    return _html_response(os.path.join(FRONTEND_DIR, "history.html"))
 
 
 @app.get("/notifications")
@@ -265,7 +273,7 @@ def serve_notifications_page(request: Request):
     """Serve the dedicated Real-time System Notifications page if authenticated."""
     if not is_request_authenticated(request):
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    return FileResponse(os.path.join(FRONTEND_DIR, "notifications.html"))
+    return _html_response(os.path.join(FRONTEND_DIR, "notifications.html"))
 
 
 @app.get("/health")
