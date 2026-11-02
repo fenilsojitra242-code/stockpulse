@@ -92,7 +92,7 @@
 
         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
           <span style="font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase;">Popular:</span>
-          <button type="button" class="ticker-chip-btn active" data-symbol="TCS"
+          <button type="button" class="ticker-chip-btn" data-symbol="TCS"
             style="border: 1px solid #cbd5e1; background: #fff; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer;">TCS</button>
           <button type="button" class="ticker-chip-btn" data-symbol="INFY"
             style="border: 1px solid #cbd5e1; background: #fff; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer;">INFY</button>
@@ -109,6 +109,24 @@
           <button type="button" class="ticker-chip-btn" data-symbol="ZOMATO"
             style="border: 1px solid #cbd5e1; background: #fff; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer;">ZOMATO</button>
         </div>
+        <script>
+          (function() {
+            try {
+              var s = (new URLSearchParams(window.location.search)).get('symbol') || (new URLSearchParams(window.location.search)).get('stock');
+              if (!s && window.StockPulse && window.StockPulse.getSelectedStock) s = window.StockPulse.getSelectedStock();
+              if (!s && typeof localStorage !== 'undefined') s = localStorage.getItem('stockpulse_selected_stock');
+              var clean = (s || 'TCS').toUpperCase().replace(/\.(NS|BO)$/, '');
+              document.querySelectorAll('.ticker-chip-btn').forEach(function(btn) {
+                var bSym = btn.getAttribute('data-symbol');
+                if (bSym && bSym.toUpperCase().replace(/\.(NS|BO)$/, '') === clean) {
+                  btn.classList.add('active');
+                } else {
+                  btn.classList.remove('active');
+                }
+              });
+            } catch(e) {}
+          })();
+        </script>
       </div>
 
       <!-- LIVE STOCK VISUALIZATION CARD -->

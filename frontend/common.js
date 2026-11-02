@@ -1480,6 +1480,7 @@ window.StockPulse = (function () {
     if (!symbol) return;
     const clean = symbol.toUpperCase().replace(/\.(NS|BO)$/, '');
     localStorage.setItem(getUserPrefKey(STORAGE_KEY_STOCK), clean);
+    localStorage.setItem(STORAGE_KEY_STOCK, clean);
     return clean;
   }
 

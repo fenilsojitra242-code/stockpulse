@@ -5,7 +5,35 @@
 (function () {
   'use strict';
 
-  let currentSymbol = (window.StockPulse && window.StockPulse.getSelectedStock && window.StockPulse.getSelectedStock()) || 'TCS';
+  const _urlParams = new URLSearchParams(window.location.search);
+  const _paramStock = _urlParams.get('symbol') || _urlParams.get('stock');
+  let currentSymbol = (_paramStock && _paramStock.trim().toUpperCase().replace(/\.(NS|BO)$/, '')) ||
+    (window.StockPulse && window.StockPulse.getSelectedStock && window.StockPulse.getSelectedStock()) ||
+    (typeof localStorage !== 'undefined' && localStorage.getItem('stockpulse_selected_stock')) ||
+    'TCS';
+
+  if (_paramStock) {
+    if (window.StockPulse && window.StockPulse.setSelectedStock) {
+      StockPulse.setSelectedStock(currentSymbol);
+    } else if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('stockpulse_selected_stock', currentSymbol);
+    }
+  }
+
+  function syncPopularChips(sym) {
+    const targetSym = (sym || currentSymbol || '').toUpperCase().replace(/\.(NS|BO)$/, '');
+    const chipBtns = document.querySelectorAll('.ticker-chip-btn');
+    if (!chipBtns || !chipBtns.length) return;
+    chipBtns.forEach(btn => {
+      const bSym = btn.getAttribute('data-symbol');
+      const cleanBSym = bSym ? bSym.toUpperCase().replace(/\.(NS|BO)$/, '') : '';
+      if (cleanBSym && cleanBSym === targetSym) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+  }
   let currentTimeRange = '1D';
   let currentChartMode = 'candles'; // Sole premier chart mode: Candlestick
   let cachedCandles = [];
@@ -523,6 +551,7 @@
     if (symEl && symEl.textContent !== nextSym) symEl.textContent = nextSym;
     if (exchEl && exchEl.textContent !== nextExch) exchEl.textContent = nextExch;
     if (nameEl && nameEl.textContent !== nextName) nameEl.textContent = nextName;
+    syncPopularChips(nextSym);
 
     // Market status and closure state based on authoritative exchange session
     const isClosed = data.market_status === 'CLOSED';
@@ -681,20 +710,16 @@
     const clean = sym.toUpperCase().replace(/\.(NS|BO)$/, '');
     const isUnavail = getEl('unavailable-state') && getEl('unavailable-state').style.display !== 'none';
     const isBuffering = getEl('skeleton-chart-wrapper') && getEl('skeleton-chart-wrapper').style.display !== 'none';
-    if (clean === currentSymbol && !isUnavail && !isBuffering) return; // Prevent duplicate requests for already loaded stock
+    if (clean === currentSymbol && !isUnavail && !isBuffering) {
+      syncPopularChips(currentSymbol);
+      return; // Prevent duplicate requests for already loaded stock
+    }
     currentSymbol = clean;
     zoomVisibleStart = null;
     zoomVisibleEnd = null;
 
     // Highlight active popular chip immediately
-    document.querySelectorAll('.ticker-chip-btn').forEach(btn => {
-      const bSym = btn.getAttribute('data-symbol');
-      if (bSym && bSym.toUpperCase().replace(/\.(NS|BO)$/, '') === currentSymbol) {
-        btn.classList.add('active');
-      } else {
-        btn.classList.remove('active');
-      }
-    });
+    syncPopularChips(currentSymbol);
 
     if (window.StockPulse && window.StockPulse.setSelectedStock) {
       StockPulse.setSelectedStock(currentSymbol);
@@ -764,6 +789,7 @@
         changeStock(sym);
       });
     });
+    syncPopularChips(currentSymbol);
   }
 
   function renderSearchResults(results, searchInput, searchDropdown, query) {
@@ -1832,6 +1858,7 @@
 
   // --- INITIALIZATION ---
   function init() {
+    syncPopularChips(currentSymbol);
     ensureCandleElementsActive();
     setupCandleChartEvents();
     setupSuperTrendControls();
