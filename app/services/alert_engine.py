@@ -426,8 +426,16 @@ def _process_supertrend_state_transition(
       - DATA_UNAVAILABLE: Feed offline or stale; pauses transitions without wiping state.
     """
     clean_sym = symbol.strip().upper()
+    if user_id is None and alert and getattr(alert, "user_id", None):
+        user_id = alert.user_id
+    if user_id is None and condition_key.startswith("watchlist_"):
+        parts = condition_key.split("_")
+        if len(parts) >= 3 and parts[1].isdigit():
+            user_id = int(parts[1])
+
     state = _SUPERTREND_STATES.setdefault(condition_key, {
         "symbol": clean_sym,
+        "user_id": user_id,
         "state": StateStr("MONITORING"),
         "confirmed_direction": None,
         "last_confirmed_candle_ts": None,
@@ -451,6 +459,8 @@ def _process_supertrend_state_transition(
         "last_expired_candle_ts": None,
         "last_expired_at": None
     })
+    if user_id is not None:
+        state["user_id"] = user_id
 
     # Data availability check
     if data_status in ("UNAVAILABLE", "ERROR", "DATA_UNAVAILABLE", "STALE") or curr_price <= 0:
@@ -622,10 +632,21 @@ def _process_supertrend_state_transition(
                     state["target_reversal_direction"] = None
 
                     _STOCK_CONFIRMED_DIRECTIONS[clean_sym] = (raw_confirmed_dir, candle_ts)
-                    # Synchronize all conditions for this symbol using exact match
+                    # Synchronize other conditions for the SAME user only (e.g. watchlist + alert for the same user)
                     for k, st in _SUPERTREND_STATES.items():
-                        if st.get("symbol") == clean_sym or (k.startswith("watchlist_") and k.split("_")[-1].upper() == clean_sym):
-                            st["confirmed_direction"] = raw_confirmed_dir
+                        if k == condition_key:
+                            continue
+                        k_user = st.get("user_id")
+                        if k_user is None and k.startswith("watchlist_"):
+                            parts = k.split("_")
+                            if len(parts) >= 3 and parts[1].isdigit():
+                                k_user = int(parts[1])
+                                st["user_id"] = k_user
+
+                        # Synchronize only if both conditions belong to the exact same user
+                        if (user_id is not None and k_user == user_id) or (user_id is None and k_user is None):
+                            if st.get("symbol") == clean_sym or (k.startswith("watchlist_") and k.split("_")[-1].upper() == clean_sym):
+                                st["confirmed_direction"] = raw_confirmed_dir
 
                     # Resolve pending diagnostic prediction as TRUE_POSITIVE
                     if state.get("last_prediction_event_id"):
